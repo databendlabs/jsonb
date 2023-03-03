@@ -17,11 +17,11 @@ authors = ["Databend Authors <opensource@datafuselabs.com>"]
 categories = ["encoding"]
 description = "JSONB implement in Rust."
 edition = "2021"
-homepage = "https://github.com/datafuselabs/jsonb-rs"
+homepage = "https://github.com/datafuselabs/jsonb"
 keywords = ["json", "jsonb"]
 license = "Apache-2.0"
-name = "jsonb-rs"
-repository = "https://github.com/datafuselabs/jsonb-rs"
+name = "jsonb"
+repository = "https://github.com/datafuselabs/jsonb"
 version = "0.1.0"
 rust-version = "1.60"
 

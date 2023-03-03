@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use jsonb_rs::{Number, Object, Value};
+use jsonb::{Number, Object, Value};
 
 #[test]
 fn test_encode_null() {

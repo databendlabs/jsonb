@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use jsonb_rs::{
+use jsonb::{
     array_length, as_bool, as_null, as_number, as_str, build_array, build_object, compare,
     from_slice, get_by_name_ignore_case, get_by_path, is_array, is_object, object_keys,
     parse_json_path, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64, Error,

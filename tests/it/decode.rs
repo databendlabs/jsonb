@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use jsonb_rs::{from_slice, Object, Value};
+use jsonb::{from_slice, Object, Value};
 
 #[test]
 fn test_decode_null() {
