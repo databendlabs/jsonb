@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod decode;
-mod encode;
-mod functions;
-mod parser;
-mod jsonpath_parser;
+mod exception;
+mod exception_code;
+mod span;
+
+pub use exception::ErrorCode;
+pub use exception::Result;
+pub use exception::ToErrorCode;
+pub use span::pretty_print_error;
+pub use span::Range;
+pub use span::Span;

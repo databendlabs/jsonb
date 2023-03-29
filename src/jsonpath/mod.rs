@@ -12,8 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod decode;
-mod encode;
-mod functions;
-mod parser;
-mod jsonpath_parser;
+mod error;
+pub use error::display_parser_error;
+pub use error::Backtrace;
+pub use error::Error;
+pub use error::ErrorKind;
+
+mod input;
+pub use input::Input;
+
+mod util;
+//pub use util::rule;
+pub use util::match_text;
+pub use util::match_token;
+
+pub mod ast;
+pub mod exception;
+pub mod parser;
+

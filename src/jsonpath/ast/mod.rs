@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod decode;
-mod encode;
-mod functions;
-mod parser;
-mod jsonpath_parser;
+mod ast;
+mod expr;
+mod json_path;
+
+pub use ast::*;
+pub use expr::*;
+pub use json_path::*;

@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod decode;
-mod encode;
-mod functions;
-mod parser;
-mod jsonpath_parser;
+pub mod expr;
+pub mod json_path;
+pub mod parser;
+pub mod token;
+pub mod unescape;
+
+pub use token::all_reserved_keywords;
+
+pub use parser::parse_json_path;
+pub use parser::tokenize;
