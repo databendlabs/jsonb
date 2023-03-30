@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::jsonpath::parser::json_path::path;
 use itertools::Itertools;
 use nom::branch::alt;
 use nom::combinator::consumed;
 use nom::combinator::map;
 use nom::combinator::value;
-use nom::error::context;
 use pratt::Affix;
 use pratt::Associativity;
 use pratt::PrattParser;
@@ -27,19 +25,15 @@ use pratt::Precedence;
 use crate::jsonpath::ast::*;
 use crate::jsonpath::error::Error;
 use crate::jsonpath::error::ErrorKind;
-use crate::jsonpath::input::is_string_quote;
 use crate::jsonpath::input::Input;
 use crate::jsonpath::input::WithSpan;
+use crate::jsonpath::parser::json_path::path;
 use crate::jsonpath::parser::token::*;
 use crate::jsonpath::parser::unescape::unescape;
 use crate::jsonpath::util::*;
 use crate::rule;
 
-pub fn expr(i: Input) -> IResult<Expr> {
-    context("expression", subexpr(0))(i)
-}
-
-pub fn subexpr(min_precedence: u32) -> impl FnMut(Input) -> IResult<Expr> {
+pub(crate) fn subexpr(min_precedence: u32) -> impl FnMut(Input) -> IResult<Expr> {
     move |i| {
         let higher_prec_expr_element =
             |i| {
@@ -147,7 +141,7 @@ pub fn subexpr(min_precedence: u32) -> impl FnMut(Input) -> IResult<Expr> {
 /// For example, `a + b AND c is null` is parsed as `[col(a), PLUS, col(b), AND, col(c), ISNULL]` by nom parsers.
 /// Then the Pratt parser is able to parse the expression into `AND(PLUS(col(a), col(b)), ISNULL(col(c)))`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ExprElement {
+enum ExprElement {
     /// Json paths like `$.price`
     Paths {
         paths: Vec<Path>,
@@ -273,7 +267,7 @@ impl<'a, I: Iterator<Item = WithSpan<'a, ExprElement>>> PrattParser<I> for ExprP
     }
 }
 
-pub fn expr_element(i: Input) -> IResult<WithSpan<ExprElement>> {
+fn expr_element(i: Input) -> IResult<WithSpan<ExprElement>> {
     let binary_op = map(binary_op, |op| ExprElement::BinaryOp { op });
     let unary_op = map(unary_op, |op| ExprElement::UnaryOp { op });
     let literal = map(literal, |lit| ExprElement::Literal { lit });
@@ -294,12 +288,12 @@ pub fn expr_element(i: Input) -> IResult<WithSpan<ExprElement>> {
     Ok((rest, WithSpan { span, elem }))
 }
 
-pub fn unary_op(i: Input) -> IResult<UnaryOperator> {
+fn unary_op(i: Input) -> IResult<UnaryOperator> {
     // Plus and Minus are parsed as binary op at first.
-    alt((value(UnaryOperator::Not, rule! { NOT }),))(i)
+    alt((value(UnaryOperator::Not, rule! { Not }),))(i)
 }
 
-pub fn binary_op(i: Input) -> IResult<BinaryOperator> {
+fn binary_op(i: Input) -> IResult<BinaryOperator> {
     alt((
         alt((
             value(BinaryOperator::Plus, rule! { "+" }),
@@ -315,44 +309,44 @@ pub fn binary_op(i: Input) -> IResult<BinaryOperator> {
             value(BinaryOperator::NotEq, rule! { "<>" | "!=" }),
         )),
         alt((
-            value(BinaryOperator::And, rule! { AND }),
-            value(BinaryOperator::Or, rule! { OR }),
-            value(BinaryOperator::In, rule! { IN }),
-            value(BinaryOperator::Nin, rule! { NIN }),
-            value(BinaryOperator::Subsetof, rule! { SUBSETOF }),
-            value(BinaryOperator::Contains, rule! { CONTAINS }),
+            value(BinaryOperator::And, rule! { And }),
+            value(BinaryOperator::Or, rule! { Or }),
+            value(BinaryOperator::In, rule! { In }),
+            value(BinaryOperator::Nin, rule! { Nin }),
+            value(BinaryOperator::Subsetof, rule! { Subsetof }),
+            value(BinaryOperator::Contains, rule! { Contains }),
         )),
     ))(i)
 }
 
-pub fn literal(i: Input) -> IResult<Literal> {
+pub(crate) fn literal(i: Input) -> IResult<Literal> {
     let string = map(literal_string, Literal::String);
-    let boolean = alt((
-        value(Literal::Boolean(true), rule! { TRUE }),
-        value(Literal::Boolean(false), rule! { FALSE }),
-    ));
-    let null = value(Literal::Null, rule! { NULL });
     let int = map(literal_i64, Literal::Int64);
+    let uint = map(literal_u64, Literal::UInt64);
+    let float = map(literal_f64, Literal::Float);
+    let boolean = map(literal_bool, Literal::Boolean);
+    let null = value(Literal::Null, rule! { Null });
 
     rule!(
         #string
         | #int
+        | #uint
+        | #float
         | #boolean
         | #null
     )(i)
 }
 
-#[allow(clippy::from_str_radix_10)]
-pub fn literal_u64(i: Input) -> IResult<u64> {
+pub(crate) fn literal_u64(i: Input) -> IResult<u64> {
     map_res(
         rule! {
             LiteralInteger
         },
-        |token| Ok(u64::from_str_radix(token.text(), 10)?),
+        |token| Ok(token.text().parse::<u64>()?),
     )(i)
 }
 
-pub fn literal_i64(i: Input) -> IResult<i64> {
+pub(crate) fn literal_i64(i: Input) -> IResult<i64> {
     map_res(
         rule! {
             LiteralInteger
@@ -361,7 +355,7 @@ pub fn literal_i64(i: Input) -> IResult<i64> {
     )(i)
 }
 
-pub fn literal_f64(i: Input) -> IResult<f64> {
+pub(crate) fn literal_f64(i: Input) -> IResult<f64> {
     map_res(
         rule! {
             LiteralFloat
@@ -370,11 +364,11 @@ pub fn literal_f64(i: Input) -> IResult<f64> {
     )(i)
 }
 
-pub fn literal_bool(i: Input) -> IResult<bool> {
-    alt((value(true, rule! { TRUE }), value(false, rule! { FALSE })))(i)
+pub(crate) fn literal_bool(i: Input) -> IResult<bool> {
+    alt((value(true, rule! { True }), value(false, rule! { False })))(i)
 }
 
-pub fn literal_string(i: Input) -> IResult<String> {
+pub(crate) fn literal_string(i: Input) -> IResult<String> {
     map_res(
         rule! {
             QuotedString

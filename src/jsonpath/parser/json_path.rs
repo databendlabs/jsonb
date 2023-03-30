@@ -22,7 +22,7 @@ use crate::rule;
 
 use crate::jsonpath::util::*;
 
-pub fn path(i: Input) -> IResult<Path> {
+pub(crate) fn path(i: Input) -> IResult<Path> {
     let root = map(
         rule! {
             Dollar
@@ -98,10 +98,10 @@ pub fn path(i: Input) -> IResult<Path> {
     )(i)
 }
 
-pub fn json_path(i: Input) -> IResult<JsonPath> {
+pub(crate) fn json_path(i: Input) -> IResult<JsonPath> {
     let json_path = map(
         rule! {
-            #continue_list1(path_item) ~ &EOI
+            #continue_list1(path_item) ~ &Eoi
         },
         |(items, _)| JsonPath { items },
     );
@@ -111,7 +111,7 @@ pub fn json_path(i: Input) -> IResult<JsonPath> {
     )(i)
 }
 
-pub fn path_item(i: Input) -> IResult<PathItem> {
+pub(crate) fn path_item(i: Input) -> IResult<PathItem> {
     let path = map(rule! { #path }, |path| PathItem::Path {
         path: Box::new(path),
     });

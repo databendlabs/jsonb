@@ -15,7 +15,7 @@
 use std::char;
 use std::iter::Peekable;
 
-pub fn unescape(s: &str, quote: char) -> Option<String> {
+pub(crate) fn unescape(s: &str, quote: char) -> Option<String> {
     let mut chars = s.chars().peekable();
     let mut s = String::new();
 

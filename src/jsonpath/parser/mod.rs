@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod expr;
-pub mod json_path;
-pub mod token;
-pub mod unescape;
+pub(crate) mod expr;
+pub(crate) mod json_path;
+pub(crate) mod token;
+pub(crate) mod unescape;
 
 use crate::jsonpath::ast::JsonPath;
 use crate::jsonpath::error::display_parser_error;
@@ -37,7 +37,7 @@ pub fn tokenize(json_path: &str) -> Result<Vec<Token>> {
 pub fn parse_json_path<'a>(tokens: &'a [Token<'a>]) -> Result<JsonPath> {
     let backtrace = Backtrace::new();
     match json_path(Input(tokens, &backtrace)) {
-        Ok((rest, json_path)) if rest[0].kind == TokenKind::EOI => Ok(json_path),
+        Ok((rest, json_path)) if rest[0].kind == TokenKind::Eoi => Ok(json_path),
         Ok((rest, _)) => Err(ErrorCode::SyntaxException(
             "unable to parse rest of the json path".to_string(),
         )

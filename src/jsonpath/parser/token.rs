@@ -33,7 +33,7 @@ impl<'a> Token<'a> {
     pub fn new_eoi(source: &'a str) -> Self {
         Token {
             source,
-            kind: TokenKind::EOI,
+            kind: TokenKind::Eoi,
             span: (source.len()..source.len()).into(),
         }
     }
@@ -89,13 +89,13 @@ impl<'a> Iterator for Tokenizer<'a> {
     }
 }
 
-#[allow(non_camel_case_types)]
+//#[allow(non_camel_case_types)]
 #[derive(Logos, EnumIter, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     #[error]
     Error,
 
-    EOI,
+    Eoi,
 
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     Whitespace,
@@ -194,30 +194,29 @@ pub enum TokenKind {
     //    out reserved keyword. If so, uncomment the keyword in the
     //    reserved list.
     #[token("AND", ignore(ascii_case))]
-    AND,
-    #[token("OR", ignore(ascii_case))]
-    OR,
-    #[token("TRUE", ignore(ascii_case))]
-    TRUE,
-    #[token("FALSE", ignore(ascii_case))]
-    FALSE,
-    #[token("NULL", ignore(ascii_case))]
-    NULL,
-    #[token("NOT", ignore(ascii_case))]
-    NOT,
-
-    #[token("IN", ignore(ascii_case))]
-    IN,
-    #[token("NIN", ignore(ascii_case))]
-    NIN,
-    #[token("SUBSETOF", ignore(ascii_case))]
-    SUBSETOF,
+    And,
     #[token("CONTAINS", ignore(ascii_case))]
-    CONTAINS,
-    #[token("SIZE", ignore(ascii_case))]
-    SIZE,
+    Contains,
     #[token("EMPTY", ignore(ascii_case))]
-    EMPTY,
+    Empty,
+    #[token("FALSE", ignore(ascii_case))]
+    False,
+    #[token("IN", ignore(ascii_case))]
+    In,
+    #[token("NIN", ignore(ascii_case))]
+    Nin,
+    #[token("NOT", ignore(ascii_case))]
+    Not,
+    #[token("NULL", ignore(ascii_case))]
+    Null,
+    #[token("OR", ignore(ascii_case))]
+    Or,
+    #[token("SIZE", ignore(ascii_case))]
+    Size,
+    #[token("SUBSETOF", ignore(ascii_case))]
+    Subsetof,
+    #[token("TRUE", ignore(ascii_case))]
+    True,
 }
 
 impl TokenKind {
@@ -258,11 +257,21 @@ impl TokenKind {
                 | LBrace
                 | RBrace
                 | AtSign
-                | EOI
+                | Eoi
         )
     }
 
     pub fn is_reserved_ident(&self) -> bool {
-        matches!(self, TokenKind::AND | TokenKind::OR)
+        matches!(self, |TokenKind::And| TokenKind::Contains
+            | TokenKind::Empty
+            | TokenKind::False
+            | TokenKind::In
+            | TokenKind::Nin
+            | TokenKind::Not
+            | TokenKind::Null
+            | TokenKind::Or
+            | TokenKind::Size
+            | TokenKind::Subsetof
+            | TokenKind::True)
     }
 }

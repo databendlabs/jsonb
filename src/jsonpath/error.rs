@@ -198,7 +198,7 @@ pub fn display_parser_error(error: Error, source: &str) -> String {
             .iter()
             .chain(&inner.errors)
             .filter_map(|kind| match kind {
-                ErrorKind::ExpectToken(EOI) => None,
+                ErrorKind::ExpectToken(Eoi) => None,
                 ErrorKind::ExpectToken(token) if token.is_keyword() => {
                     Some(format!("`{:?}`", token))
                 }

@@ -30,7 +30,7 @@ use crate::jsonpath::input::WithSpan;
 use crate::jsonpath::parser::token::*;
 use crate::rule;
 
-pub type IResult<'a, Output> = nom::IResult<Input<'a>, Output, Error<'a>>;
+pub(crate) type IResult<'a, Output> = nom::IResult<Input<'a>, Output, Error<'a>>;
 
 #[macro_export]
 macro_rules! rule {
@@ -41,7 +41,7 @@ macro_rules! rule {
     }
 }
 
-pub fn match_text(text: &'static str) -> impl FnMut(Input) -> IResult<&Token> {
+pub(crate) fn match_text(text: &'static str) -> impl FnMut(Input) -> IResult<&Token> {
     move |i| match i.0.get(0).filter(|token| token.text() == text) {
         Some(token) => Ok((i.slice(1..), token)),
         _ => Err(nom::Err::Error(Error::from_error_kind(
@@ -51,7 +51,7 @@ pub fn match_text(text: &'static str) -> impl FnMut(Input) -> IResult<&Token> {
     }
 }
 
-pub fn match_token(kind: TokenKind) -> impl FnMut(Input) -> IResult<&Token> {
+pub(crate) fn match_token(kind: TokenKind) -> impl FnMut(Input) -> IResult<&Token> {
     move |i| match i.0.get(0).filter(|token| token.kind == kind) {
         Some(token) => Ok((i.slice(1..), token)),
         _ => Err(nom::Err::Error(Error::from_error_kind(
@@ -61,7 +61,7 @@ pub fn match_token(kind: TokenKind) -> impl FnMut(Input) -> IResult<&Token> {
     }
 }
 
-pub fn ident(i: Input) -> IResult<Identifier> {
+pub(crate) fn ident(i: Input) -> IResult<Identifier> {
     non_reserved_identifier(|token| token.is_reserved_ident())(i)
 }
 
@@ -131,7 +131,7 @@ pub fn comma_separated_list1<'a, T>(
 
 /// A fork of `separated_list1` from nom, but never forgive parser error
 /// after a separator is encountered.
-pub fn separated_list1<I, O, O2, E, F, G>(
+pub(crate) fn separated_list1<I, O, O2, E, F, G>(
     mut sep: G,
     mut f: F,
 ) -> impl FnMut(I) -> nom::IResult<I, Vec<O>, E>
@@ -180,7 +180,7 @@ where
     }
 }
 
-pub fn continue_list1<'a, T>(
+pub(crate) fn continue_list1<'a, T>(
     item: impl FnMut(Input<'a>) -> IResult<'a, T>,
 ) -> impl FnMut(Input<'a>) -> IResult<'a, Vec<T>> {
     continue_without_separate_list1(item)
@@ -189,7 +189,7 @@ pub fn continue_list1<'a, T>(
 /// A fork of `separated_list0` from nom, but never forgive parser error
 /// after a separator is encountered, and always forgive the first element
 /// failure.
-pub fn continue_without_separate_list1<I, O, E, F>(
+pub(crate) fn continue_without_separate_list1<I, O, E, F>(
     mut f: F,
 ) -> impl FnMut(I) -> nom::IResult<I, Vec<O>, E>
 where
@@ -222,7 +222,7 @@ where
 }
 
 /// A fork of `map_res` from nom, but doesn't require `FromExternalError`.
-pub fn map_res<'a, O1, O2, F, G>(
+pub(crate) fn map_res<'a, O1, O2, F, G>(
     mut parser: F,
     mut f: G,
 ) -> impl FnMut(Input<'a>) -> IResult<'a, O2>
@@ -240,14 +240,14 @@ where
     }
 }
 
-pub fn transform_span(tokens: &[Token]) -> Span {
+pub(crate) fn transform_span(tokens: &[Token]) -> Span {
     Some(Range {
         start: tokens.first().unwrap().span.start,
         end: tokens.last().unwrap().span.end,
     })
 }
 
-pub fn run_pratt_parser<'a, I, P, E>(
+pub(crate) fn run_pratt_parser<'a, I, P, E>(
     mut parser: P,
     iter: &I,
     rest: Input<'a>,
@@ -299,6 +299,10 @@ where
     }
 }
 
-fn is_ident_quote(c: char) -> bool {
+pub(crate) fn is_ident_quote(c: char) -> bool {
     c == '"' || c == '`'
+}
+
+pub(crate) fn is_string_quote(c: char) -> bool {
+    c == '\'' || c == '"'
 }

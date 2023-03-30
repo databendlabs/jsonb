@@ -77,7 +77,3 @@ pub struct WithSpan<'a, T> {
     pub(crate) span: Input<'a>,
     pub(crate) elem: T,
 }
-
-pub fn is_string_quote(c: char) -> bool {
-    c == '\'' || c == '"'
-}
