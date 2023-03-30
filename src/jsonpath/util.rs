@@ -29,6 +29,7 @@ use crate::jsonpath::parser::token::*;
 //use crate::jsonpath::util::rule;
 use crate::jsonpath::Error;
 use crate::jsonpath::ErrorKind;
+use crate::rule;
 
 pub type IResult<'a, Output> = nom::IResult<Input<'a>, Output, Error<'a>>;
 

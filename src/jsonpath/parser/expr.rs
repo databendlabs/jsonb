@@ -33,10 +33,10 @@ use crate::jsonpath::input::WithSpan;
 use crate::jsonpath::parser::token::*;
 use crate::jsonpath::parser::unescape::unescape;
 //use crate::jsonpath::util::rule;
-use crate::rule;
 use crate::jsonpath::util::*;
 use crate::jsonpath::Error;
 use crate::jsonpath::ErrorKind;
+use crate::rule;
 
 pub fn expr(i: Input) -> IResult<Expr> {
     context("expression", subexpr(0))(i)
@@ -360,7 +360,7 @@ pub fn literal_i64(i: Input) -> IResult<i64> {
         rule! {
             LiteralInteger
         },
-        |token| Ok(i64::from_str_radix(token.text(), 10)?),
+        |token| Ok(token.text().parse::<i64>()?),
     )(i)
 }
 

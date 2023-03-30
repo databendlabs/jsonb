@@ -12,10 +12,67 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod ast;
 mod expr;
 mod json_path;
 
-pub use ast::*;
 pub use expr::*;
 pub use json_path::*;
+
+use std::fmt::Display;
+use std::fmt::Formatter;
+
+use crate::jsonpath::exception::Span;
+
+// Identifier of field
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identifier {
+    pub name: String,
+    pub quote: Option<char>,
+    pub span: Span,
+}
+
+impl Identifier {
+    pub fn is_quoted(&self) -> bool {
+        self.quote.is_some()
+    }
+}
+
+impl Display for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(c) = self.quote {
+            write!(f, "{}", c)?;
+            write!(f, "{}", self.name)?;
+            write!(f, "{}", c)
+        } else {
+            write!(f, "{}", self.name)
+        }
+    }
+}
+
+/// Write input items into `1, 2, 3`
+pub(crate) fn write_comma_separated_list(
+    f: &mut Formatter<'_>,
+    items: impl IntoIterator<Item = impl Display>,
+) -> std::fmt::Result {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{item}")?;
+    }
+    Ok(())
+}
+
+/// Write input items into `'a', 'b', 'c'`
+pub(crate) fn write_quoted_comma_separated_list(
+    f: &mut Formatter<'_>,
+    items: impl IntoIterator<Item = impl Display>,
+) -> std::fmt::Result {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "'{item}'")?;
+    }
+    Ok(())
+}

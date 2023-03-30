@@ -25,8 +25,9 @@ use super::ser::Encoder;
 pub type Object<'a> = BTreeMap<String, Value<'a>>;
 
 // JSONB value
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Default, Eq)]
 pub enum Value<'a> {
+    #[default]
     Null,
     Bool(bool),
     String(Cow<'a, str>),
@@ -102,13 +103,6 @@ impl<'a> Display for Value<'a> {
                 write!(f, "}}")
             }
         }
-    }
-}
-
-impl Default for Value<'_> {
-    #[inline]
-    fn default() -> Self {
-        Value::Null
     }
 }
 

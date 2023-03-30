@@ -22,11 +22,9 @@ mod input;
 pub use input::Input;
 
 mod util;
-//pub use util::rule;
 pub use util::match_text;
 pub use util::match_token;
 
 pub mod ast;
 pub mod exception;
 pub mod parser;
-

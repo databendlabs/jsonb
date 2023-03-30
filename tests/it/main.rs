@@ -15,5 +15,5 @@
 mod decode;
 mod encode;
 mod functions;
-mod parser;
 mod jsonpath_parser;
+mod parser;

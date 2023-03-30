@@ -271,10 +271,7 @@ impl TokenKind {
     }
 
     pub fn is_reserved_ident(&self) -> bool {
-        match self {
-            TokenKind::AND | TokenKind::OR => true,
-            _ => false,
-        }
+        matches!(self, TokenKind::AND | TokenKind::OR)
     }
 }
 

@@ -21,12 +21,12 @@ mod from;
 mod functions;
 mod jentry;
 mod json_path;
+pub mod jsonpath;
 mod number;
 mod parser;
 mod ser;
 mod util;
 mod value;
-pub mod jsonpath;
 
 pub use de::from_slice;
 pub use error::Error;
