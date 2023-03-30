@@ -123,55 +123,55 @@ impl Display for BinaryOperator {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             BinaryOperator::Plus => {
-                write!(f, " + ")
+                write!(f, "+")
             }
             BinaryOperator::Minus => {
-                write!(f, " - ")
+                write!(f, "-")
             }
             BinaryOperator::Multiply => {
-                write!(f, " * ")
+                write!(f, "*")
             }
             BinaryOperator::Divide => {
-                write!(f, " / ")
+                write!(f, "/")
             }
             BinaryOperator::Modulo => {
-                write!(f, " % ")
+                write!(f, "%")
             }
             BinaryOperator::Gt => {
-                write!(f, " > ")
+                write!(f, ">")
             }
             BinaryOperator::Lt => {
-                write!(f, " < ")
+                write!(f, "<")
             }
             BinaryOperator::Gte => {
-                write!(f, " >= ")
+                write!(f, ">=")
             }
             BinaryOperator::Lte => {
-                write!(f, " <= ")
+                write!(f, "<=")
             }
             BinaryOperator::Eq => {
-                write!(f, " = ")
+                write!(f, "=")
             }
             BinaryOperator::NotEq => {
-                write!(f, " <> ")
+                write!(f, "<>")
             }
             BinaryOperator::And => {
-                write!(f, " AND ")
+                write!(f, "AND")
             }
             BinaryOperator::Or => {
-                write!(f, " OR ")
+                write!(f, "OR")
             }
             BinaryOperator::In => {
-                write!(f, " IN ")
+                write!(f, "IN")
             }
             BinaryOperator::Nin => {
-                write!(f, " NIN ")
+                write!(f, "NIN")
             }
             BinaryOperator::Subsetof => {
-                write!(f, " SUBSETOF ")
+                write!(f, "SUBSETOF")
             }
             BinaryOperator::Contains => {
-                write!(f, " CONTAINS ")
+                write!(f, "CONTAINS")
             }
         }
     }
@@ -220,13 +220,10 @@ impl Display for Expr {
             Expr::BinaryOp {
                 op, left, right, ..
             } => {
-                write!(f, "{}", left)?;
-                write!(f, "{}", op)?;
-                write!(f, "{}", right)?;
+                write!(f, "{left} {op} {right}")?;
             }
             Expr::UnaryOp { op, expr, .. } => {
-                write!(f, "{}", op)?;
-                write!(f, "{}", expr)?;
+                write!(f, "{op}{expr}")?;
             }
         }
 

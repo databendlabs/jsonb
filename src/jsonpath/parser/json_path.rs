@@ -18,7 +18,6 @@ use crate::jsonpath::ast::*;
 use crate::jsonpath::input::Input;
 use crate::jsonpath::parser::expr::*;
 use crate::jsonpath::parser::token::*;
-//use crate::jsonpath::rule;
 use crate::rule;
 
 use crate::jsonpath::util::*;

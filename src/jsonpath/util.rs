@@ -23,12 +23,11 @@ use pratt::PrattParser;
 use pratt::Precedence;
 
 use crate::jsonpath::ast::Identifier;
+use crate::jsonpath::error::Error;
+use crate::jsonpath::error::ErrorKind;
 use crate::jsonpath::input::Input;
 use crate::jsonpath::input::WithSpan;
 use crate::jsonpath::parser::token::*;
-//use crate::jsonpath::util::rule;
-use crate::jsonpath::Error;
-use crate::jsonpath::ErrorKind;
 use crate::rule;
 
 pub type IResult<'a, Output> = nom::IResult<Input<'a>, Output, Error<'a>>;
@@ -36,8 +35,8 @@ pub type IResult<'a, Output> = nom::IResult<Input<'a>, Output, Error<'a>>;
 #[macro_export]
 macro_rules! rule {
     ($($tt:tt)*) => { nom_rule::rule!(
-        $crate::jsonpath::match_text,
-        $crate::jsonpath::match_token,
+        $crate::jsonpath::util::match_text,
+        $crate::jsonpath::util::match_token,
         $($tt)*)
     }
 }

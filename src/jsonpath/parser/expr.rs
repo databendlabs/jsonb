@@ -24,18 +24,15 @@ use pratt::Associativity;
 use pratt::PrattParser;
 use pratt::Precedence;
 
-use crate::jsonpath::ast::Path;
-
 use crate::jsonpath::ast::*;
+use crate::jsonpath::error::Error;
+use crate::jsonpath::error::ErrorKind;
 use crate::jsonpath::input::is_string_quote;
 use crate::jsonpath::input::Input;
 use crate::jsonpath::input::WithSpan;
 use crate::jsonpath::parser::token::*;
 use crate::jsonpath::parser::unescape::unescape;
-//use crate::jsonpath::util::rule;
 use crate::jsonpath::util::*;
-use crate::jsonpath::Error;
-use crate::jsonpath::ErrorKind;
 use crate::rule;
 
 pub fn expr(i: Input) -> IResult<Expr> {

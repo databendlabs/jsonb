@@ -17,24 +17,20 @@ pub mod json_path;
 pub mod token;
 pub mod unescape;
 
-pub use token::all_reserved_keywords;
-
+use crate::jsonpath::ast::JsonPath;
+use crate::jsonpath::error::display_parser_error;
+use crate::jsonpath::error::Backtrace;
 use crate::jsonpath::exception::ErrorCode;
 use crate::jsonpath::exception::Result;
-
-use crate::jsonpath::display_parser_error;
-use crate::jsonpath::parser::json_path::json_path;
-
-use crate::jsonpath::ast::JsonPath;
 use crate::jsonpath::input::Input;
+use crate::jsonpath::parser::json_path::json_path;
 use crate::jsonpath::parser::token::Token;
 use crate::jsonpath::parser::token::TokenKind;
 use crate::jsonpath::parser::token::Tokenizer;
 use crate::jsonpath::util::transform_span;
-use crate::jsonpath::Backtrace;
 
-pub fn tokenize(sql: &str) -> Result<Vec<Token>> {
-    Tokenizer::new(sql).collect::<Result<Vec<_>>>()
+pub fn tokenize(json_path: &str) -> Result<Vec<Token>> {
+    Tokenizer::new(json_path).collect::<Result<Vec<_>>>()
 }
 
 /// Parse a json path string into `JsonPath`.

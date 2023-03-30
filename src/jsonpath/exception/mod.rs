@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod exception_code;
+#![allow(non_snake_case)]
+
 mod span;
 
 pub use span::pretty_print_error;
 pub use span::Range;
 pub use span::Span;
-
-//#![allow(non_snake_case)]
 
 use std::backtrace::Backtrace;
 use std::backtrace::BacktraceStatus;
@@ -126,18 +125,18 @@ impl ErrorCode {
         self.span
     }
 
-    /// Set sql span for this error.
+    /// Set span for this error.
     ///
     /// Used to pretty print the error when the error is related to a sql statement.
     pub fn set_span(self, span: Span) -> Self {
         Self { span, ..self }
     }
 
-    /// Pretty display the error message onto sql statement if span is available.
-    pub fn display_with_sql(mut self, sql: &str) -> Self {
+    /// Pretty display the error message onto json path if span is available.
+    pub fn display_with_json_path(mut self, json_path: &str) -> Self {
         if let Some(span) = self.span.take() {
             self.display_text =
-                pretty_print_error(sql, vec![(span, self.display_text.to_string())]);
+                pretty_print_error(json_path, vec![(span, self.display_text.to_string())]);
         }
         self
     }
@@ -292,4 +291,63 @@ impl Clone for ErrorCode {
     fn clone(&self) -> Self {
         ErrorCode::create(self.code(), self.message(), None, self.backtrace()).set_span(self.span())
     }
+}
+
+macro_rules! build_exceptions {
+    ($($(#[$meta:meta])* $body:ident($code:expr)),*$(,)*) => {
+        impl ErrorCode {
+            $(
+
+                paste::item! {
+                    $(
+                        #[$meta]
+                    )*
+                    pub const [< $body:snake:upper >]: u16 = $code;
+                }
+                $(
+                    #[$meta]
+                )*
+                pub fn $body(display_text: impl Into<String>) -> ErrorCode {
+                    let bt = Some(ErrorCodeBacktrace::Origin(Arc::new(Backtrace::capture())));
+                    ErrorCode::create(
+                        $code,
+                        display_text.into(),
+                        None,
+                        bt,
+                    )
+                }
+            )*
+        }
+    }
+}
+
+// Internal errors [0, 2000].
+build_exceptions! {
+    Ok(0),
+
+    /// Internal means this is the internal error that no action
+    /// can be taken by neither developers or users.
+    /// In most of the time, they are code bugs.
+    ///
+    /// If there is an error that are unexpected and no other actions
+    /// to taken, please use this error code.
+    ///
+    /// # Notes
+    ///
+    /// This error should never be used to for error checking. An error
+    /// that returns as internal error could be assigned a separate error
+    /// code at anytime.
+    Internal(1001),
+
+    /// Unimplemented means this is a not implemented feature.
+    ///
+    /// Developers could implement the feature to resolve this error at anytime,
+    ///
+    /// # Notes
+    ///
+    /// It's OK to use this error code for not implemetned feature in
+    /// our dependences. For example, in arrow.
+    Unimplemented(1002),
+
+    SyntaxException(1005),
 }

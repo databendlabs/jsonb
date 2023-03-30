@@ -14,7 +14,6 @@
 
 use logos::Lexer;
 use logos::Logos;
-use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 use crate::jsonpath::exception::ErrorCode;
@@ -114,10 +113,6 @@ pub enum TokenKind {
     #[regex(r#"'([^'\\]|\\.|'')*'"#)]
     QuotedString,
 
-    //#[regex(r"[xX]'[a-fA-F0-9]*'")]
-    //PGLiteralHex,
-    //#[regex(r"0[xX][a-fA-F0-9]+")]
-    //MySQLLiteralHex,
     #[regex(r"-?[0-9]+")]
     LiteralInteger,
 
@@ -186,10 +181,8 @@ pub enum TokenKind {
     LBrace,
     #[token("}")]
     RBrace,
-    /// AtSign `@` used for PostgreSQL abs operator
     #[token("@")]
     AtSign,
-    /// Placeholder used in prepared stmt
     #[token("?")]
     Placeholder,
 
@@ -227,7 +220,6 @@ pub enum TokenKind {
     EMPTY,
 }
 
-// Reference: https://www.postgresql.org/docs/current/sql-keywords-appendix.html
 impl TokenKind {
     pub fn is_keyword(&self) -> bool {
         !matches!(
@@ -273,12 +265,4 @@ impl TokenKind {
     pub fn is_reserved_ident(&self) -> bool {
         matches!(self, TokenKind::AND | TokenKind::OR)
     }
-}
-
-pub fn all_reserved_keywords() -> Vec<String> {
-    let mut result = Vec::new();
-    for token in TokenKind::iter() {
-        result.push(format!("{:?}", token));
-    }
-    result
 }

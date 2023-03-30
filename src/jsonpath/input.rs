@@ -17,8 +17,8 @@ use std::ops::RangeFrom;
 use std::ops::RangeFull;
 use std::ops::RangeTo;
 
+use crate::jsonpath::error::Backtrace;
 use crate::jsonpath::parser::token::Token;
-use crate::jsonpath::Backtrace;
 
 /// Input tokens slice with a backtrace that records all errors including
 /// the optional branch.

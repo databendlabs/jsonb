@@ -118,7 +118,7 @@ pub struct JsonPath {
 impl Display for JsonPath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for item in &self.items {
-            write!(f, "{}", item)?;
+            write!(f, "{item}")?;
         }
         Ok(())
     }

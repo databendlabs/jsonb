@@ -61,7 +61,7 @@ pub fn pretty_print_error(source: &str, labels: Vec<(Range, String)>) -> String 
     use codespan_reporting::term::Config;
 
     let mut writer = Buffer::no_color();
-    let file = SimpleFile::new("SQL", source);
+    let file = SimpleFile::new("JsonPath", source);
     let config = Config {
         chars: Chars::ascii(),
         before_label_lines: 3,
