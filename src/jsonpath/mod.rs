@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod ast;
-mod error;
-mod exception;
-mod input;
 mod parser;
-mod util;
+mod path;
 
-pub use ast::*;
-pub use parser::*;
+pub use parser::parse_json_path;
+pub use path::*;

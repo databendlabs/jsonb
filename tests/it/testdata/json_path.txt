@@ -4,66 +4,211 @@ $
 $
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: Root,
+    paths: [
+        Root,
+    ],
+}
+
+
+---------- Input ----------
+$.*
+---------- Output ---------
+$.*
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$..*
+---------- Output ---------
+$..*
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$[*]
+---------- Output ---------
+$[*]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        BracketWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[0].price
+---------- Output ---------
+$.store.book[0].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArrayIndex(
+            0,
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[-1].isbn
+---------- Output ---------
+$.store.book[-1].isbn
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArrayIndex(
+            -1,
+        ),
+        DotField(
+            "isbn",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$..book[0,1].price
+---------- Output ---------
+$..book[0, 1].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArrayIndices(
+            [
+                0,
+                1,
+            ],
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$..book[0:2]
+---------- Output ---------
+$..book[0:2]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                0,
+            ),
+            end: Some(
+                2,
+            ),
+            step: None,
         },
     ],
 }
 
 
 ---------- Input ----------
-.*
+$..book[:2]
 ---------- Output ---------
-.*
+$..book[:2]
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: DotWildcard,
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: Some(
+                2,
+            ),
+            step: None,
         },
     ],
 }
 
 
 ---------- Input ----------
-..*
+$..book[-2:]
 ---------- Output ---------
-..*
+$..book[-2:]
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: DescentWildcard,
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                -2,
+            ),
+            end: None,
+            step: None,
         },
     ],
 }
 
 
 ---------- Input ----------
-[*]
+$..book[0:4:2]
 ---------- Output ---------
-[*]
+$..book[0:4:2]
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: BracketWildcard,
-        },
-    ],
-}
-
-
----------- Input ----------
-.abc
----------- Output ---------
-.abc
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: DotField(
-                "abc",
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                0,
+            ),
+            end: Some(
+                4,
+            ),
+            step: Some(
+                2,
             ),
         },
     ],
@@ -71,423 +216,184 @@ JsonPath {
 
 
 ---------- Input ----------
-..def
+$..book[:]['category']
 ---------- Output ---------
-..def
+$..book[:]['category']
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: DescentField(
-                "def",
-            ),
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: None,
+            step: None,
         },
+        ObjectField(
+            "category",
+        ),
     ],
 }
 
 
 ---------- Input ----------
-$.store.bicycle.color
+$..book[*]['category', 'author']
 ---------- Output ---------
-$.store.bicycle.color
+$..book[*]['category', 'author']
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DotField(
-                "store",
-            ),
-        },
-        Path {
-            path: DotField(
-                "bicycle",
-            ),
-        },
-        Path {
-            path: DotField(
-                "color",
-            ),
-        },
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        BracketWildcard,
+        ObjectFields(
+            [
+                "category",
+                "author",
+            ],
+        ),
     ],
 }
 
 
 ---------- Input ----------
-['key']
+$.store.book[?(@.isbn)].price
 ---------- Output ---------
-['key']
+$.store.book[?(@.isbn)].price
 ---------- AST ------------
 JsonPath {
-    items: [
-        Path {
-            path: ObjectFields(
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            Paths(
                 [
-                    "key",
-                ],
-            ),
-        },
-    ],
-}
-
-
----------- Input ----------
-['abc','def']
----------- Output ---------
-['abc', 'def']
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ObjectFields(
-                [
-                    "abc",
-                    "def",
-                ],
-            ),
-        },
-    ],
-}
-
-
----------- Input ----------
-[0]
----------- Output ---------
-[0]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArrayIndices(
-                [
-                    0,
-                ],
-            ),
-        },
-    ],
-}
-
-
----------- Input ----------
-[1,2,3]
----------- Output ---------
-[1, 2, 3]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArrayIndices(
-                [
-                    1,
-                    2,
-                    3,
-                ],
-            ),
-        },
-    ],
-}
-
-
----------- Input ----------
-[1:]
----------- Output ---------
-[1:]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArraySlice {
-                start: Some(
-                    1,
-                ),
-                end: None,
-                step: None,
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-[:7]
----------- Output ---------
-[:7]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArraySlice {
-                start: None,
-                end: Some(
-                    7,
-                ),
-                step: None,
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-[1:7]
----------- Output ---------
-[1:7]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArraySlice {
-                start: Some(
-                    1,
-                ),
-                end: Some(
-                    7,
-                ),
-                step: None,
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-[1:7:2]
----------- Output ---------
-[1:7:2]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: ArraySlice {
-                start: Some(
-                    1,
-                ),
-                end: Some(
-                    7,
-                ),
-                step: Some(
-                    2,
-                ),
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-$..book[?('a'<  'b')]
----------- Output ---------
-$..book[?('a' < 'b')]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DescentField(
-                "book",
-            ),
-        },
-        FilterExpr {
-            expr: BinaryOp {
-                span: Some(
-                    13..14,
-                ),
-                op: Lt,
-                left: Literal {
-                    span: Some(
-                        10..13,
-                    ),
-                    lit: String(
-                        "a",
-                    ),
-                },
-                right: Literal {
-                    span: Some(
-                        16..19,
-                    ),
-                    lit: String(
-                        "b",
-                    ),
-                },
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-$..book[?(1<=2 and 'm' = 'v')]
----------- Output ---------
-$..book[?(1 <= 2 AND 'm' = 'v')]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DescentField(
-                "book",
-            ),
-        },
-        FilterExpr {
-            expr: BinaryOp {
-                span: Some(
-                    15..18,
-                ),
-                op: And,
-                left: BinaryOp {
-                    span: Some(
-                        11..13,
-                    ),
-                    op: Lte,
-                    left: Literal {
-                        span: Some(
-                            10..11,
-                        ),
-                        lit: Int64(
-                            1,
-                        ),
-                    },
-                    right: Literal {
-                        span: Some(
-                            13..14,
-                        ),
-                        lit: Int64(
-                            2,
-                        ),
-                    },
-                },
-                right: BinaryOp {
-                    span: Some(
-                        23..24,
-                    ),
-                    op: Eq,
-                    left: Literal {
-                        span: Some(
-                            19..22,
-                        ),
-                        lit: String(
-                            "m",
-                        ),
-                    },
-                    right: Literal {
-                        span: Some(
-                            25..28,
-                        ),
-                        lit: String(
-                            "v",
-                        ),
-                    },
-                },
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-$.price
----------- Output ---------
-$.price
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DotField(
-                "price",
-            ),
-        },
-    ],
-}
-
-
----------- Input ----------
-$.store.book[?($.price   > 10)]
----------- Output ---------
-$.store.book[?($.price > 10)]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DotField(
-                "store",
-            ),
-        },
-        Path {
-            path: DotField(
-                "book",
-            ),
-        },
-        FilterExpr {
-            expr: BinaryOp {
-                span: Some(
-                    25..26,
-                ),
-                op: Gt,
-                left: Paths {
-                    span: Some(
-                        15..22,
-                    ),
-                    paths: [
-                        Root,
-                        DotField(
-                            "price",
-                        ),
-                    ],
-                },
-                right: Literal {
-                    span: Some(
-                        27..29,
-                    ),
-                    lit: Int64(
-                        10,
-                    ),
-                },
-            },
-        },
-    ],
-}
-
-
----------- Input ----------
-$..book[?(@.isbn)]
----------- Output ---------
-$..book[?(@.isbn)]
----------- AST ------------
-JsonPath {
-    items: [
-        Path {
-            path: Root,
-        },
-        Path {
-            path: DescentField(
-                "book",
-            ),
-        },
-        FilterExpr {
-            expr: Paths {
-                span: Some(
-                    10..16,
-                ),
-                paths: [
                     Current,
                     DotField(
                         "isbn",
                     ),
                 ],
+            ),
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[?(@.price > 10)].title
+---------- Output ---------
+$.store.book[?(@.price > 10)].title
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            BinaryOp {
+                op: Gt,
+                left: Paths(
+                    [
+                        Current,
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+                right: Value(
+                    UInt64(
+                        10,
+                    ),
+                ),
             },
+        ),
+        DotField(
+            "title",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[?(@.price < $.expensive)].price
+---------- Output ---------
+$.store.book[?(@.price < $.expensive)].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            BinaryOp {
+                op: Lt,
+                left: Paths(
+                    [
+                        Current,
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+                right: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "expensive",
+                        ),
+                    ],
+                ),
+            },
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[:].price
+---------- Output ---------
+$.store.book[:].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: None,
+            step: None,
         },
+        DotField(
+            "price",
+        ),
     ],
 }
 

@@ -16,7 +16,6 @@ use std::io::Write;
 
 use goldenfile::Mint;
 use jsonb::jsonpath::parse_json_path;
-use jsonb::jsonpath::tokenize;
 
 #[test]
 fn test_json_path() {
@@ -24,30 +23,26 @@ fn test_json_path() {
     let mut file = mint.new_goldenfile("json_path.txt").unwrap();
     let cases = &[
         r#"$"#,
-        r#".*"#,
-        r#"..*"#,
-        r#"[*]"#,
-        r#".abc"#,
-        r#"..def"#,
-        r#"$.store.bicycle.color"#,
-        r#"['key']"#,
-        r#"['abc','def']"#,
-        r#"[0]"#,
-        r#"[1,2,3]"#,
-        r#"[1:]"#,
-        r#"[:7]"#,
-        r#"[1:7]"#,
-        r#"[1:7:2]"#,
-        r#"$..book[?('a'<  'b')]"#,
-        r#"$..book[?(1<=2 and 'm' = 'v')]"#,
-        r#"$.price"#,
-        r#"$.store.book[?($.price   > 10)]"#,
-        r#"$..book[?(@.isbn)]"#,
+        r#"$.*"#,
+        r#"$..*"#,
+        r#"$[*]"#,
+        r#"$.store.book[0].price"#,
+        r#"$.store.book[-1].isbn"#,
+        r#"$..book[0,1].price"#,
+        r#"$..book[0:2]"#,
+        r#"$..book[:2]"#,
+        r#"$..book[-2:]"#,
+        r#"$..book[0:4:2]"#,
+        r#"$..book[:]['category']"#,
+        r#"$..book[*]['category', 'author']"#,
+        r#"$.store.book[?(@.isbn)].price"#,
+        r#"$.store.book[?(@.price > 10)].title"#,
+        r#"$.store.book[?(@.price < $.expensive)].price"#,
+        r#"$.store.book[:].price"#,
     ];
 
     for case in cases {
-        let tokens = tokenize(case).unwrap();
-        let json_path = parse_json_path(&tokens).unwrap();
+        let json_path = parse_json_path(case).unwrap();
         writeln!(file, "---------- Input ----------").unwrap();
         writeln!(file, "{}", case).unwrap();
         writeln!(file, "---------- Output ---------").unwrap();
@@ -60,9 +55,6 @@ fn test_json_path() {
 
 #[test]
 fn test_json_path_error() {
-    let mut mint = Mint::new("tests/it/testdata");
-    let mut file = mint.new_goldenfile("json_path-error.txt").unwrap();
-
     let cases = &[
         r#"x"#,
         r#"$.["#,
@@ -79,11 +71,7 @@ fn test_json_path_error() {
     ];
 
     for case in cases {
-        let tokens = tokenize(case).unwrap();
-        let err = parse_json_path(&tokens).unwrap_err();
-        writeln!(file, "---------- Input ----------").unwrap();
-        writeln!(file, "{}", case).unwrap();
-        writeln!(file, "---------- Output ---------").unwrap();
-        writeln!(file, "{}", err.message()).unwrap();
+        let res = parse_json_path(case);
+        assert!(res.is_err());
     }
 }
