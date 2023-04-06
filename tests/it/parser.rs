@@ -267,6 +267,7 @@ fn test_parse_string() {
     ]);
 
     test_parse_ok(vec![
+        ("\"abc\"", Value::String(Cow::from("abc"))),
         ("\"n\"", Value::String(Cow::from("n"))),
         ("\"\\\"\"", Value::String(Cow::from("\""))),
         ("\"\\\\\"", Value::String(Cow::from("\\"))),

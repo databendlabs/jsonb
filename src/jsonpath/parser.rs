@@ -15,19 +15,21 @@
 use nom::{
     branch::alt,
     bytes::complete::{escaped, tag, tag_no_case},
-    character::complete::{alphanumeric1, char, i32, i64, multispace0, one_of, u32, u64},
+    character::complete::{alphanumeric1, char, i32, i64, multispace0, one_of, u64},
     combinator::{map, opt, value},
-    multi::{many1, separated_list1},
+    multi::{many0, separated_list1},
     number::complete::double,
-    sequence::{delimited, preceded, terminated, tuple},
+    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult,
 };
 
 use crate::error::Error;
 use crate::jsonpath::path::*;
+use crate::number::Number;
+use std::borrow::Cow;
 
 /// Parsing the input string to JSON Path.
-pub fn parse_json_path(input: &str) -> Result<JsonPath, Error> {
+pub fn parse_json_path(input: &[u8]) -> Result<JsonPath<'_>, Error> {
     match json_path(input) {
         Ok((rest, json_path)) => {
             if !rest.is_empty() {
@@ -40,24 +42,22 @@ pub fn parse_json_path(input: &str) -> Result<JsonPath, Error> {
     }
 }
 
-fn json_path(input: &str) -> IResult<&str, JsonPath> {
-    map(delimited(multispace0, many1(path), multispace0), |paths| {
+fn json_path(input: &[u8]) -> IResult<&[u8], JsonPath<'_>> {
+    map(delimited(multispace0, paths, multispace0), |paths| {
         JsonPath { paths }
     })(input)
 }
 
-fn raw_string(input: &str) -> IResult<&str, &str> {
+fn raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
     escaped(alphanumeric1, '\\', one_of("\"n\\"))(input)
 }
 
-fn string(input: &str) -> IResult<&str, &str> {
-    alt((
-        delimited(char('\''), raw_string, char('\'')),
-        delimited(char('"'), raw_string, char('"')),
-    ))(input)
+fn string(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    // TODO: support special characters and unicode characters.
+    delimited(char('"'), raw_string, char('"'))(input)
 }
 
-fn bracket_wildcard(input: &str) -> IResult<&str, ()> {
+fn bracket_wildcard(input: &[u8]) -> IResult<&[u8], ()> {
     value(
         (),
         delimited(
@@ -68,31 +68,18 @@ fn bracket_wildcard(input: &str) -> IResult<&str, ()> {
     )(input)
 }
 
-fn dot_field(input: &str) -> IResult<&str, &str> {
-    preceded(char('.'), alphanumeric1)(input)
+fn colon_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    preceded(char(':'), alphanumeric1)(input)
 }
 
-fn descent_field(input: &str) -> IResult<&str, &str> {
-    preceded(tag(".."), alphanumeric1)(input)
+fn dot_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    alt((
+        preceded(char('.'), alphanumeric1),
+        preceded(char('.'), string),
+    ))(input)
 }
 
-fn array_index(input: &str) -> IResult<&str, i32> {
-    delimited(
-        terminated(char('['), multispace0),
-        i32,
-        preceded(multispace0, char(']')),
-    )(input)
-}
-
-fn array_indices(input: &str) -> IResult<&str, Vec<i32>> {
-    delimited(
-        terminated(char('['), multispace0),
-        separated_list1(delimited(multispace0, char(','), multispace0), i32),
-        preceded(multispace0, char(']')),
-    )(input)
-}
-
-fn object_field(input: &str) -> IResult<&str, &str> {
+fn object_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
     delimited(
         terminated(char('['), multispace0),
         string,
@@ -100,119 +87,165 @@ fn object_field(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
-fn object_fields(input: &str) -> IResult<&str, Vec<&str>> {
+fn index(input: &[u8]) -> IResult<&[u8], Index> {
+    alt((
+        map(i32, Index::Index),
+        map(
+            preceded(
+                tuple((tag_no_case("last"), multispace0, char('-'), multispace0)),
+                i32,
+            ),
+            |v| Index::LastIndex(v.saturating_neg()),
+        ),
+        map(
+            preceded(
+                tuple((tag_no_case("last"), multispace0, char('+'), multispace0)),
+                i32,
+            ),
+            Index::LastIndex,
+        ),
+        map(tag_no_case("last"), |_| Index::LastIndex(0)),
+    ))(input)
+}
+
+fn array_index(input: &[u8]) -> IResult<&[u8], ArrayIndex> {
+    alt((
+        map(
+            separated_pair(
+                index,
+                delimited(multispace0, tag_no_case("to"), multispace0),
+                index,
+            ),
+            |(s, e)| ArrayIndex::Slice((s, e)),
+        ),
+        map(index, ArrayIndex::Index),
+    ))(input)
+}
+
+fn array_indices(input: &[u8]) -> IResult<&[u8], Vec<ArrayIndex>> {
     delimited(
         terminated(char('['), multispace0),
-        separated_list1(delimited(multispace0, char(','), multispace0), string),
+        separated_list1(delimited(multispace0, char(','), multispace0), array_index),
         preceded(multispace0, char(']')),
     )(input)
 }
 
-fn array_slice(input: &str) -> IResult<&str, Path> {
+fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
+    alt((
+        value(Path::DotWildcard, tag(".*")),
+        value(Path::BracketWildcard, bracket_wildcard),
+        map(colon_field, |v| {
+            Path::ColonField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        }),
+        map(dot_field, |v| {
+            Path::DotField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        }),
+        map(object_field, |v| {
+            Path::ObjectField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        }),
+        map(array_indices, Path::ArrayIndices),
+    ))(input)
+}
+
+// Compatible with Snowflake query syntax, the first field name does not require the leading period
+fn pre_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
+    alt((
+        value(Path::Root, char('$')),
+        map(delimited(multispace0, alphanumeric1, multispace0), |v| {
+            Path::DotField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        }),
+    ))(input)
+}
+
+fn path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
+    alt((
+        map(delimited(multispace0, inner_path, multispace0), |v| v),
+        map(delimited(multispace0, filter_expr, multispace0), |v| {
+            Path::FilterExpr(Box::new(v))
+        }),
+    ))(input)
+}
+
+fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     map(
-        delimited(
-            char('['),
-            tuple((
-                delimited(multispace0, opt(i32), multispace0),
-                char(':'),
-                delimited(multispace0, opt(i32), multispace0),
-                opt(preceded(
-                    char(':'),
-                    delimited(multispace0, u32, multispace0),
-                )),
-            )),
-            char(']'),
-        ),
-        |(opt_start, _, opt_end, opt_step)| Path::ArraySlice {
-            start: opt_start,
-            end: opt_end,
-            step: opt_step,
+        pair(opt(pre_path), many0(path)),
+        |(opt_pre_path, mut paths)| {
+            if let Some(pre_path) = opt_pre_path {
+                paths.insert(0, pre_path);
+            }
+            paths
         },
     )(input)
 }
 
-fn path(input: &str) -> IResult<&str, Path> {
-    alt((
-        value(Path::Root, char('$')),
-        value(Path::Current, char('@')),
-        value(Path::DotWildcard, tag(".*")),
-        value(Path::DescentWildcard, tag("..*")),
-        value(Path::BracketWildcard, bracket_wildcard),
-        map(dot_field, |v| Path::DotField(v.to_string())),
-        map(descent_field, |v| Path::DescentField(v.to_string())),
-        map(array_index, Path::ArrayIndex),
-        map(array_indices, Path::ArrayIndices),
-        map(object_field, |v| Path::ObjectField(v.to_string())),
-        map(object_fields, |v| {
-            let fields = v.iter().map(|s| s.to_string()).collect();
-            Path::ObjectFields(fields)
-        }),
-        map(array_slice, |v| v),
-        map(filter_expr, |v| Path::FilterExpr(Box::new(v))),
-    ))(input)
+fn expr_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+    map(
+        pair(
+            alt((
+                value(Path::Root, char('$')),
+                value(Path::Current, char('@')),
+            )),
+            many0(delimited(multispace0, inner_path, multispace0)),
+        ),
+        |(pre_path, mut paths)| {
+            paths.insert(0, pre_path);
+            paths
+        },
+    )(input)
 }
 
-fn filter_expr(input: &str) -> IResult<&str, Expr> {
+fn filter_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
     map(
         delimited(
-            tag("[?("),
-            delimited(multispace0, expr, multispace0),
-            tag(")]"),
+            delimited(char('?'), multispace0, char('(')),
+            delimited(multispace0, expr_or, multispace0),
+            char(')'),
         ),
         |v| v,
     )(input)
 }
 
-fn paths(input: &str) -> IResult<&str, Vec<Path>> {
-    many1(path)(input)
-}
-
-fn op(input: &str) -> IResult<&str, BinaryOperator> {
+fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
     alt((
         value(BinaryOperator::Eq, tag("==")),
         value(BinaryOperator::NotEq, tag("!=")),
-        value(BinaryOperator::Lt, tag("<")),
+        value(BinaryOperator::NotEq, tag("<>")),
+        value(BinaryOperator::Lt, char('<')),
         value(BinaryOperator::Lte, tag("<=")),
-        value(BinaryOperator::Gt, tag(">")),
+        value(BinaryOperator::Gt, char('>')),
         value(BinaryOperator::Gte, tag(">=")),
-        value(BinaryOperator::Match, tag("=~")),
-        value(BinaryOperator::In, tag_no_case("in")),
-        value(BinaryOperator::Nin, tag_no_case("nin")),
-        value(BinaryOperator::Subsetof, tag_no_case("subsetof")),
-        value(BinaryOperator::Anyof, tag_no_case("anyof")),
-        value(BinaryOperator::Noneof, tag_no_case("noneof")),
-        value(BinaryOperator::Size, tag_no_case("size")),
-        value(BinaryOperator::Empty, tag_no_case("empty")),
     ))(input)
 }
 
-fn path_value(input: &str) -> IResult<&str, PathValue> {
+fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
     alt((
         value(PathValue::Null, tag("null")),
         value(PathValue::Boolean(true), tag("true")),
         value(PathValue::Boolean(false), tag("false")),
-        map(u64, PathValue::UInt64),
-        map(i64, PathValue::Int64),
-        map(double, PathValue::Float64),
-        map(string, |v| PathValue::String(v.to_string())),
+        map(u64, |v| PathValue::Number(Number::UInt64(v))),
+        map(i64, |v| PathValue::Number(Number::Int64(v))),
+        map(double, |v| PathValue::Number(Number::Float64(v))),
+        map(string, |v| {
+            PathValue::String(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        }),
     ))(input)
 }
 
-fn sub_expr(input: &str) -> IResult<&str, Expr> {
+fn inner_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
     alt((
-        map(paths, Expr::Paths),
+        map(expr_paths, Expr::Paths),
         map(path_value, |v| Expr::Value(Box::new(v))),
     ))(input)
 }
 
-fn expr(input: &str) -> IResult<&str, Expr> {
-    // TODO, support more complex expressions.
+fn expr_atom(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+    // TODO, support arithmetic expressions.
     alt((
         map(
             tuple((
-                delimited(multispace0, sub_expr, multispace0),
+                delimited(multispace0, inner_expr, multispace0),
                 op,
-                delimited(multispace0, sub_expr, multispace0),
+                delimited(multispace0, inner_expr, multispace0),
             )),
             |(left, op, right)| Expr::BinaryOp {
                 op,
@@ -220,6 +253,47 @@ fn expr(input: &str) -> IResult<&str, Expr> {
                 right: Box::new(right),
             },
         ),
-        map(sub_expr, |v| v),
+        map(
+            delimited(
+                terminated(char('('), multispace0),
+                expr_or,
+                preceded(multispace0, char(')')),
+            ),
+            |expr| expr,
+        ),
     ))(input)
+}
+
+fn expr_and(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+    map(
+        separated_list1(delimited(multispace0, tag("&&"), multispace0), expr_atom),
+        |exprs| {
+            let mut expr = exprs[0].clone();
+            for right in exprs.iter().skip(1) {
+                expr = Expr::BinaryOp {
+                    op: BinaryOperator::And,
+                    left: Box::new(expr),
+                    right: Box::new(right.clone()),
+                };
+            }
+            expr
+        },
+    )(input)
+}
+
+fn expr_or(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+    map(
+        separated_list1(delimited(multispace0, tag("||"), multispace0), expr_and),
+        |exprs| {
+            let mut expr = exprs[0].clone();
+            for right in exprs.iter().skip(1) {
+                expr = Expr::BinaryOp {
+                    op: BinaryOperator::Or,
+                    left: Box::new(expr),
+                    right: Box::new(right.clone()),
+                };
+            }
+            expr
+        },
+    )(input)
 }

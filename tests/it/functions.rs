@@ -17,10 +17,12 @@ use std::cmp::Ordering;
 
 use jsonb::{
     array_length, as_bool, as_null, as_number, as_str, build_array, build_object, compare,
-    from_slice, get_by_name_ignore_case, get_by_path, is_array, is_object, object_keys,
-    parse_json_path, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64, Error,
-    JsonPathRef, Number, Object, Value,
+    from_slice, get_by_index, get_by_name, get_by_name_ignore_case, get_by_path, is_array,
+    is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64,
+    Number, Object, Value,
 };
+
+use jsonb::jsonpath::parse_json_path;
 
 #[test]
 fn test_build_array() {
@@ -135,39 +137,128 @@ fn test_array_length() {
 
 #[test]
 fn test_get_by_path() {
-    let sources = vec![
-        (r#"1234"#, vec![JsonPathRef::UInt64(0)], None),
-        (r#"[]"#, vec![JsonPathRef::UInt64(0)], None),
+    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}]}"#;
+
+    let paths = vec![
+        (r#"$.name"#, vec![r#""Fred""#]),
         (
-            r#"["a","b","c"]"#,
-            vec![JsonPathRef::UInt64(0)],
-            Some(Value::String(Cow::from("a"))),
+            r#"$.phones"#,
+            vec![r#"[{"type":"home","number":3720453},{"type":"work","number":5062051}]"#],
         ),
+        (r#"$.phones.*"#, vec![]),
         (
-            r#"{"k1":["a","b","c"], "k2":{"k3":3,"k4":4}}"#,
-            vec![JsonPathRef::String(Cow::from("k1")), JsonPathRef::UInt64(0)],
-            Some(Value::String(Cow::from("a"))),
-        ),
-        (
-            r#"{"k1":["a","b","c"], "k2":{"k3":"v3","k4":"v4"}}"#,
+            r#"$.phones[*]"#,
             vec![
-                JsonPathRef::String(Cow::from("k2")),
-                JsonPathRef::String(Cow::from("k3")),
+                r#"{"type":"home","number":3720453}"#,
+                r#"{"type":"work","number":5062051}"#,
             ],
-            Some(Value::String(Cow::from("v3"))),
+        ),
+        (r#"$.phones[0].*"#, vec![r#"3720453"#, r#""home""#]),
+        (r#"$.phones[0].type"#, vec![r#""home""#]),
+        (r#"$.phones[*].type[*]"#, vec![r#""home""#, r#""work""#]),
+        (
+            r#"$.phones[0 to last].number"#,
+            vec![r#"3720453"#, r#"5062051"#],
+        ),
+        (
+            r#"$.phones[0 to last]?(4 == 4)"#,
+            vec![
+                r#"{"type":"home","number":3720453}"#,
+                r#"{"type":"work","number":5062051}"#,
+            ],
+        ),
+        (
+            r#"$.phones[0 to last]?(@.type == "home")"#,
+            vec![r#"{"type":"home","number":3720453}"#],
+        ),
+        (
+            r#"$.phones[0 to last]?(@.number == 3720453)"#,
+            vec![r#"{"type":"home","number":3720453}"#],
+        ),
+        (
+            r#"$.phones[0 to last]?(@.number == 3720453 || @.type == "work")"#,
+            vec![
+                r#"{"type":"home","number":3720453}"#,
+                r#"{"type":"work","number":5062051}"#,
+            ],
+        ),
+        (
+            r#"$.phones[0 to last]?(@.number == 3720453 && @.type == "work")"#,
+            vec![],
         ),
     ];
 
     let mut buf: Vec<u8> = Vec::new();
-    for (s, paths, expect) in sources {
-        let res = get_by_path(s.as_bytes(), paths.clone());
+    let value = parse_value(source.as_bytes()).unwrap();
+    value.write_to_vec(&mut buf);
+    for (path, expects) in paths {
+        let json_path = parse_json_path(path.as_bytes()).unwrap();
+        let res = get_by_path(&buf, json_path);
+        assert_eq!(res.len(), expects.len());
+        for (val, expect) in res.into_iter().zip(expects.iter()) {
+            let mut val_buf: Vec<u8> = Vec::new();
+            let val_expect = parse_value(expect.as_bytes()).unwrap();
+            val_expect.write_to_vec(&mut val_buf);
+            assert_eq!(val, val_buf);
+        }
+    }
+}
+
+#[test]
+fn test_get_by_index() {
+    let sources = vec![
+        (r#"1234"#, 0, None),
+        (r#"[]"#, 0, None),
+        (r#"[1,2,3]"#, 1, Some(Value::Number(Number::UInt64(2)))),
+        (r#"["a","b","c"]"#, 0, Some(Value::String(Cow::from("a")))),
+    ];
+
+    let mut buf: Vec<u8> = Vec::new();
+    for (s, idx, expect) in sources {
+        let res = get_by_index(s.as_bytes(), idx);
         match expect.clone() {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
         }
         let value = parse_value(s.as_bytes()).unwrap();
         value.write_to_vec(&mut buf);
-        let res = get_by_path(&buf, paths);
+        let res = get_by_index(&buf, idx);
+        match expect {
+            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
+            None => assert_eq!(res, None),
+        }
+        buf.clear();
+    }
+}
+
+#[test]
+fn test_get_by_name() {
+    let sources = vec![
+        (r#"true"#, "a".to_string(), None),
+        (r#"[1,2,3]"#, "a".to_string(), None),
+        (r#"{"a":"v1","b":[1,2,3]}"#, "k".to_string(), None),
+        (
+            r#"{"Aa":"v1", "aA":"v2", "aa":"v3"}"#,
+            "aa".to_string(),
+            Some(Value::String(Cow::from("v3"))),
+        ),
+        (
+            r#"{"Aa":"v1", "aA":"v2", "aa":"v3"}"#,
+            "AA".to_string(),
+            None,
+        ),
+    ];
+
+    let mut buf: Vec<u8> = Vec::new();
+    for (s, name, expect) in sources {
+        let res = get_by_name(s.as_bytes(), &name);
+        match expect.clone() {
+            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
+            None => assert_eq!(res, None),
+        }
+        let value = parse_value(s.as_bytes()).unwrap();
+        value.write_to_vec(&mut buf);
+        let res = get_by_name(&buf, &name);
         match expect {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
@@ -330,61 +421,6 @@ fn test_compare() {
 
         lbuf.clear();
         rbuf.clear();
-    }
-}
-
-#[test]
-fn test_parse_json_path() {
-    let sources = vec![
-        (
-            r#"[1][2]"#,
-            vec![JsonPathRef::UInt64(1), JsonPathRef::UInt64(2)],
-        ),
-        (
-            r#"["k1"]["k2"]"#,
-            vec![
-                JsonPathRef::String(Cow::from("k1")),
-                JsonPathRef::String(Cow::from("k2")),
-            ],
-        ),
-        (
-            r#"k1.k2:k3"#,
-            vec![
-                JsonPathRef::String(Cow::from("k1")),
-                JsonPathRef::String(Cow::from("k2")),
-                JsonPathRef::String(Cow::from("k3")),
-            ],
-        ),
-        ("\"k1\"", vec![JsonPathRef::String(Cow::from("k1"))]),
-        ("\"k_1\"", vec![JsonPathRef::String(Cow::from("k_1"))]),
-        ("\"k_1k_2\"", vec![JsonPathRef::String(Cow::from("k_1k_2"))]),
-        ("\"k1k2\"", vec![JsonPathRef::String(Cow::from("k1k2"))]),
-        (
-            r#"k1["k2"][1]"#,
-            vec![
-                JsonPathRef::String(Cow::from("k1")),
-                JsonPathRef::String(Cow::from("k2")),
-                JsonPathRef::UInt64(1),
-            ],
-        ),
-    ];
-
-    for (s, expect) in sources {
-        let path = parse_json_path(s.as_bytes()).unwrap();
-        assert_eq!(&path[..], &expect[..]);
-    }
-
-    let wrong_sources = vec![
-        (r#"\"\"\\k1\"\""#, Error::InvalidToken),
-        (r#"\\k1\\'"#, Error::InvalidToken),
-        (r#"\"kk\"1\""#, Error::InvalidToken),
-    ];
-    for (s, expect) in wrong_sources {
-        let path = parse_json_path(s.as_bytes());
-        match path {
-            Ok(_) => println!(),
-            Err(_) => assert_eq!(Error::InvalidToken, expect),
-        }
     }
 }
 

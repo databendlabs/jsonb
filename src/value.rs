@@ -18,7 +18,6 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use super::json_path::JsonPathRef;
 use super::number::Number;
 use super::ser::Encoder;
 
@@ -217,40 +216,6 @@ impl<'a> Value<'a> {
         let mut buf = Vec::new();
         self.write_to_vec(&mut buf);
         buf
-    }
-
-    pub fn get_by_path(&self, paths: &[JsonPathRef<'a>]) -> Option<&Value<'a>> {
-        if paths.is_empty() {
-            return None;
-        }
-        let path = paths.get(0).unwrap();
-        match path {
-            JsonPathRef::String(name) => {
-                if let Some(obj) = self.as_object() {
-                    if let Some(val) = obj.get(name.as_ref()) {
-                        let val = if paths.len() == 1 {
-                            Some(val)
-                        } else {
-                            val.get_by_path(paths.get(1..).unwrap())
-                        };
-                        return val;
-                    }
-                }
-            }
-            JsonPathRef::UInt64(index) => {
-                if let Some(arr) = self.as_array() {
-                    if let Some(val) = arr.get(*index as usize) {
-                        let val = if paths.len() == 1 {
-                            Some(val)
-                        } else {
-                            val.get_by_path(paths.get(1..).unwrap())
-                        };
-                        return val;
-                    }
-                }
-            }
-        }
-        None
     }
 
     pub fn get_by_name_ignore_case(&self, name: &str) -> Option<&Value<'a>> {
