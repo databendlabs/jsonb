@@ -79,6 +79,8 @@ pub enum Error {
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
 
+    InvalidJsonPath,
+
     Syntax(ParseErrorCode, usize),
 }
 

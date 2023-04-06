@@ -12,27 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(clippy::uninlined_format_args)]
-
-mod constants;
-mod de;
-mod error;
-mod from;
-mod functions;
-mod jentry;
-mod json_path;
-pub mod jsonpath;
-mod number;
 mod parser;
-mod ser;
-mod util;
-mod value;
+mod path;
 
-pub use de::from_slice;
-pub use error::Error;
-pub use from::*;
-pub use functions::*;
-pub use json_path::*;
-pub use number::Number;
-pub use parser::parse_value;
-pub use value::*;
+pub use parser::parse_json_path;
+pub use path::*;

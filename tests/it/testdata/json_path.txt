@@ -1,0 +1,400 @@
+---------- Input ----------
+$
+---------- Output ---------
+$
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+    ],
+}
+
+
+---------- Input ----------
+$.*
+---------- Output ---------
+$.*
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$..*
+---------- Output ---------
+$..*
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$[*]
+---------- Output ---------
+$[*]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        BracketWildcard,
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[0].price
+---------- Output ---------
+$.store.book[0].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArrayIndex(
+            0,
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[-1].isbn
+---------- Output ---------
+$.store.book[-1].isbn
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArrayIndex(
+            -1,
+        ),
+        DotField(
+            "isbn",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$..book[0,1].price
+---------- Output ---------
+$..book[0, 1].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArrayIndices(
+            [
+                0,
+                1,
+            ],
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$..book[0:2]
+---------- Output ---------
+$..book[0:2]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                0,
+            ),
+            end: Some(
+                2,
+            ),
+            step: None,
+        },
+    ],
+}
+
+
+---------- Input ----------
+$..book[:2]
+---------- Output ---------
+$..book[:2]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: Some(
+                2,
+            ),
+            step: None,
+        },
+    ],
+}
+
+
+---------- Input ----------
+$..book[-2:]
+---------- Output ---------
+$..book[-2:]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                -2,
+            ),
+            end: None,
+            step: None,
+        },
+    ],
+}
+
+
+---------- Input ----------
+$..book[0:4:2]
+---------- Output ---------
+$..book[0:4:2]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: Some(
+                0,
+            ),
+            end: Some(
+                4,
+            ),
+            step: Some(
+                2,
+            ),
+        },
+    ],
+}
+
+
+---------- Input ----------
+$..book[:]['category']
+---------- Output ---------
+$..book[:]['category']
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: None,
+            step: None,
+        },
+        ObjectField(
+            "category",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$..book[*]['category', 'author']
+---------- Output ---------
+$..book[*]['category', 'author']
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DescentField(
+            "book",
+        ),
+        BracketWildcard,
+        ObjectFields(
+            [
+                "category",
+                "author",
+            ],
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[?(@.isbn)].price
+---------- Output ---------
+$.store.book[?(@.isbn)].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            Paths(
+                [
+                    Current,
+                    DotField(
+                        "isbn",
+                    ),
+                ],
+            ),
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[?(@.price > 10)].title
+---------- Output ---------
+$.store.book[?(@.price > 10)].title
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            BinaryOp {
+                op: Gt,
+                left: Paths(
+                    [
+                        Current,
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+                right: Value(
+                    UInt64(
+                        10,
+                    ),
+                ),
+            },
+        ),
+        DotField(
+            "title",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[?(@.price < $.expensive)].price
+---------- Output ---------
+$.store.book[?(@.price < $.expensive)].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        FilterExpr(
+            BinaryOp {
+                op: Lt,
+                left: Paths(
+                    [
+                        Current,
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+                right: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "expensive",
+                        ),
+                    ],
+                ),
+            },
+        ),
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[:].price
+---------- Output ---------
+$.store.book[:].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArraySlice {
+            start: None,
+            end: None,
+            step: None,
+        },
+        DotField(
+            "price",
+        ),
+    ],
+}
+
+
