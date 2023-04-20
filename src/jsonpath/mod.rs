@@ -14,6 +14,8 @@
 
 mod parser;
 mod path;
+mod selector;
 
 pub use parser::parse_json_path;
 pub use path::*;
+pub use selector::*;

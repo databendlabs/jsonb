@@ -20,10 +20,14 @@ use std::collections::VecDeque;
 use super::constants::*;
 use super::error::*;
 use super::jentry::JEntry;
-use super::json_path::JsonPathRef;
 use super::number::Number;
 use super::parser::decode_value;
 use super::value::Value;
+use crate::jsonpath::ArrayIndex;
+use crate::jsonpath::Index;
+use crate::jsonpath::JsonPath;
+use crate::jsonpath::Path;
+use crate::jsonpath::Selector;
 
 // builtin functions for `JSONB` bytes and `JSON` strings without decode all Values.
 // The input value must be valid `JSONB' or `JSON`.
@@ -134,7 +138,58 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
     }
 }
 
-/// Get the inner value by ignoring case name of `JSONB` object.
+/// Get the inner elements of `JSONB` value by JSON path.
+/// The return value may contains multiple matching elements.
+pub fn get_by_path<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Vec<Vec<u8>> {
+    let selector = Selector::new(json_path);
+    if !is_jsonb(value) {
+        let json_value = decode_value(value).unwrap();
+        let value = json_value.to_vec();
+        selector.select(value.as_slice())
+    } else {
+        selector.select(value)
+    }
+}
+
+/// Get the inner element of `JSONB` value by JSON path.
+/// If there are multiple matching elements, only the first one is returned
+pub fn get_by_path_first<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Option<Vec<u8>> {
+    let mut values = get_by_path(value, json_path);
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.remove(0))
+    }
+}
+
+/// Get the inner elements of `JSONB` value by JSON path.
+/// If there are multiple matching elements, return an `JSONB` Array.
+pub fn get_by_path_array<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Option<Vec<u8>> {
+    let values = get_by_path(value, json_path);
+    let mut array_value = Vec::new();
+    let items: Vec<_> = values.iter().map(|v| v.as_slice()).collect();
+    build_array(items, &mut array_value).unwrap();
+    Some(array_value)
+}
+
+/// Get the inner element of `JSONB` Array by index.
+pub fn get_by_index(value: &[u8], index: i32) -> Option<Vec<u8>> {
+    if index < 0 {
+        return None;
+    }
+    let path = Path::ArrayIndices(vec![ArrayIndex::Index(Index::Index(index))]);
+    let json_path = JsonPath { paths: vec![path] };
+    get_by_path_first(value, json_path)
+}
+
+/// Get the inner element of `JSONB` Object by key name.
+pub fn get_by_name(value: &[u8], name: &str) -> Option<Vec<u8>> {
+    let path = Path::DotField(Cow::Borrowed(name));
+    let json_path = JsonPath { paths: vec![path] };
+    get_by_path_first(value, json_path)
+}
+
+/// Get the inner element of `JSONB` Object by key name ignoring case.
 pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
     if !is_jsonb(value) {
         let json_value = decode_value(value).unwrap();
@@ -201,114 +256,6 @@ pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
         }
         _ => None,
     }
-}
-
-/// Get the inner value by JSON path of `JSONB` object.
-/// JSON path can be a nested index or name,
-/// used to get inner value of array and object respectively.
-pub fn get_by_path<'a>(value: &'a [u8], paths: Vec<JsonPathRef<'a>>) -> Option<Vec<u8>> {
-    if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        return json_value.get_by_path(&paths).map(Value::to_vec);
-    }
-
-    let mut offset = 0;
-    let mut buf: Vec<u8> = Vec::new();
-
-    for i in 0..paths.len() {
-        let path = paths.get(i).unwrap();
-        let header = read_u32(value, offset).unwrap();
-        let (jentry_offset, val_offset) = match path {
-            JsonPathRef::String(name) => {
-                if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
-                    return None;
-                }
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let mut jentry_offset = offset + 4;
-                let mut val_offset = offset + 8 * length + 4;
-
-                let mut key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-                for _ in 0..length {
-                    let encoded = read_u32(value, jentry_offset).unwrap();
-                    let key_jentry = JEntry::decode_jentry(encoded);
-
-                    jentry_offset += 4;
-                    val_offset += key_jentry.length as usize;
-                    key_jentries.push_back(key_jentry);
-                }
-
-                let mut found = false;
-                let mut key_offset = offset + 8 * length + 4;
-                while let Some(key_jentry) = key_jentries.pop_front() {
-                    let prev_key_offset = key_offset;
-                    key_offset += key_jentry.length as usize;
-                    let key = unsafe {
-                        std::str::from_utf8_unchecked(&value[prev_key_offset..key_offset])
-                    };
-                    if name.eq(key) {
-                        found = true;
-                        break;
-                    }
-                    let val_encoded = read_u32(value, jentry_offset).unwrap();
-                    let val_jentry = JEntry::decode_jentry(val_encoded);
-                    jentry_offset += 4;
-                    val_offset += val_jentry.length as usize;
-                }
-                if !found {
-                    return None;
-                }
-                (jentry_offset, val_offset)
-            }
-            JsonPathRef::UInt64(index) => {
-                if header & CONTAINER_HEADER_TYPE_MASK != ARRAY_CONTAINER_TAG {
-                    return None;
-                }
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                if *index as usize >= length {
-                    return None;
-                }
-                let mut jentry_offset = offset + 4;
-                let mut val_offset = offset + 4 * length + 4;
-
-                for _ in 0..*index {
-                    let encoded = read_u32(value, jentry_offset).unwrap();
-                    let jentry = JEntry::decode_jentry(encoded);
-
-                    jentry_offset += 4;
-                    val_offset += jentry.length as usize;
-                }
-                (jentry_offset, val_offset)
-            }
-        };
-        let encoded = read_u32(value, jentry_offset).unwrap();
-        let jentry = JEntry::decode_jentry(encoded);
-        // if the last JSON path, return the value
-        // if the value is a container value, then continue get for next JSON path.
-        match jentry.type_code {
-            CONTAINER_TAG => {
-                if i == paths.len() - 1 {
-                    buf.extend_from_slice(&value[val_offset..val_offset + jentry.length as usize]);
-                } else {
-                    offset = val_offset;
-                }
-            }
-            _ => {
-                if i == paths.len() - 1 {
-                    let scalar_header = SCALAR_CONTAINER_TAG;
-                    buf.extend_from_slice(&scalar_header.to_be_bytes());
-                    buf.extend_from_slice(&encoded.to_be_bytes());
-                    if jentry.length > 0 {
-                        buf.extend_from_slice(
-                            &value[val_offset..val_offset + jentry.length as usize],
-                        );
-                    }
-                } else {
-                    return None;
-                }
-            }
-        }
-    }
-    Some(buf)
 }
 
 /// Get the keys of a `JSONB` object.
@@ -868,104 +815,6 @@ pub fn is_object(value: &[u8]) -> bool {
     matches!(header & CONTAINER_HEADER_TYPE_MASK, OBJECT_CONTAINER_TAG)
 }
 
-/// Parse path string to Json path.
-/// Support `["<name>"]`, `[<index>]`, `:name` and `.name`.
-pub fn parse_json_path(path: &[u8]) -> Result<Vec<JsonPathRef>, Error> {
-    let mut idx = 0;
-    let mut prev_idx = 0;
-    let mut json_paths = Vec::new();
-    while idx < path.len() {
-        let c = read_char(path, &mut idx)?;
-        if c == b'[' {
-            let c = read_char(path, &mut idx)?;
-            if c == b'"' {
-                prev_idx = idx;
-                loop {
-                    let c = read_char(path, &mut idx)?;
-                    if c == b'\\' {
-                        idx += 1;
-                    } else if c == b'"' {
-                        let c = read_char(path, &mut idx)?;
-                        if c != b']' {
-                            return Err(Error::InvalidToken);
-                        }
-                        break;
-                    }
-                }
-                if prev_idx == idx - 2 {
-                    return Err(Error::InvalidToken);
-                }
-                let s = std::str::from_utf8(&path[prev_idx..idx - 2])?;
-                let json_path = JsonPathRef::String(Cow::Borrowed(s));
-
-                json_paths.push(json_path);
-            } else {
-                prev_idx = idx - 1;
-                loop {
-                    let c = read_char(path, &mut idx)?;
-                    if c == b']' {
-                        break;
-                    }
-                }
-                if prev_idx == idx - 1 {
-                    return Err(Error::InvalidToken);
-                }
-                let s = std::str::from_utf8(&path[prev_idx..idx - 1])?;
-                if let Ok(v) = s.parse::<u64>() {
-                    let json_path = JsonPathRef::UInt64(v);
-                    json_paths.push(json_path);
-                } else {
-                    return Err(Error::InvalidToken);
-                }
-            }
-        } else if c == b'"' {
-            prev_idx = idx;
-            loop {
-                let c = read_char(path, &mut idx)?;
-                if c == b'\\' {
-                    idx += 1;
-                } else if c == b'"' {
-                    if idx < path.len() {
-                        return Err(Error::InvalidToken);
-                    }
-                    break;
-                }
-            }
-            let s = std::str::from_utf8(&path[prev_idx..idx - 1])?;
-            let json_path = JsonPathRef::String(Cow::Borrowed(s));
-            if json_paths.is_empty() {
-                json_paths.push(json_path);
-            } else {
-                return Err(Error::InvalidToken);
-            }
-        } else {
-            if c == b':' || c == b'.' {
-                if idx == 1 {
-                    return Err(Error::InvalidToken);
-                } else {
-                    prev_idx = idx;
-                }
-            }
-            while idx < path.len() {
-                let c = read_char(path, &mut idx)?;
-                if c == b':' || c == b'.' || c == b'[' {
-                    idx -= 1;
-                    break;
-                } else if c == b'\\' {
-                    idx += 1;
-                }
-            }
-            if prev_idx == idx {
-                return Err(Error::InvalidToken);
-            }
-            let s = std::str::from_utf8(&path[prev_idx..idx])?;
-            let json_path = JsonPathRef::String(Cow::Borrowed(s));
-            json_paths.push(json_path);
-        }
-    }
-    Ok(json_paths)
-}
-
 /// Convert `JSONB` value to String
 pub fn to_string(value: &[u8]) -> String {
     if !is_jsonb(value) {
@@ -1077,16 +926,6 @@ fn is_jsonb(value: &[u8]) -> bool {
         }
     }
     false
-}
-
-fn read_char(buf: &[u8], idx: &mut usize) -> Result<u8, Error> {
-    match buf.get(*idx) {
-        Some(v) => {
-            *idx += 1;
-            Ok(*v)
-        }
-        None => Err(Error::InvalidEOF),
-    }
 }
 
 fn read_u32(buf: &[u8], idx: usize) -> Result<u32, Error> {

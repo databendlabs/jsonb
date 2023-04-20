@@ -23,7 +23,7 @@ use ordered_float::OrderedFloat;
 use super::constants::*;
 use super::error::Error;
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub enum Number {
     Int64(i64),
     UInt64(u64),
