@@ -210,10 +210,10 @@ fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
         value(BinaryOperator::Eq, tag("==")),
         value(BinaryOperator::NotEq, tag("!=")),
         value(BinaryOperator::NotEq, tag("<>")),
-        value(BinaryOperator::Lt, char('<')),
         value(BinaryOperator::Lte, tag("<=")),
-        value(BinaryOperator::Gt, char('>')),
+        value(BinaryOperator::Lt, char('<')),
         value(BinaryOperator::Gte, tag(">=")),
+        value(BinaryOperator::Gt, char('>')),
     ))(input)
 }
 
