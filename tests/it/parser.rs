@@ -402,15 +402,19 @@ fn test_parse_object() {
     obj3.insert("a".to_string(), Value::Object(obj3val));
     let mut obj4 = Object::new();
     obj4.insert("c".to_string(), Value::Null);
+    let mut obj5 = Object::new();
+    obj5.insert("d".to_string(), Value::Number(Number::UInt64(5)));
 
     test_parse_ok(vec![
-        ("{}", Value::Object(Object::new())),
-        ("{ }", Value::Object(Object::new())),
-        ("{\"a\":3}", Value::Object(obj1.clone())),
-        ("{ \"a\" : 3 }", Value::Object(obj1)),
-        ("{\"a\":3,\"b\":4}", Value::Object(obj2.clone())),
-        (" { \"a\" : 3 , \"b\" : 4 } ", Value::Object(obj2)),
-        ("{\"a\": {\"b\": 3, \"c\": 4}}", Value::Object(obj3)),
-        ("{\"c\":null}", Value::Object(obj4)),
+        (r#"{}"#, Value::Object(Object::new())),
+        (r#"{ }"#, Value::Object(Object::new())),
+        (r#"{"a":3}"#, Value::Object(obj1.clone())),
+        (r#"{ "a" : 3 }"#, Value::Object(obj1)),
+        (r#"{"a":3,"b":4}"#, Value::Object(obj2.clone())),
+        (r#" { "a" : 3 , "b" : 4 } "#, Value::Object(obj2)),
+        (r#"{"a": {"b": 3, "c": 4}}"#, Value::Object(obj3)),
+        (r#"{"c":null}"#, Value::Object(obj4)),
+        (r#"{\t\n\r "d":  5}"#, Value::Object(obj5.clone())),
+        (r#"{ \x0C "d":  5}"#, Value::Object(obj5)),
     ]);
 }

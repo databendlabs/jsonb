@@ -21,7 +21,7 @@ use super::constants::*;
 use super::error::*;
 use super::jentry::JEntry;
 use super::number::Number;
-use super::parser::decode_value;
+use super::parser::parse_value;
 use super::value::Value;
 use crate::jsonpath::ArrayIndex;
 use crate::jsonpath::Index;
@@ -125,8 +125,10 @@ pub fn build_object<'a, K: AsRef<str>>(
 /// Get the length of `JSONB` array.
 pub fn array_length(value: &[u8]) -> Option<usize> {
     if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        return json_value.array_length();
+        return match parse_value(value) {
+            Ok(val) => val.array_length(),
+            Err(_) => None,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
@@ -143,9 +145,13 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
 pub fn get_by_path<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Vec<Vec<u8>> {
     let selector = Selector::new(json_path);
     if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        let value = json_value.to_vec();
-        selector.select(value.as_slice())
+        match parse_value(value) {
+            Ok(val) => {
+                let value = val.to_vec();
+                selector.select(value.as_slice())
+            }
+            Err(_) => vec![],
+        }
     } else {
         selector.select(value)
     }
@@ -192,8 +198,10 @@ pub fn get_by_name(value: &[u8], name: &str) -> Option<Vec<u8>> {
 /// Get the inner element of `JSONB` Object by key name ignoring case.
 pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
     if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        return json_value.get_by_name_ignore_case(name).map(Value::to_vec);
+        return match parse_value(value) {
+            Ok(val) => val.get_by_name_ignore_case(name).map(Value::to_vec),
+            Err(_) => None,
+        };
     }
 
     let header = read_u32(value, 0).unwrap();
@@ -261,8 +269,10 @@ pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
 /// Get the keys of a `JSONB` object.
 pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
     if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        return json_value.object_keys().map(|val| val.to_vec());
+        return match parse_value(value) {
+            Ok(val) => val.object_keys().map(|val| val.to_vec()),
+            Err(_) => None,
+        };
     }
 
     let header = read_u32(value, 0).unwrap();
@@ -304,11 +314,11 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
 /// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
 pub fn compare(left: &[u8], right: &[u8]) -> Result<Ordering, Error> {
     if !is_jsonb(left) {
-        let lval = decode_value(left).unwrap();
+        let lval = parse_value(left)?;
         let lbuf = lval.to_vec();
         return compare(&lbuf, right);
     } else if !is_jsonb(right) {
-        let rval = decode_value(right).unwrap();
+        let rval = parse_value(right)?;
         let rbuf = rval.to_vec();
         return compare(left, &rbuf);
     }
@@ -561,15 +571,10 @@ pub fn is_null(value: &[u8]) -> bool {
 /// If the `JSONB` is a Null, returns (). Returns None otherwise.
 pub fn as_null(value: &[u8]) -> Option<()> {
     if !is_jsonb(value) {
-        if value.is_empty() {
-            return Some(());
-        }
-        let v = value.first().unwrap();
-        if *v == b'n' {
-            return Some(());
-        } else {
-            return None;
-        }
+        return match parse_value(value) {
+            Ok(val) => val.as_null(),
+            Err(_) => None,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
@@ -592,14 +597,10 @@ pub fn is_boolean(value: &[u8]) -> bool {
 /// If the `JSONB` is a Boolean, returns the associated bool. Returns None otherwise.
 pub fn as_bool(value: &[u8]) -> Option<bool> {
     if !is_jsonb(value) {
-        let v = value.first().unwrap();
-        if *v == b't' {
-            return Some(true);
-        } else if *v == b'f' {
-            return Some(false);
-        } else {
-            return None;
-        }
+        return match parse_value(value) {
+            Ok(val) => val.as_bool(),
+            Err(_) => None,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
@@ -637,8 +638,10 @@ pub fn is_number(value: &[u8]) -> bool {
 /// If the `JSONB` is a Number, returns the Number. Returns None otherwise.
 pub fn as_number(value: &[u8]) -> Option<Number> {
     if !is_jsonb(value) {
-        let json_value = decode_value(value).unwrap();
-        return json_value.as_number().cloned();
+        return match parse_value(value) {
+            Ok(val) => val.as_number().cloned(),
+            Err(_) => None,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
@@ -759,13 +762,13 @@ pub fn is_string(value: &[u8]) -> bool {
 /// If the `JSONB` is a String, returns the String. Returns None otherwise.
 pub fn as_str(value: &[u8]) -> Option<Cow<'_, str>> {
     if !is_jsonb(value) {
-        let v = value.first().unwrap();
-        if *v == b'"' {
-            let s = unsafe { std::str::from_utf8_unchecked(&value[1..value.len() - 1]) };
-            return Some(Cow::Borrowed(s));
-        } else {
-            return None;
-        }
+        return match parse_value(value) {
+            Ok(val) => match val {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            },
+            Err(_) => None,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
@@ -787,10 +790,10 @@ pub fn as_str(value: &[u8]) -> Option<Cow<'_, str>> {
 
 /// Cast `JSONB` value to String
 pub fn to_str(value: &[u8]) -> Result<String, Error> {
-    if is_null(value) {
-        return Err(Error::InvalidCast);
-    } else if let Some(v) = as_str(value) {
+    if let Some(v) = as_str(value) {
         return Ok(v.to_string());
+    } else if is_null(value) {
+        return Err(Error::InvalidCast);
     }
     Ok(to_string(value))
 }
@@ -798,8 +801,10 @@ pub fn to_str(value: &[u8]) -> Result<String, Error> {
 /// Returns true if the `JSONB` is An Array. Returns false otherwise.
 pub fn is_array(value: &[u8]) -> bool {
     if !is_jsonb(value) {
-        let v = value.first().unwrap();
-        return *v == b'[';
+        return match parse_value(value) {
+            Ok(val) => val.is_array(),
+            Err(_) => false,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     matches!(header & CONTAINER_HEADER_TYPE_MASK, ARRAY_CONTAINER_TAG)
@@ -808,8 +813,10 @@ pub fn is_array(value: &[u8]) -> bool {
 /// Returns true if the `JSONB` is An Object. Returns false otherwise.
 pub fn is_object(value: &[u8]) -> bool {
     if !is_jsonb(value) {
-        let v = value.first().unwrap();
-        return *v == b'{';
+        return match parse_value(value) {
+            Ok(val) => val.is_object(),
+            Err(_) => false,
+        };
     }
     let header = read_u32(value, 0).unwrap();
     matches!(header & CONTAINER_HEADER_TYPE_MASK, OBJECT_CONTAINER_TAG)
@@ -921,7 +928,7 @@ fn scalar_to_string(
 // for compatibility with previous `JSON` string.
 fn is_jsonb(value: &[u8]) -> bool {
     if let Some(v) = value.first() {
-        if *v == ARRAY_PREFIX || *v == OBJECT_PREFIX || *v == SCALAR_PREFIX {
+        if matches!(*v, ARRAY_PREFIX | OBJECT_PREFIX | SCALAR_PREFIX) {
             return true;
         }
     }
