@@ -251,11 +251,6 @@ fn test_parse_string() {
         ("\"", "EOF while parsing a value, pos 1"),
         ("\"lol", "EOF while parsing a value, pos 4"),
         ("\"lol\"a", "trailing characters, pos 6"),
-        ("\"\\uD83C\"", "unexpected end of hex escape, pos 8"),
-        (
-            "\"\\uD83C\\uFFFF\"",
-            "invalid surrogate in hex escape 'FFFF', pos 14",
-        ),
         (
             "\"\n\"",
             "control character (\\u0000-\\u001F) found while parsing a string, pos 1",
@@ -294,6 +289,23 @@ fn test_parse_string() {
         ("\"\\u12ab\"", Value::String(Cow::from("\u{12ab}"))),
         ("\"\\uAB12\"", Value::String(Cow::from("\u{AB12}"))),
         ("\"\\uD83C\\uDF95\"", Value::String(Cow::from("\u{1F395}"))),
+        (r#""\u5b57""#, Value::String(Cow::from("字"))),
+        (r#""\u0000""#, Value::String(Cow::from("\0"))),
+        (r#""\uDEAD""#, Value::String(Cow::from("\\uDEAD"))),
+        (
+            r#""\uDC00\uD800""#,
+            Value::String(Cow::from("\\uDC00\\uD800")),
+        ),
+        (
+            r#""\uD800\uDA00""#,
+            Value::String(Cow::from("\\uD800\\uDA00")),
+        ),
+        (r#""\uD803\uDC0B""#, Value::String(Cow::from("𐰋"))),
+        (r#""\uD83D\uDC8E""#, Value::String(Cow::from("💎"))),
+        (
+            r#""\\\uD83D\\\uDC8E""#,
+            Value::String(Cow::from("\\\\uD83D\\\\uDC8E")),
+        ),
     ]);
 }
 
