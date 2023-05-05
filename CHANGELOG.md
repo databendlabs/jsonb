@@ -1,3 +1,9 @@
+## [v0.2.1] - 2023-05-05
+
+### Fixed
+
+- Fix: Allow parse invalid Unicode. (#13)
+
 ## [v0.2.0] - 2023-04-21
 
 ### Added
@@ -18,5 +24,6 @@
 - Implemented a number of `JSONB` functions.
 
 
+[v0.2.1]: https://github.com/datafuselabs/jsonb/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/datafuselabs/jsonb/compare/v0.1.1...v0.2.0
 [v0.1.1]: https://github.com/datafuselabs/jsonb/compare/v0.1.0...v0.1.1

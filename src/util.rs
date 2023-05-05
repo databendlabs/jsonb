@@ -63,14 +63,12 @@ pub fn parse_escaped_string<'a>(
             let mut numbers = vec![0; UNICODE_LEN];
             data.read_exact(numbers.as_mut_slice())?;
             *idx += 4;
-            let hex = decode_hex_escape(numbers, idx)?;
+            let hex = decode_hex_escape(numbers.clone(), idx)?;
 
             let c = match hex {
-                n @ 0xDC00..=0xDFFF => {
-                    return Err(Error::Syntax(
-                        ParseErrorCode::InvalidLoneLeadingSurrogateInHexEscape(n),
-                        *idx,
-                    ));
+                0xDC00..=0xDFFF => {
+                    encode_invalid_unicode(numbers, str_buf);
+                    return Ok(data);
                 }
 
                 // Non-BMP characters are encoded as a sequence of two hex
@@ -79,37 +77,24 @@ pub fn parse_escaped_string<'a>(
                 // whereas deserializing a byte string accepts lone surrogates.
                 n1 @ 0xD800..=0xDBFF => {
                     if data.len() < 2 {
-                        return Err(Error::Syntax(
-                            ParseErrorCode::UnexpectedEndOfHexEscape,
-                            *idx,
-                        ));
+                        encode_invalid_unicode(numbers, str_buf);
+                        return Ok(data);
                     }
-                    let next_byte = data[0];
-                    if next_byte == b'\\' {
-                        *idx += 1;
-                        data = &data[1..];
+                    if data[0] == b'\\' && data[1] == b'u' {
+                        *idx += 2;
+                        data = &data[2..];
                     } else {
-                        return Err(Error::Syntax(
-                            ParseErrorCode::UnexpectedEndOfHexEscape,
-                            *idx,
-                        ));
+                        encode_invalid_unicode(numbers, str_buf);
+                        return Ok(data);
                     }
-                    let next_byte = data[0];
-                    if next_byte == b'u' {
-                        *idx += 1;
-                        data = &data[1..];
-                    } else {
-                        return parse_escaped_string(data, idx, str_buf);
-                    }
-                    let mut numbers = vec![0; UNICODE_LEN];
-                    data.read_exact(numbers.as_mut_slice())?;
+                    let mut lower_numbers = vec![0; UNICODE_LEN];
+                    data.read_exact(lower_numbers.as_mut_slice())?;
                     *idx += 4;
-                    let n2 = decode_hex_escape(numbers, idx)?;
+                    let n2 = decode_hex_escape(lower_numbers.clone(), idx)?;
                     if !(0xDC00..=0xDFFF).contains(&n2) {
-                        return Err(Error::Syntax(
-                            ParseErrorCode::InvalidSurrogateInHexEscape(n2),
-                            *idx,
-                        ));
+                        encode_invalid_unicode(numbers, str_buf);
+                        encode_invalid_unicode(lower_numbers, str_buf);
+                        return Ok(data);
                     }
 
                     let n = (((n1 - 0xD800) as u32) << 10 | (n2 - 0xDC00) as u32) + 0x1_0000;
@@ -125,6 +110,17 @@ pub fn parse_escaped_string<'a>(
         other => return Err(Error::Syntax(ParseErrorCode::InvalidEscaped(other), *idx)),
     }
     Ok(data)
+}
+
+// https://datatracker.ietf.org/doc/html/rfc8259#section-8.2
+// RFC8259 allow invalid Unicode
+#[inline]
+fn encode_invalid_unicode(numbers: Vec<u8>, str_buf: &mut String) {
+    str_buf.push('\\');
+    str_buf.push('u');
+    for n in numbers {
+        str_buf.push(n.into());
+    }
 }
 
 #[inline]
