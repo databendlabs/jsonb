@@ -30,34 +30,14 @@ pub fn parse_value(buf: &[u8]) -> Result<Value<'_>, Error> {
     parser.parse()
 }
 
-// used to parse value from storage.
-// as value has be parsed, string don't need extra escape.
-pub fn decode_value(buf: &[u8]) -> Result<Value<'_>, Error> {
-    let mut parser = Parser::new_with_escaped(buf);
-    parser.parse()
-}
-
 struct Parser<'a> {
     buf: &'a [u8],
     idx: usize,
-    escaped: bool,
 }
 
 impl<'a> Parser<'a> {
     fn new(buf: &'a [u8]) -> Parser<'a> {
-        Self {
-            buf,
-            idx: 0,
-            escaped: false,
-        }
-    }
-
-    fn new_with_escaped(buf: &'a [u8]) -> Parser<'a> {
-        Self {
-            buf,
-            idx: 0,
-            escaped: true,
-        }
+        Self { buf, idx: 0 }
     }
 
     fn parse(&mut self) -> Result<Value<'a>, Error> {
@@ -170,13 +150,32 @@ impl<'a> Parser<'a> {
         Error::Syntax(code, pos)
     }
 
+    #[inline]
     fn skip_unused(&mut self) {
         while self.idx < self.buf.len() {
             let c = self.buf.get(self.idx).unwrap();
-            if !matches!(c, b'\n' | b' ' | b'\r' | b'\t') {
-                break;
+            if c.is_ascii_whitespace() {
+                self.step();
+                continue;
             }
-            self.step();
+            // Allow parse escaped white space
+            if *c == b'\\' {
+                if self.idx + 1 < self.buf.len()
+                    && matches!(self.buf[self.idx + 1], b'n' | b'r' | b't')
+                {
+                    self.step_by(2);
+                    continue;
+                }
+                if self.idx + 3 < self.buf.len()
+                    && self.buf[self.idx + 1] == b'x'
+                    && self.buf[self.idx + 2] == b'0'
+                    && self.buf[self.idx + 3] == b'C'
+                {
+                    self.step_by(4);
+                    continue;
+                }
+            }
+            break;
         }
     }
 
@@ -299,7 +298,7 @@ impl<'a> Parser<'a> {
         }
 
         let mut data = &self.buf[start_idx..self.idx - 1];
-        let val = if !self.escaped && escapes > 0 {
+        let val = if escapes > 0 {
             let len = self.idx - 1 - start_idx - escapes;
             let mut idx = start_idx + 1;
             let mut str_buf = String::with_capacity(len);

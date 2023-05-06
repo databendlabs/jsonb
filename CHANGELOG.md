@@ -1,3 +1,9 @@
+## [v0.2.2] - 2023-05-06
+
+### Fixed
+
+- Fix: Allow parse escaped white space. (#14)
+
 ## [v0.2.1] - 2023-05-05
 
 ### Fixed
@@ -24,6 +30,7 @@
 - Implemented a number of `JSONB` functions.
 
 
+[v0.2.2]: https://github.com/datafuselabs/jsonb/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/datafuselabs/jsonb/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/datafuselabs/jsonb/compare/v0.1.1...v0.2.0
 [v0.1.1]: https://github.com/datafuselabs/jsonb/compare/v0.1.0...v0.1.1
