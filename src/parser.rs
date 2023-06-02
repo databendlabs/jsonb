@@ -301,19 +301,24 @@ impl<'a> Parser<'a> {
         let val = if escapes > 0 {
             let len = self.idx - 1 - start_idx - escapes;
             let mut idx = start_idx + 1;
-            let mut str_buf = String::with_capacity(len);
+            let mut buf = Vec::with_capacity(len);
+            let mut str_buf = String::with_capacity(4);
             while !data.is_empty() {
                 idx += 1;
                 let byte = data[0];
                 if byte == b'\\' {
                     data = &data[1..];
                     data = parse_escaped_string(data, &mut idx, &mut str_buf)?;
+                    buf.extend_from_slice(str_buf.as_bytes());
+                    str_buf.clear();
                 } else {
-                    str_buf.push(byte as char);
+                    buf.push(byte);
                     data = &data[1..];
                 }
             }
-            Cow::Owned(str_buf)
+            String::from_utf8(buf)
+                .map(Cow::Owned)
+                .map_err(|_| self.error(ParseErrorCode::InvalidStringValue))?
         } else {
             std::str::from_utf8(data)
                 .map(Cow::Borrowed)

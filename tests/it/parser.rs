@@ -306,6 +306,10 @@ fn test_parse_string() {
             r#""\\\uD83D\\\uDC8E""#,
             Value::String(Cow::from("\\\\uD83D\\\\uDC8E")),
         ),
+        (
+            r#""\"ab\"\uD803\uDC0B测试""#,
+            Value::String(Cow::from("\"ab\"𐰋测试")),
+        ),
     ]);
 }
 
