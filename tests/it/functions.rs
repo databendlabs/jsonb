@@ -654,26 +654,31 @@ fn test_to_type() {
 #[test]
 fn test_to_string() {
     let sources = vec![
-        r#"null"#,
-        r#"true"#,
-        r#"false"#,
-        r#"1234567"#,
-        r#"-1234567"#,
-        r#"123.4567"#,
-        r#""abcdef""#,
-        r#"[1,2,3,4]"#,
-        r#"["a","b",true,false,[1,2,3],{"a":"b"}]"#,
-        r#"{"k1":"v1","k2":[1,2,3],"k3":{"a":"b"}}"#,
+        (r#"null"#, r#"null"#),
+        (r#"true"#, r#"true"#),
+        (r#"false"#, r#"false"#),
+        (r#"1234567"#, r#"1234567"#),
+        (r#"-1234567"#, r#"-1234567"#),
+        (r#"123.4567"#, r#"123.4567"#),
+        (r#""abcdef""#, r#""abcdef""#),
+        (r#""ab\n\"\uD83D\uDC8E测试""#, r#""ab\n\"💎测试""#),
+        (r#"[1,2,3,4]"#, r#"[1,2,3,4]"#),
+        (
+            r#"["a","b",true,false,[1,2,3],{"a":"b"}]"#,
+            r#"["a","b",true,false,[1,2,3],{"a":"b"}]"#,
+        ),
+        (
+            r#"{"k1":"v1","k2":[1,2,3],"k3":{"a":"b"}}"#,
+            r#"{"k1":"v1","k2":[1,2,3],"k3":{"a":"b"}}"#,
+        ),
     ];
     let mut buf: Vec<u8> = Vec::new();
-    for s in sources {
-        let res = to_string(s.as_bytes());
-        assert_eq!(res, s.to_string());
-
+    for (s, expect) in sources {
         let value = parse_value(s.as_bytes()).unwrap();
+        assert_eq!(format!("{}", value), expect);
         value.write_to_vec(&mut buf);
         let res = to_string(&buf);
-        assert_eq!(res, s.to_string());
+        assert_eq!(res, expect);
         buf.clear();
     }
 }
