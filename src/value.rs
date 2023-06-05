@@ -69,9 +69,7 @@ impl<'a> Display for Value<'a> {
             }
             Value::Number(ref v) => write!(f, "{}", v),
             Value::String(ref v) => {
-                write!(f, "\"")?;
-                write!(f, "{v}")?;
-                write!(f, "\"")
+                write!(f, "{:?}", v)
             }
             Value::Array(ref vs) => {
                 let mut first = true;

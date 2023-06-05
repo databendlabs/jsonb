@@ -111,7 +111,7 @@ impl<'a> Decoder<'a> {
             FALSE_TAG => Ok(Value::Bool(false)),
             STRING_TAG => {
                 let offset = jentry.length as usize;
-                let s = std::str::from_utf8(&self.buf[..offset]).unwrap();
+                let s = unsafe { std::str::from_utf8_unchecked(&self.buf[..offset]) };
                 self.buf = &self.buf[offset..];
                 Ok(Value::String(Cow::Borrowed(s)))
             }

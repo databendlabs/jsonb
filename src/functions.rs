@@ -792,10 +792,16 @@ pub fn as_str(value: &[u8]) -> Option<Cow<'_, str>> {
 pub fn to_str(value: &[u8]) -> Result<String, Error> {
     if let Some(v) = as_str(value) {
         return Ok(v.to_string());
-    } else if is_null(value) {
-        return Err(Error::InvalidCast);
+    } else if let Some(v) = as_bool(value) {
+        if v {
+            return Ok("true".to_string());
+        } else {
+            return Ok("false".to_string());
+        }
+    } else if let Some(v) = as_number(value) {
+        return Ok(format!("{}", v));
     }
-    Ok(to_string(value))
+    Err(Error::InvalidCast)
 }
 
 /// Returns true if the `JSONB` is An Array. Returns false otherwise.
@@ -878,9 +884,7 @@ fn container_to_string(value: &[u8], offset: &mut usize, json: &mut String) {
                     json.push(',');
                 }
                 let key = keys.pop_front().unwrap();
-                json.push('\"');
-                json.push_str(key);
-                json.push('\"');
+                json.extend(format!("{:?}", key).chars());
                 json.push(':');
                 scalar_to_string(value, &mut jentry_offset, &mut value_offset, json);
             }
@@ -911,9 +915,7 @@ fn scalar_to_string(
             let val = unsafe {
                 std::str::from_utf8_unchecked(&value[*value_offset..*value_offset + length])
             };
-            json.push('\"');
-            json.push_str(val);
-            json.push('\"');
+            json.extend(format!("{:?}", val).chars());
         }
         CONTAINER_TAG => {
             container_to_string(value, value_offset, json);
