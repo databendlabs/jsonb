@@ -61,8 +61,15 @@ pub fn parse_escaped_string<'a>(
         b't' => str_buf.push(TT),
         b'u' => {
             let mut numbers = vec![0; UNICODE_LEN];
-            data.read_exact(numbers.as_mut_slice())?;
-            *idx += 4;
+            if data[0] == b'{' {
+                data = &data[1..];
+                data.read_exact(numbers.as_mut_slice())?;
+                data = &data[1..];
+                *idx += 6;
+            } else {
+                data.read_exact(numbers.as_mut_slice())?;
+                *idx += 4;
+            }
             let hex = decode_hex_escape(numbers.clone(), idx)?;
 
             let c = match hex {
@@ -88,8 +95,15 @@ pub fn parse_escaped_string<'a>(
                         return Ok(data);
                     }
                     let mut lower_numbers = vec![0; UNICODE_LEN];
-                    data.read_exact(lower_numbers.as_mut_slice())?;
-                    *idx += 4;
+                    if data[0] == b'{' {
+                        data = &data[1..];
+                        data.read_exact(lower_numbers.as_mut_slice())?;
+                        data = &data[1..];
+                        *idx += 6;
+                    } else {
+                        data.read_exact(lower_numbers.as_mut_slice())?;
+                        *idx += 4;
+                    }
                     let n2 = decode_hex_escape(lower_numbers.clone(), idx)?;
                     if !(0xDC00..=0xDFFF).contains(&n2) {
                         encode_invalid_unicode(numbers, str_buf);
