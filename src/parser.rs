@@ -282,7 +282,13 @@ impl<'a> Parser<'a> {
                     escapes += 1;
                     let next_c = self.next()?;
                     if *next_c == b'u' {
-                        self.step_by(UNICODE_LEN + 1);
+                        self.step();
+                        let next_c = self.next()?;
+                        if *next_c == b'{' {
+                            self.step_by(UNICODE_LEN + 2);
+                        } else {
+                            self.step_by(UNICODE_LEN);
+                        }
                     } else {
                         self.step();
                     }
