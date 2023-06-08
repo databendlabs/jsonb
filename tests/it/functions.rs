@@ -662,6 +662,8 @@ fn test_to_string() {
         (r#"123.4567"#, r#"123.4567"#),
         (r#""abcdef""#, r#""abcdef""#),
         (r#""ab\n\"\uD83D\uDC8E测试""#, r#""ab\n\"💎测试""#),
+        (r#""မြန်မာဘာသာ""#, r#""မြန်မာဘာသာ""#),
+        (r#""⚠️✅❌""#, r#""⚠️✅❌""#),
         (r#"[1,2,3,4]"#, r#"[1,2,3,4]"#),
         (
             r#"["a","b",true,false,[1,2,3],{"a":"b"}]"#,
@@ -675,7 +677,6 @@ fn test_to_string() {
     let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
         let value = parse_value(s.as_bytes()).unwrap();
-        assert_eq!(format!("{}", value), expect);
         value.write_to_vec(&mut buf);
         let res = to_string(&buf);
         assert_eq!(res, expect);

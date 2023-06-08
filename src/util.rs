@@ -65,7 +65,10 @@ pub fn parse_escaped_string<'a>(
                 data = &data[1..];
                 data.read_exact(numbers.as_mut_slice())?;
                 if data[0] != b'}' {
-                    return Err(Error::Syntax(ParseErrorCode::UnexpectedEndOfHexEscape, *idx));
+                    return Err(Error::Syntax(
+                        ParseErrorCode::UnexpectedEndOfHexEscape,
+                        *idx,
+                    ));
                 }
                 data = &data[1..];
                 *idx += 6;
@@ -102,7 +105,10 @@ pub fn parse_escaped_string<'a>(
                         data = &data[1..];
                         data.read_exact(lower_numbers.as_mut_slice())?;
                         if data[0] != b'}' {
-                            return Err(Error::Syntax(ParseErrorCode::UnexpectedEndOfHexEscape, *idx));
+                            return Err(Error::Syntax(
+                                ParseErrorCode::UnexpectedEndOfHexEscape,
+                                *idx,
+                            ));
                         }
                         data = &data[1..];
                         *idx += 6;

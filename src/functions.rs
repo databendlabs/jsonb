@@ -871,10 +871,7 @@ fn container_to_string(value: &[u8], offset: &mut usize, json: &mut String) {
                 let jentry_encoded = read_u32(value, jentry_offset).unwrap();
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 let key_length = jentry.length as usize;
-                let key = unsafe {
-                    std::str::from_utf8_unchecked(&value[key_offset..key_offset + key_length])
-                };
-                keys.push_back(key);
+                keys.push_back((key_offset, key_offset + key_length));
                 jentry_offset += 4;
                 key_offset += key_length;
             }
@@ -883,8 +880,8 @@ fn container_to_string(value: &[u8], offset: &mut usize, json: &mut String) {
                 if i > 0 {
                     json.push(',');
                 }
-                let key = keys.pop_front().unwrap();
-                json.extend(format!("{:?}", key).chars());
+                let (key_start, key_end) = keys.pop_front().unwrap();
+                escape_scalar_string(value, key_start, key_end, json);
                 json.push(':');
                 scalar_to_string(value, &mut jentry_offset, &mut value_offset, json);
             }
@@ -912,10 +909,7 @@ fn scalar_to_string(
             json.push_str(&format!("{num}"));
         }
         STRING_TAG => {
-            let val = unsafe {
-                std::str::from_utf8_unchecked(&value[*value_offset..*value_offset + length])
-            };
-            json.extend(format!("{:?}", val).chars());
+            escape_scalar_string(value, *value_offset, *value_offset + length, json);
         }
         CONTAINER_TAG => {
             container_to_string(value, value_offset, json);
@@ -924,6 +918,38 @@ fn scalar_to_string(
     }
     *jentry_offset += 4;
     *value_offset += length;
+}
+
+fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut String) {
+    json.push('\"');
+    let mut last_start = start;
+    for i in start..end {
+        // add backslash for escaped characters.
+        let c = match value[i] {
+            0x5C => "\\\\",
+            0x22 => "\\\"",
+            0x2F => "\\/",
+            0x08 => "\\b",
+            0x0C => "\\f",
+            0x0A => "\\n",
+            0x0D => "\\r",
+            0x09 => "\\t",
+            _ => {
+                continue;
+            }
+        };
+        if i > last_start {
+            let val = unsafe { std::str::from_utf8_unchecked(&value[last_start..i]) };
+            json.push_str(val);
+        }
+        json.push_str(c);
+        last_start = i + 1;
+    }
+    if last_start < end {
+        let val = unsafe { std::str::from_utf8_unchecked(&value[last_start..end]) };
+        json.push_str(val);
+    }
+    json.push('\"');
 }
 
 // Check whether the value is `JSONB` format,

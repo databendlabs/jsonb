@@ -310,10 +310,7 @@ fn test_parse_string() {
             r#""\"ab\"\uD803\uDC0B测试""#,
             Value::String(Cow::from("\"ab\"𐰋测试")),
         ),
-        (
-            r#""⚠\u{fe0f}""#,
-            Value::String(Cow::from("⚠\u{fe0f}")),
-        ),
+        (r#""⚠\u{fe0f}""#, Value::String(Cow::from("⚠\u{fe0f}"))),
     ]);
 }
 
