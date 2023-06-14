@@ -17,9 +17,9 @@ use std::cmp::Ordering;
 
 use jsonb::{
     array_length, as_bool, as_null, as_number, as_str, build_array, build_object, compare,
-    from_slice, get_by_index, get_by_name, get_by_name_ignore_case, get_by_path, is_array,
-    is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64,
-    Number, Object, Value,
+    convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_name_ignore_case,
+    get_by_path, is_array, is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str,
+    to_string, to_u64, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -359,6 +359,8 @@ fn test_compare() {
         (r#"123"#, r#"12.3"#, Ordering::Greater),
         (r#"123"#, r#"123"#, Ordering::Equal),
         (r#"123"#, r#"456.7"#, Ordering::Less),
+        (r#"12.3"#, r#"12"#, Ordering::Greater),
+        (r#"-12.3"#, r#"12"#, Ordering::Less),
         (r#"123"#, r#"true"#, Ordering::Greater),
         (r#"123"#, r#"false"#, Ordering::Greater),
         (r#"true"#, r#"true"#, Ordering::Equal),
@@ -389,14 +391,14 @@ fn test_compare() {
         (
             r#"{"k1":"v1","k2":"v2"}"#,
             r#"{"k":"v1","k2":"v2"}"#,
-            Ordering::Less,
+            Ordering::Greater,
         ),
         (
             r#"{"k1":"v1","k2":"v2"}"#,
             r#"{"k1":"a1","k2":"v2"}"#,
             Ordering::Greater,
         ),
-        (r#"{"k1":"v1","k2":"v2"}"#, r#"{"a":1}"#, Ordering::Less),
+        (r#"{"k1":"v1","k2":"v2"}"#, r#"{"a":1}"#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#"{}"#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#""ab""#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#"123"#, Ordering::Greater),
@@ -406,7 +408,9 @@ fn test_compare() {
     ];
 
     let mut lbuf: Vec<u8> = Vec::new();
+    let mut lbuf2: Vec<u8> = Vec::new();
     let mut rbuf: Vec<u8> = Vec::new();
+    let mut rbuf2: Vec<u8> = Vec::new();
     for (l, r, expect) in sources {
         let res = compare(l.as_bytes(), r.as_bytes()).unwrap();
         assert_eq!(res, expect);
@@ -419,8 +423,30 @@ fn test_compare() {
         let res = compare(&lbuf, &rbuf).unwrap();
         assert_eq!(res, expect);
 
+        convert_to_comparable(&lbuf, &mut lbuf2);
+        convert_to_comparable(&rbuf, &mut rbuf2);
+
+        let mut res = Ordering::Equal;
+        for (lval, rval) in lbuf2.iter().zip(rbuf2.iter()) {
+            res = lval.cmp(rval);
+            match res {
+                Ordering::Equal => {
+                    continue;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+        if res == Ordering::Equal {
+            res = lbuf2.len().cmp(&rbuf2.len());
+        }
+        assert_eq!(res, expect);
+
         lbuf.clear();
+        lbuf2.clear();
         rbuf.clear();
+        rbuf2.clear();
     }
 }
 
