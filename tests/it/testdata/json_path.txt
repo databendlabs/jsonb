@@ -117,6 +117,36 @@ JsonPath {
 
 
 ---------- Input ----------
+$.store.book[last].test_key\uD83D\uDC8E测试
+---------- Output ---------
+$.store.book[last].test_key💎测试
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "store",
+        ),
+        DotField(
+            "book",
+        ),
+        ArrayIndices(
+            [
+                Index(
+                    LastIndex(
+                        0,
+                    ),
+                ),
+            ],
+        ),
+        DotField(
+            "test_key💎测试",
+        ),
+    ],
+}
+
+
+---------- Input ----------
 $.store.book[0,1, last - 2].price
 ---------- Output ---------
 $.store.book[0, 1, last-2].price
@@ -206,6 +236,24 @@ JsonPath {
         ),
         DotField(
             "book",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$."st\"ore"."book\uD83D\uDC8E"
+---------- Output ---------
+$.st"ore.book💎
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        DotField(
+            "st\"ore",
+        ),
+        DotField(
+            "book💎",
         ),
     ],
 }

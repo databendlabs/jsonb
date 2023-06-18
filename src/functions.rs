@@ -20,10 +20,7 @@ use std::collections::VecDeque;
 use crate::constants::*;
 use crate::error::*;
 use crate::jentry::JEntry;
-use crate::jsonpath::ArrayIndex;
-use crate::jsonpath::Index;
 use crate::jsonpath::JsonPath;
-use crate::jsonpath::Path;
 use crate::jsonpath::Selector;
 use crate::number::Number;
 use crate::parser::parse_value;
@@ -184,27 +181,70 @@ pub fn get_by_path_array<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Option
 }
 
 /// Get the inner element of `JSONB` Array by index.
-pub fn get_by_index(value: &[u8], index: i32) -> Option<Vec<u8>> {
-    if index < 0 {
-        return None;
-    }
-    let path = Path::ArrayIndices(vec![ArrayIndex::Index(Index::Index(index))]);
-    let json_path = JsonPath { paths: vec![path] };
-    get_by_path_first(value, json_path)
-}
-
-/// Get the inner element of `JSONB` Object by key name.
-pub fn get_by_name(value: &[u8], name: &str) -> Option<Vec<u8>> {
-    let path = Path::DotField(Cow::Borrowed(name));
-    let json_path = JsonPath { paths: vec![path] };
-    get_by_path_first(value, json_path)
-}
-
-/// Get the inner element of `JSONB` Object by key name ignoring case.
-pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
+pub fn get_by_index(value: &[u8], index: usize) -> Option<Vec<u8>> {
     if !is_jsonb(value) {
         return match parse_value(value) {
-            Ok(val) => val.get_by_name_ignore_case(name).map(Value::to_vec),
+            Ok(val) => match val {
+                Value::Array(vals) => vals.get(index).map(|v| v.to_vec()),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+    }
+
+    let header = read_u32(value, 0).unwrap();
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            if index >= length {
+                return None;
+            }
+            let mut jentry_offset = 4;
+            let mut val_offset = 4 * length + 4;
+            for i in 0..length {
+                let encoded = read_u32(value, jentry_offset).unwrap();
+                let jentry = JEntry::decode_jentry(encoded);
+                let val_length = jentry.length as usize;
+                if i < index {
+                    jentry_offset += 4;
+                    val_offset += val_length;
+                    continue;
+                }
+                let val = match jentry.type_code {
+                    CONTAINER_TAG => value[val_offset..val_offset + val_length].to_vec(),
+                    _ => {
+                        let mut buf = Vec::with_capacity(8 + val_length);
+                        buf.extend_from_slice(&SCALAR_CONTAINER_TAG.to_be_bytes());
+                        buf.extend_from_slice(&encoded.to_be_bytes());
+                        if jentry.length > 0 {
+                            buf.extend_from_slice(&value[val_offset..val_offset + val_length]);
+                        }
+                        buf
+                    }
+                };
+                return Some(val);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Get the inner element of `JSONB` Object by key name,
+/// if `ignore_case` is true, enables case-insensitive matching.
+pub fn get_by_name(value: &[u8], name: &str, ignore_case: bool) -> Option<Vec<u8>> {
+    if !is_jsonb(value) {
+        return match parse_value(value) {
+            Ok(val) => {
+                if ignore_case {
+                    val.get_by_name_ignore_case(name).map(Value::to_vec)
+                } else {
+                    match val {
+                        Value::Object(obj) => obj.get(name).map(|v| v.to_vec()),
+                        _ => None,
+                    }
+                }
+            }
             Err(_) => None,
         };
     }
@@ -238,7 +278,7 @@ pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
                 if name.eq(key) {
                     offsets = Some((jentry_offset, val_offset));
                     break;
-                } else if name.eq_ignore_ascii_case(key) && offsets.is_none() {
+                } else if ignore_case && name.eq_ignore_ascii_case(key) && offsets.is_none() {
                     offsets = Some((jentry_offset, val_offset));
                 }
                 let val_encoded = read_u32(value, jentry_offset).unwrap();
@@ -246,24 +286,24 @@ pub fn get_by_name_ignore_case(value: &[u8], name: &str) -> Option<Vec<u8>> {
                 jentry_offset += 4;
                 val_offset += val_jentry.length as usize;
             }
-            if let Some((jentry_offset, mut val_offset)) = offsets {
-                let mut buf: Vec<u8> = Vec::new();
+            if let Some((jentry_offset, val_offset)) = offsets {
                 let encoded = read_u32(value, jentry_offset).unwrap();
                 let jentry = JEntry::decode_jentry(encoded);
-                let prev_val_offset = val_offset;
-                val_offset += jentry.length as usize;
-                match jentry.type_code {
-                    CONTAINER_TAG => buf.extend_from_slice(&value[prev_val_offset..val_offset]),
+                let val_length = jentry.length as usize;
+                let val = match jentry.type_code {
+                    CONTAINER_TAG => value[val_offset..val_offset + val_length].to_vec(),
                     _ => {
+                        let mut buf: Vec<u8> = Vec::with_capacity(val_length + 8);
                         let scalar_header = SCALAR_CONTAINER_TAG;
                         buf.extend_from_slice(&scalar_header.to_be_bytes());
                         buf.extend_from_slice(&encoded.to_be_bytes());
-                        if val_offset > prev_val_offset {
-                            buf.extend_from_slice(&value[prev_val_offset..val_offset]);
+                        if val_length > 0 {
+                            buf.extend_from_slice(&value[val_offset..val_offset + val_length]);
                         }
+                        buf
                     }
-                }
-                return Some(buf);
+                };
+                return Some(val);
             }
             None
         }
@@ -308,6 +348,54 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
                 prev_key_offset = key_offset;
             }
             Some(buf)
+        }
+        _ => None,
+    }
+}
+
+/// Convert the values of a `JSONB` array to vector.
+pub fn array_values(value: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if !is_jsonb(value) {
+        return match parse_value(value) {
+            Ok(val) => match val {
+                Value::Array(vals) => {
+                    Some(vals.into_iter().map(|val| val.to_vec()).collect::<Vec<_>>())
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+    }
+
+    let header = read_u32(value, 0).unwrap();
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            let mut jentry_offset = 4;
+            let mut val_offset = 4 * length + 4;
+            let mut items = Vec::with_capacity(length);
+            for _ in 0..length {
+                let encoded = read_u32(value, jentry_offset).unwrap();
+                let jentry = JEntry::decode_jentry(encoded);
+                let val_length = jentry.length as usize;
+                let item = match jentry.type_code {
+                    CONTAINER_TAG => value[val_offset..val_offset + val_length].to_vec(),
+                    _ => {
+                        let mut buf = Vec::with_capacity(8 + val_length);
+                        buf.extend_from_slice(&SCALAR_CONTAINER_TAG.to_be_bytes());
+                        buf.extend_from_slice(&encoded.to_be_bytes());
+                        if jentry.length > 0 {
+                            buf.extend_from_slice(&value[val_offset..val_offset + val_length]);
+                        }
+                        buf
+                    }
+                };
+                items.push(item);
+
+                jentry_offset += 4;
+                val_offset += val_length;
+            }
+            Some(items)
         }
         _ => None,
     }

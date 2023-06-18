@@ -42,7 +42,26 @@ static HEX: [u8; 256] = {
     ]
 };
 
-pub fn parse_escaped_string<'a>(
+pub fn parse_string(mut data: &[u8], len: usize, idx: &mut usize) -> Result<String, Error> {
+    let mut buf = Vec::with_capacity(len);
+    let mut str_buf = String::with_capacity(4);
+    while !data.is_empty() {
+        *idx += 1;
+        let byte = data[0];
+        if byte == b'\\' {
+            data = &data[1..];
+            data = parse_escaped_string(data, idx, &mut str_buf)?;
+            buf.extend_from_slice(str_buf.as_bytes());
+            str_buf.clear();
+        } else {
+            buf.push(byte);
+            data = &data[1..];
+        }
+    }
+    String::from_utf8(buf).map_err(|_| Error::Syntax(ParseErrorCode::InvalidStringValue, *idx))
+}
+
+fn parse_escaped_string<'a>(
     mut data: &'a [u8],
     idx: &mut usize,
     str_buf: &mut String,

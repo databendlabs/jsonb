@@ -18,7 +18,7 @@ use super::constants::*;
 use super::error::Error;
 use super::error::ParseErrorCode;
 use super::number::Number;
-use super::util::parse_escaped_string;
+use super::util::parse_string;
 use super::value::Object;
 use super::value::Value;
 
@@ -300,28 +300,12 @@ impl<'a> Parser<'a> {
             self.step();
         }
 
-        let mut data = &self.buf[start_idx..self.idx - 1];
+        let data = &self.buf[start_idx..self.idx - 1];
         let val = if escapes > 0 {
             let len = self.idx - 1 - start_idx - escapes;
             let mut idx = start_idx + 1;
-            let mut buf = Vec::with_capacity(len);
-            let mut str_buf = String::with_capacity(4);
-            while !data.is_empty() {
-                idx += 1;
-                let byte = data[0];
-                if byte == b'\\' {
-                    data = &data[1..];
-                    data = parse_escaped_string(data, &mut idx, &mut str_buf)?;
-                    buf.extend_from_slice(str_buf.as_bytes());
-                    str_buf.clear();
-                } else {
-                    buf.push(byte);
-                    data = &data[1..];
-                }
-            }
-            String::from_utf8(buf)
-                .map(Cow::Owned)
-                .map_err(|_| self.error(ParseErrorCode::InvalidStringValue))?
+            let s = parse_string(data, len, &mut idx)?;
+            Cow::Owned(s)
         } else {
             std::str::from_utf8(data)
                 .map(Cow::Borrowed)
