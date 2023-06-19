@@ -951,8 +951,7 @@ pub fn is_object(value: &[u8]) -> bool {
 /// Convert `JSONB` value to String
 pub fn to_string(value: &[u8]) -> String {
     if !is_jsonb(value) {
-        let json = unsafe { String::from_utf8_unchecked(value.to_vec()) };
-        return json;
+        return String::from_utf8_lossy(value).to_string();
     }
 
     let mut json = String::new();
@@ -1059,15 +1058,15 @@ fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut Strin
             }
         };
         if i > last_start {
-            let val = unsafe { std::str::from_utf8_unchecked(&value[last_start..i]) };
-            json.push_str(val);
+            let val = String::from_utf8_lossy(&value[last_start..i]);
+            json.push_str(&val);
         }
         json.push_str(c);
         last_start = i + 1;
     }
     if last_start < end {
-        let val = unsafe { std::str::from_utf8_unchecked(&value[last_start..end]) };
-        json.push_str(val);
+        let val = String::from_utf8_lossy(&value[last_start..end]);
+        json.push_str(&val);
     }
     json.push('\"');
 }
