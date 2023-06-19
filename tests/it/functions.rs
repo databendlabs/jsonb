@@ -16,10 +16,10 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use jsonb::{
-    array_length, as_bool, as_null, as_number, as_str, build_array, build_object, compare,
-    convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_name_ignore_case,
-    get_by_path, is_array, is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str,
-    to_string, to_u64, Number, Object, Value,
+    array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
+    compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
+    is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64,
+    Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -137,7 +137,7 @@ fn test_array_length() {
 
 #[test]
 fn test_get_by_path() {
-    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}]}"#;
+    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab"}"#;
 
     let paths = vec![
         (r#"$.name"#, vec![r#""Fred""#]),
@@ -186,6 +186,8 @@ fn test_get_by_path() {
             r#"$.phones[0 to last]?(@.number == 3720453 && @.type == "work")"#,
             vec![],
         ),
+        (r#"$.car_no"#, vec![r#"123"#]),
+        (r#"$.测试\"\uD83D\uDC8E"#, vec![r#""ab""#]),
     ];
 
     let mut buf: Vec<u8> = Vec::new();
@@ -251,14 +253,14 @@ fn test_get_by_name() {
 
     let mut buf: Vec<u8> = Vec::new();
     for (s, name, expect) in sources {
-        let res = get_by_name(s.as_bytes(), &name);
+        let res = get_by_name(s.as_bytes(), &name, false);
         match expect.clone() {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
         }
         let value = parse_value(s.as_bytes()).unwrap();
         value.write_to_vec(&mut buf);
-        let res = get_by_name(&buf, &name);
+        let res = get_by_name(&buf, &name, false);
         match expect {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
@@ -287,14 +289,14 @@ fn test_get_by_name_ignore_case() {
 
     let mut buf: Vec<u8> = Vec::new();
     for (s, name, expect) in sources {
-        let res = get_by_name_ignore_case(s.as_bytes(), &name);
+        let res = get_by_name(s.as_bytes(), &name, true);
         match expect.clone() {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
         }
         let value = parse_value(s.as_bytes()).unwrap();
         value.write_to_vec(&mut buf);
-        let res = get_by_name_ignore_case(&buf, &name);
+        let res = get_by_name(&buf, &name, true);
         match expect {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
             None => assert_eq!(res, None),
@@ -335,6 +337,54 @@ fn test_object_keys() {
         let res = object_keys(&buf);
         match expect {
             Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
+            None => assert_eq!(res, None),
+        }
+        buf.clear();
+    }
+}
+
+#[test]
+fn test_array_values() {
+    let sources = vec![
+        (r#"{"a":"v1","b":"v2"}"#, None),
+        (r#"[]"#, Some(vec![])),
+        (
+            r#"[1,"a",[1,2]]"#,
+            Some(vec![
+                Value::Number(Number::Int64(1)),
+                Value::String(Cow::from("a")),
+                Value::Array(vec![
+                    Value::Number(Number::Int64(1)),
+                    Value::Number(Number::Int64(2)),
+                ]),
+            ]),
+        ),
+    ];
+
+    let mut buf: Vec<u8> = Vec::new();
+    for (s, expect) in sources {
+        let res = array_values(s.as_bytes());
+        match expect.clone() {
+            Some(expect) => {
+                let arr = res.unwrap();
+                assert_eq!(arr.len(), expect.len());
+                for (v, e) in arr.iter().zip(expect.iter()) {
+                    assert_eq!(&from_slice(v).unwrap(), e);
+                }
+            }
+            None => assert_eq!(res, None),
+        }
+        let value = parse_value(s.as_bytes()).unwrap();
+        value.write_to_vec(&mut buf);
+        let res = array_values(&buf);
+        match expect {
+            Some(expect) => {
+                let arr = res.unwrap();
+                assert_eq!(arr.len(), expect.len());
+                for (v, e) in arr.iter().zip(expect.iter()) {
+                    assert_eq!(&from_slice(v).unwrap(), e);
+                }
+            }
             None => assert_eq!(res, None),
         }
         buf.clear();

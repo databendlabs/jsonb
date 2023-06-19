@@ -14,18 +14,21 @@
 
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, tag, tag_no_case},
-    character::complete::{alphanumeric1, char, i32, i64, multispace0, one_of, u64},
+    bytes::complete::{tag, tag_no_case},
+    character::complete::{char, i32, i64, multispace0, u64},
     combinator::{map, opt, value},
+    error::{Error as NomError, ErrorKind},
     multi::{many0, separated_list1},
     number::complete::double,
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult,
 };
 
+use crate::constants::UNICODE_LEN;
 use crate::error::Error;
 use crate::jsonpath::path::*;
 use crate::number::Number;
+use crate::util::parse_string;
 use std::borrow::Cow;
 
 /// Parsing the input string to JSON Path.
@@ -48,13 +51,104 @@ fn json_path(input: &[u8]) -> IResult<&[u8], JsonPath<'_>> {
     })(input)
 }
 
-fn raw_string(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    escaped(alphanumeric1, '\\', one_of("\"n\\"))(input)
+fn check_escaped(input: &[u8], i: &mut usize) -> bool {
+    if *i + 1 >= input.len() {
+        return false;
+    }
+    if input[*i + 1] == b'u' {
+        if *i + 5 >= input.len() {
+            return false;
+        }
+        if input[*i + 2] == b'{' {
+            if *i + 7 >= input.len() {
+                return false;
+            }
+            *i += UNICODE_LEN + 4;
+        } else {
+            *i += UNICODE_LEN + 2;
+        }
+    } else {
+        *i += 2;
+    }
+    true
 }
 
-fn string(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    // TODO: support special characters and unicode characters.
-    delimited(char('"'), raw_string, char('"'))(input)
+fn raw_string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+    let mut i = 0;
+    let mut escapes = 0;
+    while i < input.len() {
+        let c = input[i];
+        match c {
+            b'\\' => {
+                escapes += 1;
+                if !check_escaped(input, &mut i) {
+                    return Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)));
+                }
+            }
+            b' ' | b'.' | b':' | b'[' | b']' | b'(' | b')' | b'?' | b'@' | b'$' | b'|' | b'<'
+            | b'>' | b'!' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'"' | b'\'' => {
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    if i > 0 {
+        if escapes == 0 {
+            if let Ok(s) = std::str::from_utf8(&input[..i]) {
+                return Ok((&input[i..], Cow::Borrowed(s)));
+            }
+        } else {
+            let data = &input[..i];
+            let len = i - escapes;
+            let mut idx = 0;
+            let s = parse_string(data, len, &mut idx)
+                .map_err(|_| nom::Err::Error(NomError::new(input, ErrorKind::Char)))?;
+            return Ok((&input[i..], Cow::Owned(s)));
+        }
+    }
+    Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)))
+}
+
+fn string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+    if input.is_empty() || input[0] != b'"' {
+        return Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)));
+    }
+    let mut i = 1;
+    let mut escapes = 0;
+    while i < input.len() {
+        let c = input[i];
+        match c {
+            b'\\' => {
+                escapes += 1;
+                if !check_escaped(input, &mut i) {
+                    return Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)));
+                }
+            }
+            b'"' => {
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    if i > 1 {
+        if escapes == 0 {
+            if let Ok(s) = std::str::from_utf8(&input[1..i]) {
+                return Ok((&input[i + 1..], Cow::Borrowed(s)));
+            }
+        } else {
+            let data = &input[1..i];
+            let len = i - 1 - escapes;
+            let mut idx = 1;
+            let s = parse_string(data, len, &mut idx)
+                .map_err(|_| nom::Err::Error(NomError::new(input, ErrorKind::Char)))?;
+            return Ok((&input[i + 1..], Cow::Owned(s)));
+        }
+    }
+    Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)))
 }
 
 fn bracket_wildcard(input: &[u8]) -> IResult<&[u8], ()> {
@@ -68,18 +162,15 @@ fn bracket_wildcard(input: &[u8]) -> IResult<&[u8], ()> {
     )(input)
 }
 
-fn colon_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    preceded(char(':'), alphanumeric1)(input)
+fn colon_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+    alt((preceded(char(':'), string), preceded(char(':'), raw_string)))(input)
 }
 
-fn dot_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    alt((
-        preceded(char('.'), alphanumeric1),
-        preceded(char('.'), string),
-    ))(input)
+fn dot_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+    alt((preceded(char('.'), string), preceded(char('.'), raw_string)))(input)
 }
 
-fn object_field(input: &[u8]) -> IResult<&[u8], &[u8]> {
+fn object_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
     delimited(
         terminated(char('['), multispace0),
         string,
@@ -134,16 +225,10 @@ fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
     alt((
         value(Path::DotWildcard, tag(".*")),
         value(Path::BracketWildcard, bracket_wildcard),
-        map(colon_field, |v| {
-            Path::ColonField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
-        }),
-        map(dot_field, |v| {
-            Path::DotField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
-        }),
-        map(object_field, |v| {
-            Path::ObjectField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
-        }),
+        map(colon_field, Path::ColonField),
+        map(dot_field, Path::DotField),
         map(array_indices, Path::ArrayIndices),
+        map(object_field, Path::ObjectField),
     ))(input)
 }
 
@@ -151,8 +236,8 @@ fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
 fn pre_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
     alt((
         value(Path::Root, char('$')),
-        map(delimited(multispace0, alphanumeric1, multispace0), |v| {
-            Path::DotField(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
+        map(delimited(multispace0, raw_string, multispace0), |v| {
+            Path::DotField(v)
         }),
     ))(input)
 }
@@ -225,9 +310,7 @@ fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
         map(u64, |v| PathValue::Number(Number::UInt64(v))),
         map(i64, |v| PathValue::Number(Number::Int64(v))),
         map(double, |v| PathValue::Number(Number::Float64(v))),
-        map(string, |v| {
-            PathValue::String(Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(v) }))
-        }),
+        map(string, PathValue::String),
     ))(input)
 }
 
