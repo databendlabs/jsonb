@@ -273,9 +273,6 @@ impl<'a> Parser<'a> {
         let mut escapes = 0;
         loop {
             let c = self.next()?;
-            if c.is_ascii_control() {
-                return Err(self.error(ParseErrorCode::ControlCharacterWhileParsingString));
-            }
             match c {
                 b'\\' => {
                     self.step();

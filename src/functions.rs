@@ -17,17 +17,22 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
-use super::constants::*;
-use super::error::*;
-use super::jentry::JEntry;
-use super::number::Number;
-use super::parser::parse_value;
-use super::value::Value;
+use crate::constants::*;
+use crate::error::*;
+use crate::jentry::JEntry;
 use crate::jsonpath::ArrayIndex;
 use crate::jsonpath::Index;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Path;
 use crate::jsonpath::Selector;
+use crate::number::Number;
+use crate::parser::parse_value;
+use crate::value::Object;
+use crate::value::Value;
+use rand::distributions::Alphanumeric;
+use rand::distributions::DistString;
+use rand::thread_rng;
+use rand::Rng;
 
 // builtin functions for `JSONB` bytes and `JSON` strings without decode all Values.
 // The input value must be valid `JSONB' or `JSON`.
@@ -313,14 +318,45 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
 /// In first level header, values compare as the following order:
 /// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
 pub fn compare(left: &[u8], right: &[u8]) -> Result<Ordering, Error> {
-    if !is_jsonb(left) {
-        let lval = parse_value(left)?;
-        let lbuf = lval.to_vec();
-        return compare(&lbuf, right);
+    if !is_jsonb(left) && !is_jsonb(right) {
+        let lres = parse_value(left);
+        let rres = parse_value(right);
+        match (lres, rres) {
+            (Ok(lval), Ok(rval)) => {
+                let lbuf = lval.to_vec();
+                let rbuf = rval.to_vec();
+                return compare(&lbuf, &rbuf);
+            }
+            (Ok(_), Err(_)) => {
+                return Ok(Ordering::Greater);
+            }
+            (Err(_), Ok(_)) => {
+                return Ok(Ordering::Less);
+            }
+            (Err(_), Err(_)) => {
+                return Ok(left.cmp(right));
+            }
+        }
+    } else if !is_jsonb(left) {
+        match parse_value(left) {
+            Ok(lval) => {
+                let lbuf = lval.to_vec();
+                return compare(&lbuf, right);
+            }
+            Err(_) => {
+                return Ok(Ordering::Less);
+            }
+        }
     } else if !is_jsonb(right) {
-        let rval = parse_value(right)?;
-        let rbuf = rval.to_vec();
-        return compare(left, &rbuf);
+        match parse_value(right) {
+            Ok(rval) => {
+                let rbuf = rval.to_vec();
+                return compare(left, &rbuf);
+            }
+            Err(_) => {
+                return Ok(Ordering::Greater);
+            }
+        }
     }
 
     let left_header = read_u32(left, 0)?;
@@ -365,15 +401,15 @@ pub fn compare(left: &[u8], right: &[u8]) -> Result<Ordering, Error> {
 }
 
 // Different types of values have different levels and are definitely not equal
-fn jentry_compare_level(jentry: &JEntry) -> Result<u8, Error> {
+fn jentry_compare_level(jentry: &JEntry) -> u8 {
     match jentry.type_code {
-        NULL_TAG => Ok(5),
-        CONTAINER_TAG => Ok(4),
-        STRING_TAG => Ok(3),
-        NUMBER_TAG => Ok(2),
-        TRUE_TAG => Ok(1),
-        FALSE_TAG => Ok(0),
-        _ => Err(Error::InvalidJsonbJEntry),
+        NULL_TAG => NULL_LEVEL,
+        CONTAINER_TAG => OBJECT_LEVEL,
+        STRING_TAG => STRING_LEVEL,
+        NUMBER_TAG => NUMBER_LEVEL,
+        TRUE_TAG => TRUE_LEVEL,
+        FALSE_TAG => FALSE_LEVEL,
+        _ => INVALID_LEVEL,
     }
 }
 
@@ -385,8 +421,8 @@ fn compare_scalar(
     right_jentry: &JEntry,
     right: &[u8],
 ) -> Result<Ordering, Error> {
-    let left_level = jentry_compare_level(left_jentry)?;
-    let right_level = jentry_compare_level(right_jentry)?;
+    let left_level = jentry_compare_level(left_jentry);
+    let right_level = jentry_compare_level(right_jentry);
     if left_level != right_level {
         return Ok(left_level.cmp(&right_level));
     }
@@ -478,7 +514,7 @@ fn compare_array(
 
 // `Object` values compares each key-value in turn,
 // first compare the key, and then compare the value if the key is equal.
-// The Greater the key, the Less the Object, the Greater the value, the Greater the Object
+// The larger the key/value, the larger the `Object`.
 fn compare_object(
     left_header: u32,
     left: &[u8],
@@ -530,11 +566,7 @@ fn compare_object(
             &right[right_key_offset..],
         )?;
         if key_order != Ordering::Equal {
-            if key_order == Ordering::Greater {
-                return Ok(Ordering::Less);
-            } else {
-                return Ok(Ordering::Greater);
-            }
+            return Ok(key_order);
         }
 
         let left_encoded = read_u32(left, left_jentry_offset)?;
@@ -950,6 +982,191 @@ fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut Strin
         json.push_str(val);
     }
     json.push('\"');
+}
+
+/// Convert `JSONB` value to comparable vector.
+/// The compare rules are the same as the `compare` function.
+/// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
+pub fn convert_to_comparable(value: &[u8], buf: &mut Vec<u8>) {
+    let depth = 0;
+    if !is_jsonb(value) {
+        match parse_value(value) {
+            Ok(val) => {
+                let val_buf = val.to_vec();
+                convert_to_comparable(&val_buf, buf);
+            }
+            Err(_) => {
+                buf.push(depth);
+                buf.push(INVALID_LEVEL);
+                buf.extend_from_slice(value);
+            }
+        }
+        return;
+    }
+    let header = read_u32(value, 0).unwrap();
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        SCALAR_CONTAINER_TAG => {
+            let encoded = read_u32(value, 4).unwrap();
+            let jentry = JEntry::decode_jentry(encoded);
+            scalar_convert_to_comparable(depth, &jentry, &value[8..], buf);
+        }
+        ARRAY_CONTAINER_TAG => {
+            buf.push(depth);
+            buf.push(ARRAY_LEVEL);
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            array_convert_to_comparable(depth + 1, length, &value[4..], buf);
+        }
+        OBJECT_CONTAINER_TAG => {
+            buf.push(depth);
+            buf.push(OBJECT_LEVEL);
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            object_convert_to_comparable(depth + 1, length, &value[4..], buf);
+        }
+        _ => {}
+    }
+}
+
+fn scalar_convert_to_comparable(depth: u8, jentry: &JEntry, value: &[u8], buf: &mut Vec<u8>) {
+    buf.push(depth);
+    let level = jentry_compare_level(jentry);
+    match jentry.type_code {
+        CONTAINER_TAG => {
+            let header = read_u32(value, 0).unwrap();
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            match header & CONTAINER_HEADER_TYPE_MASK {
+                ARRAY_CONTAINER_TAG => {
+                    buf.push(ARRAY_LEVEL);
+                    array_convert_to_comparable(depth + 1, length, &value[4..], buf);
+                }
+                OBJECT_CONTAINER_TAG => {
+                    buf.push(OBJECT_LEVEL);
+                    object_convert_to_comparable(depth + 1, length, &value[4..], buf);
+                }
+                _ => {}
+            }
+        }
+        _ => {
+            buf.push(level);
+            match jentry.type_code {
+                STRING_TAG => {
+                    let length = jentry.length as usize;
+                    buf.extend_from_slice(&value[..length]);
+                }
+                NUMBER_TAG => {
+                    let length = jentry.length as usize;
+                    let num = Number::decode(&value[..length]);
+                    let n = num.as_f64().unwrap();
+                    // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
+                    let s = n.to_bits() as i64;
+                    let v = s ^ (((s >> 63) as u64) >> 1) as i64;
+                    let mut b = v.to_be_bytes();
+                    // Toggle top "sign" bit to ensure consistent sort order
+                    b[0] ^= 0x80;
+                    buf.extend_from_slice(&b);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn array_convert_to_comparable(depth: u8, length: usize, value: &[u8], buf: &mut Vec<u8>) {
+    let mut jentry_offset = 0;
+    let mut val_offset = 4 * length;
+    for _ in 0..length {
+        let encoded = read_u32(value, jentry_offset).unwrap();
+        let jentry = JEntry::decode_jentry(encoded);
+        scalar_convert_to_comparable(depth, &jentry, &value[val_offset..], buf);
+        jentry_offset += 4;
+        val_offset += jentry.length as usize;
+    }
+}
+
+fn object_convert_to_comparable(depth: u8, length: usize, value: &[u8], buf: &mut Vec<u8>) {
+    let mut jentry_offset = 0;
+    let mut val_offset = 8 * length;
+
+    // read all key jentries first
+    let mut key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
+    for _ in 0..length {
+        let encoded = read_u32(value, jentry_offset).unwrap();
+        let key_jentry = JEntry::decode_jentry(encoded);
+
+        jentry_offset += 4;
+        val_offset += key_jentry.length as usize;
+        key_jentries.push_back(key_jentry);
+    }
+
+    let mut key_offset = 8 * length;
+    for _ in 0..length {
+        let key_jentry = key_jentries.pop_front().unwrap();
+        scalar_convert_to_comparable(depth, &key_jentry, &value[key_offset..], buf);
+
+        let encoded = read_u32(value, jentry_offset).unwrap();
+        let val_jentry = JEntry::decode_jentry(encoded);
+        scalar_convert_to_comparable(depth, &val_jentry, &value[val_offset..], buf);
+
+        jentry_offset += 4;
+        key_offset += key_jentry.length as usize;
+        val_offset += val_jentry.length as usize;
+    }
+}
+
+/// generate random JSONB value
+pub fn rand_value() -> Value<'static> {
+    let mut rng = thread_rng();
+    let val = match rng.gen_range(0..=2) {
+        0 => {
+            let len = rng.gen_range(0..=5);
+            let mut values = Vec::with_capacity(len);
+            for _ in 0..len {
+                values.push(rand_scalar_value());
+            }
+            Value::Array(values)
+        }
+        1 => {
+            let len = rng.gen_range(0..=5);
+            let mut obj = Object::new();
+            for _ in 0..len {
+                let k = Alphanumeric.sample_string(&mut rng, 5);
+                let v = rand_scalar_value();
+                obj.insert(k, v);
+            }
+            Value::Object(obj)
+        }
+        _ => rand_scalar_value(),
+    };
+    val
+}
+
+fn rand_scalar_value() -> Value<'static> {
+    let mut rng = thread_rng();
+    let val = match rng.gen_range(0..=3) {
+        0 => {
+            let v = rng.gen_bool(0.5);
+            Value::Bool(v)
+        }
+        1 => {
+            let s = Alphanumeric.sample_string(&mut rng, 5);
+            Value::String(Cow::from(s))
+        }
+        2 => match rng.gen_range(0..=2) {
+            0 => {
+                let n: u64 = rng.gen_range(0..=100000);
+                Value::Number(Number::UInt64(n))
+            }
+            1 => {
+                let n: i64 = rng.gen_range(-100000..=100000);
+                Value::Number(Number::Int64(n))
+            }
+            _ => {
+                let n: f64 = rng.gen_range(-4000.0..1.3e5);
+                Value::Number(Number::Float64(n))
+            }
+        },
+        _ => Value::Null,
+    };
+    val
 }
 
 // Check whether the value is `JSONB` format,
