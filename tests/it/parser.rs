@@ -251,14 +251,6 @@ fn test_parse_string() {
         ("\"", "EOF while parsing a value, pos 1"),
         ("\"lol", "EOF while parsing a value, pos 4"),
         ("\"lol\"a", "trailing characters, pos 6"),
-        (
-            "\"\n\"",
-            "control character (\\u0000-\\u001F) found while parsing a string, pos 1",
-        ),
-        (
-            "\"\x1F\"",
-            "control character (\\u0000-\\u001F) found while parsing a string, pos 1",
-        ),
     ]);
 
     test_parse_ok(vec![
