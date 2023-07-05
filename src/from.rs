@@ -182,6 +182,12 @@ impl<'a> From<&JsonValue> for Value<'a> {
     }
 }
 
+impl<'a> From<JsonValue> for Value<'a> {
+    fn from(value: JsonValue) -> Self {
+        (&value).into()
+    }
+}
+
 impl<'a> From<Value<'a>> for JsonValue {
     fn from(value: Value<'a>) -> Self {
         match value {
