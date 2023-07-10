@@ -1047,7 +1047,6 @@ fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut Strin
         let c = match value[i] {
             0x5C => "\\\\",
             0x22 => "\\\"",
-            0x2F => "\\/",
             0x08 => "\\b",
             0x0C => "\\f",
             0x0A => "\\n",
