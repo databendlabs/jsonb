@@ -21,6 +21,7 @@ use crate::constants::*;
 use crate::error::*;
 use crate::jentry::JEntry;
 use crate::jsonpath::JsonPath;
+use crate::jsonpath::Mode;
 use crate::jsonpath::Selector;
 use crate::number::Number;
 use crate::parser::parse_value;
@@ -144,40 +145,59 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
 
 /// Get the inner elements of `JSONB` value by JSON path.
 /// The return value may contains multiple matching elements.
-pub fn get_by_path<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Vec<Vec<u8>> {
-    let selector = Selector::new(json_path);
+pub fn get_by_path<'a>(
+    value: &'a [u8],
+    json_path: JsonPath<'a>,
+    data: &mut Vec<u8>,
+    offsets: &mut Vec<u64>,
+) {
+    let selector = Selector::new(json_path, Mode::Mixed);
     if !is_jsonb(value) {
-        match parse_value(value) {
-            Ok(val) => {
-                let value = val.to_vec();
-                selector.select(value.as_slice())
-            }
-            Err(_) => vec![],
+        if let Ok(val) = parse_value(value) {
+            let value = val.to_vec();
+            selector.select(value.as_slice(), data, offsets)
         }
     } else {
-        selector.select(value)
+        selector.select(value, data, offsets)
     }
 }
 
 /// Get the inner element of `JSONB` value by JSON path.
 /// If there are multiple matching elements, only the first one is returned
-pub fn get_by_path_first<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Option<Vec<u8>> {
-    let mut values = get_by_path(value, json_path);
-    if values.is_empty() {
-        None
+pub fn get_by_path_first<'a>(
+    value: &'a [u8],
+    json_path: JsonPath<'a>,
+    data: &mut Vec<u8>,
+    offsets: &mut Vec<u64>,
+) {
+    let selector = Selector::new(json_path, Mode::First);
+    if !is_jsonb(value) {
+        if let Ok(val) = parse_value(value) {
+            let value = val.to_vec();
+            selector.select(value.as_slice(), data, offsets)
+        }
     } else {
-        Some(values.remove(0))
+        selector.select(value, data, offsets)
     }
 }
 
 /// Get the inner elements of `JSONB` value by JSON path.
 /// If there are multiple matching elements, return an `JSONB` Array.
-pub fn get_by_path_array<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Option<Vec<u8>> {
-    let values = get_by_path(value, json_path);
-    let mut array_value = Vec::new();
-    let items: Vec<_> = values.iter().map(|v| v.as_slice()).collect();
-    build_array(items, &mut array_value).unwrap();
-    Some(array_value)
+pub fn get_by_path_array<'a>(
+    value: &'a [u8],
+    json_path: JsonPath<'a>,
+    data: &mut Vec<u8>,
+    offsets: &mut Vec<u64>,
+) {
+    let selector = Selector::new(json_path, Mode::Array);
+    if !is_jsonb(value) {
+        if let Ok(val) = parse_value(value) {
+            let value = val.to_vec();
+            selector.select(value.as_slice(), data, offsets)
+        }
+    } else {
+        selector.select(value, data, offsets)
+    }
 }
 
 /// Get the inner element of `JSONB` Array by index.

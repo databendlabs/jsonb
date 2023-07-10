@@ -191,17 +191,39 @@ fn test_get_by_path() {
     ];
 
     let mut buf: Vec<u8> = Vec::new();
+    let mut out_buf: Vec<u8> = Vec::new();
+    let mut out_offsets: Vec<u64> = Vec::new();
     let value = parse_value(source.as_bytes()).unwrap();
     value.write_to_vec(&mut buf);
     for (path, expects) in paths {
+        out_buf.clear();
+        out_offsets.clear();
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = get_by_path(&buf, json_path);
-        assert_eq!(res.len(), expects.len());
-        for (val, expect) in res.into_iter().zip(expects.iter()) {
+        get_by_path(&buf, json_path, &mut out_buf, &mut out_offsets);
+        if expects.is_empty() {
+            assert_eq!(out_offsets.len(), expects.len());
+        } else if expects.len() == 1 {
             let mut val_buf: Vec<u8> = Vec::new();
-            let val_expect = parse_value(expect.as_bytes()).unwrap();
+            let val_expect = parse_value(expects[0].as_bytes()).unwrap();
             val_expect.write_to_vec(&mut val_buf);
-            assert_eq!(val, val_buf);
+            assert_eq!(out_buf, val_buf);
+        } else {
+            let mut offsets = Vec::with_capacity(expects.len());
+            let mut val_buf: Vec<u8> = Vec::new();
+            for expect in expects.iter() {
+                let val_expect = parse_value(expect.as_bytes()).unwrap();
+                val_expect.write_to_vec(&mut val_buf);
+                offsets.push(val_buf.len());
+            }
+            let mut values = Vec::with_capacity(offsets.len());
+            let mut last_offset = 0;
+            for offset in offsets {
+                values.push(&val_buf[last_offset..offset]);
+                last_offset = offset;
+            }
+            let mut arr_buf = Vec::new();
+            build_array(values, &mut arr_buf).unwrap();
+            assert_eq!(out_buf, arr_buf);
         }
     }
 }
