@@ -19,7 +19,7 @@ use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
     is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_str, to_string, to_u64,
-    Number, Object, Value,
+    traverse_check_string, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -777,6 +777,42 @@ fn test_to_string() {
         let value = parse_value(s.as_bytes()).unwrap();
         value.write_to_vec(&mut buf);
         let res = to_string(&buf);
+        assert_eq!(res, expect);
+        buf.clear();
+    }
+}
+
+#[test]
+fn test_traverse_check_string() {
+    let sources = vec![
+        (r#"null"#, false),
+        (r#"11"#, false),
+        (r#""a""#, false),
+        (r#""c""#, true),
+        (r#"[1,2,3,4,"b"]"#, false),
+        (r#"[1,2,[3,[4,"c"]]]"#, true),
+        (r#"[true,false,[1,2,3],{"a":"b"}]"#, false),
+        (
+            r#"{"a":true,"b":{"b1":"v1","b2":11},"c":[true,12,"c1","c2"]}"#,
+            true,
+        ),
+        (
+            r#"{"a0":true,"b0":{"b1":"v1","b2":11},"c0":[true,12,"c1","c"]}"#,
+            true,
+        ),
+        (
+            r#"{"a0":true,"b0":{"b1":"v1","b2":11},"c0":[true,12,"c1","c2"]}"#,
+            false,
+        ),
+    ];
+    let mut buf: Vec<u8> = Vec::new();
+    for (s, expect) in sources {
+        let value = parse_value(s.as_bytes()).unwrap();
+        value.write_to_vec(&mut buf);
+        let res = traverse_check_string(&buf, |v| {
+            let s = unsafe { std::str::from_utf8_unchecked(v) };
+            s == "c"
+        });
         assert_eq!(res, expect);
         buf.clear();
     }
