@@ -1275,6 +1275,59 @@ fn rand_scalar_value() -> Value<'static> {
     val
 }
 
+/// Traverse all the string fields in a jsonb value and check whether the conditions are met.
+pub fn traverse_check_string(value: &[u8], func: impl Fn(&[u8]) -> bool) -> bool {
+    if !is_jsonb(value) {
+        match parse_value(value) {
+            Ok(val) => {
+                let val_buf = val.to_vec();
+                return traverse_check_string(&val_buf, func);
+            }
+            Err(_) => {
+                return false;
+            }
+        }
+    }
+
+    let mut offsets = VecDeque::new();
+    offsets.push_back(0);
+
+    while let Some(offset) = offsets.pop_front() {
+        let header = read_u32(value, offset).unwrap();
+        let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+
+        let size = match header & CONTAINER_HEADER_TYPE_MASK {
+            SCALAR_CONTAINER_TAG => 1,
+            ARRAY_CONTAINER_TAG => length,
+            OBJECT_CONTAINER_TAG => length * 2,
+            _ => unreachable!("invalid jsonb value"),
+        };
+
+        let mut jentry_offset = offset + 4;
+        let mut val_offset = offset + 4 + 4 * size;
+        for _ in 0..size {
+            let encoded = read_u32(value, jentry_offset).unwrap();
+            let jentry = JEntry::decode_jentry(encoded);
+            match jentry.type_code {
+                CONTAINER_TAG => {
+                    offsets.push_back(val_offset);
+                }
+                STRING_TAG => {
+                    let val_length = jentry.length as usize;
+                    if func(&value[val_offset..val_offset + val_length]) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            jentry_offset += 4;
+            val_offset += jentry.length as usize;
+        }
+    }
+
+    false
+}
+
 // Check whether the value is `JSONB` format,
 // for compatibility with previous `JSON` string.
 fn is_jsonb(value: &[u8]) -> bool {
