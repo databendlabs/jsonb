@@ -975,33 +975,103 @@ pub fn to_string(value: &[u8]) -> String {
     }
 
     let mut json = String::new();
-    container_to_string(value, &mut 0, &mut json);
+    container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(false));
     json
 }
 
-fn container_to_string(value: &[u8], offset: &mut usize, json: &mut String) {
+/// Convert `JSONB` value to pretty String
+pub fn to_pretty_string(value: &[u8]) -> String {
+    if !is_jsonb(value) {
+        return String::from_utf8_lossy(value).to_string();
+    }
+
+    let mut json = String::new();
+    container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(true));
+    json
+}
+
+struct PrettyOpts {
+    enabled: bool,
+    indent: usize,
+}
+
+impl PrettyOpts {
+    fn new(enabled: bool) -> Self {
+        Self { enabled, indent: 0 }
+    }
+
+    fn inc_indent(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            indent: self.indent + 2,
+        }
+    }
+
+    fn generate_indent(&self) -> String {
+        String::from_utf8(vec![0x20; self.indent]).unwrap()
+    }
+}
+
+fn container_to_string(
+    value: &[u8],
+    offset: &mut usize,
+    json: &mut String,
+    pretty_opts: &PrettyOpts,
+) {
     let header = read_u32(value, *offset).unwrap();
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
             let mut jentry_offset = 4 + *offset;
             let mut value_offset = 8 + *offset;
-            scalar_to_string(value, &mut jentry_offset, &mut value_offset, json);
+            scalar_to_string(
+                value,
+                &mut jentry_offset,
+                &mut value_offset,
+                json,
+                pretty_opts,
+            );
         }
         ARRAY_CONTAINER_TAG => {
-            json.push('[');
+            if pretty_opts.enabled {
+                json.push_str("[\n");
+            } else {
+                json.push('[');
+            }
             let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
             let mut jentry_offset = 4 + *offset;
             let mut value_offset = 4 + *offset + 4 * length;
+            let inner_pretty_ops = pretty_opts.inc_indent();
             for i in 0..length {
                 if i > 0 {
-                    json.push(',');
+                    if pretty_opts.enabled {
+                        json.push_str(",\n");
+                    } else {
+                        json.push(',');
+                    }
                 }
-                scalar_to_string(value, &mut jentry_offset, &mut value_offset, json);
+                if pretty_opts.enabled {
+                    json.push_str(&inner_pretty_ops.generate_indent());
+                }
+                scalar_to_string(
+                    value,
+                    &mut jentry_offset,
+                    &mut value_offset,
+                    json,
+                    &inner_pretty_ops,
+                );
+            }
+            if pretty_opts.enabled {
+                json.push('\n');
+                json.push_str(&pretty_opts.generate_indent());
             }
             json.push(']');
         }
         OBJECT_CONTAINER_TAG => {
-            json.push('{');
+            if pretty_opts.enabled {
+                json.push_str("{\n");
+            } else {
+                json.push('{');
+            }
             let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
             let mut jentry_offset = 4 + *offset;
             let mut key_offset = 4 + *offset + 8 * length;
@@ -1015,14 +1085,35 @@ fn container_to_string(value: &[u8], offset: &mut usize, json: &mut String) {
                 key_offset += key_length;
             }
             let mut value_offset = key_offset;
+            let inner_pretty_ops = pretty_opts.inc_indent();
             for i in 0..length {
                 if i > 0 {
-                    json.push(',');
+                    if pretty_opts.enabled {
+                        json.push_str(",\n");
+                    } else {
+                        json.push(',');
+                    }
                 }
                 let (key_start, key_end) = keys.pop_front().unwrap();
-                escape_scalar_string(value, key_start, key_end, json);
-                json.push(':');
-                scalar_to_string(value, &mut jentry_offset, &mut value_offset, json);
+                if pretty_opts.enabled {
+                    json.push_str(&inner_pretty_ops.generate_indent());
+                    escape_scalar_string(value, key_start, key_end, json);
+                    json.push_str(": ");
+                } else {
+                    escape_scalar_string(value, key_start, key_end, json);
+                    json.push(':');
+                }
+                scalar_to_string(
+                    value,
+                    &mut jentry_offset,
+                    &mut value_offset,
+                    json,
+                    &inner_pretty_ops,
+                );
+            }
+            if pretty_opts.enabled {
+                json.push('\n');
+                json.push_str(&pretty_opts.generate_indent());
             }
             json.push('}');
         }
@@ -1035,6 +1126,7 @@ fn scalar_to_string(
     jentry_offset: &mut usize,
     value_offset: &mut usize,
     json: &mut String,
+    pretty_opts: &PrettyOpts,
 ) {
     let jentry_encoded = read_u32(value, *jentry_offset).unwrap();
     let jentry = JEntry::decode_jentry(jentry_encoded);
@@ -1051,7 +1143,7 @@ fn scalar_to_string(
             escape_scalar_string(value, *value_offset, *value_offset + length, json);
         }
         CONTAINER_TAG => {
-            container_to_string(value, value_offset, json);
+            container_to_string(value, value_offset, json, pretty_opts);
         }
         _ => {}
     }
