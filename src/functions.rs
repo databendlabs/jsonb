@@ -1028,7 +1028,7 @@ fn container_to_string(
                 &mut jentry_offset,
                 &mut value_offset,
                 json,
-                &pretty_opts,
+                pretty_opts,
             );
         }
         ARRAY_CONTAINER_TAG => {
@@ -1061,7 +1061,7 @@ fn container_to_string(
                 );
             }
             if pretty_opts.enabled {
-                json.push_str("\n");
+                json.push('\n');
                 json.push_str(&pretty_opts.generate_indent());
             }
             json.push(']');
@@ -1112,7 +1112,7 @@ fn container_to_string(
                 );
             }
             if pretty_opts.enabled {
-                json.push_str("\n");
+                json.push('\n');
                 json.push_str(&pretty_opts.generate_indent());
             }
             json.push('}');
