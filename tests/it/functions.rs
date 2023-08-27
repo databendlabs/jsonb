@@ -18,8 +18,8 @@ use std::cmp::Ordering;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
-    is_object, object_keys, parse_value, to_bool, to_f64, to_i64, to_pretty_string, to_str,
-    to_string, to_u64, traverse_check_string, Number, Object, Value, strip_nulls,
+    is_object, object_keys, parse_value, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string,
+    to_str, to_string, to_u64, traverse_check_string, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -887,18 +887,9 @@ fn test_traverse_check_string() {
 #[test]
 fn test_strip_nulls() {
     let sources = vec![
-        (
-            r#"null"#,
-            r#"null"#,
-        ),
-        (
-            r#"1"#,
-            r#"1"#,
-        ),
-        (
-            r#"[1,2,3,null]"#,
-            r#"[1,2,3,null]"#,
-        ),
+        (r#"null"#, r#"null"#),
+        (r#"1"#, r#"1"#),
+        (r#"[1,2,3,null]"#, r#"[1,2,3,null]"#),
         (
             r#"{"a":null, "b":{"a":null,"b":1},"c":[1,null,2]}"#,
             r#"{"b":{"b":1},"c":[1,null,2]}"#,
@@ -911,13 +902,19 @@ fn test_strip_nulls() {
             let value = parse_value(s.as_bytes()).unwrap().to_vec();
             let mut buf = Vec::new();
             strip_nulls(&value, &mut buf).unwrap();
-            assert_eq!(parse_value(expect.as_bytes()).unwrap(), from_slice(&buf).unwrap());
+            assert_eq!(
+                parse_value(expect.as_bytes()).unwrap(),
+                from_slice(&buf).unwrap()
+            );
         }
         // Check from String JSON
         {
             let mut buf = Vec::new();
             strip_nulls(s.as_bytes(), &mut buf).unwrap();
-            assert_eq!(parse_value(expect.as_bytes()).unwrap(), from_slice(&buf).unwrap());
+            assert_eq!(
+                parse_value(expect.as_bytes()).unwrap(),
+                from_slice(&buf).unwrap()
+            );
         }
     }
 }
