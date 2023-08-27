@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 
 use crate::constants::*;
 use crate::error::*;
+use crate::from_slice;
 use crate::jentry::JEntry;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Mode;
@@ -1418,6 +1419,32 @@ pub fn traverse_check_string(value: &[u8], func: impl Fn(&[u8]) -> bool) -> bool
     }
 
     false
+}
+
+/// Deletes all object fields that have null values from the given JSON value, recursively.
+/// Null values that are not object fields are untouched.
+pub fn strip_nulls(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let mut json = from_slice(value)?;
+    strip_value_nulls(&mut json);
+    json.write_to_vec(buf);
+    Ok(())
+}
+
+fn strip_value_nulls(val: &mut Value<'_>) {
+    match val {
+        Value::Array(arr) => {
+            for v in arr {
+                strip_value_nulls(v);
+            }
+        }
+        Value::Object(ref mut obj) => {
+            for (_, v) in obj.iter_mut() {
+                strip_value_nulls(v);
+            }
+            obj.retain(|_, v| !matches!(v, Value::Null));
+        }
+        _ => {}
+    }
 }
 
 // Check whether the value is `JSONB` format,
