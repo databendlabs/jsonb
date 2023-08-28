@@ -19,7 +19,7 @@ use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
     is_object, object_keys, parse_value, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string,
-    to_str, to_string, to_u64, traverse_check_string, Number, Object, Value,
+    to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -915,6 +915,30 @@ fn test_strip_nulls() {
                 parse_value(expect.as_bytes()).unwrap(),
                 from_slice(&buf).unwrap()
             );
+        }
+    }
+}
+
+#[test]
+fn test_type_of() {
+    let sources = vec![
+        (r#"null"#, "null"),
+        (r#"1"#, "number"),
+        (r#"-1.2"#, "number"),
+        (r#""test""#, "string"),
+        (r#"[1,2,3,4,5]"#, "array"),
+        (r#"{"a":1,"b":2}"#, "object"),
+    ];
+
+    for (s, expect) in sources {
+        // Check from JSONB
+        {
+            let value = parse_value(s.as_bytes()).unwrap().to_vec();
+            assert_eq!(expect, type_of(&value).unwrap());
+        }
+        // Check from String JSON
+        {
+            assert_eq!(expect, type_of(s.as_bytes()).unwrap());
         }
     }
 }
