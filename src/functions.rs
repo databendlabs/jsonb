@@ -1447,6 +1447,44 @@ fn strip_value_nulls(val: &mut Value<'_>) {
     }
 }
 
+/// Returns the type of the top-level JSON value as a text string.
+/// Possible types are object, array, string, number, boolean, and null.
+pub fn type_of(value: &[u8]) -> Result<&'static str, Error> {
+    if !is_jsonb(value) {
+        return match value.first() {
+            Some(v) => match v {
+                b'n' => Ok(TYPE_NULL),
+                b't' | b'f' => Ok(TYPE_BOOLEAN),
+                b'0'..=b'9' | b'-' => Ok(TYPE_NUMBER),
+                b'"' => Ok(TYPE_STRING),
+                b'[' => Ok(TYPE_ARRAY),
+                b'{' => Ok(TYPE_OBJECT),
+                _ => Err(Error::Syntax(ParseErrorCode::ExpectedSomeValue, 0)),
+            },
+            None => Err(Error::Syntax(ParseErrorCode::InvalidEOF, 0)),
+        };
+    }
+
+    let header = read_u32(value, 0)?;
+
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        SCALAR_CONTAINER_TAG => {
+            let encoded = read_u32(value, 4)?;
+            let jentry = JEntry::decode_jentry(encoded);
+            match jentry.type_code {
+                NULL_TAG => Ok(TYPE_NULL),
+                TRUE_TAG | FALSE_TAG => Ok(TYPE_BOOLEAN),
+                NUMBER_TAG => Ok(TYPE_NUMBER),
+                STRING_TAG => Ok(TYPE_STRING),
+                _ => Err(Error::InvalidJsonbJEntry),
+            }
+        }
+        ARRAY_CONTAINER_TAG => Ok(TYPE_ARRAY),
+        OBJECT_CONTAINER_TAG => Ok(TYPE_OBJECT),
+        _ => Err(Error::InvalidJsonbHeader),
+    }
+}
+
 // Check whether the value is `JSONB` format,
 // for compatibility with previous `JSON` string.
 fn is_jsonb(value: &[u8]) -> bool {

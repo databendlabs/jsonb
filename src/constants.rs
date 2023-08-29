@@ -69,3 +69,10 @@ pub(crate) const NUMBER_LEVEL: u8 = 3;
 pub(crate) const TRUE_LEVEL: u8 = 2;
 pub(crate) const FALSE_LEVEL: u8 = 1;
 pub(crate) const INVALID_LEVEL: u8 = 0;
+
+pub(crate) const TYPE_STRING: &str = "string";
+pub(crate) const TYPE_NULL: &str = "null";
+pub(crate) const TYPE_BOOLEAN: &str = "boolean";
+pub(crate) const TYPE_NUMBER: &str = "number";
+pub(crate) const TYPE_ARRAY: &str = "array";
+pub(crate) const TYPE_OBJECT: &str = "object";
