@@ -66,7 +66,7 @@ fn test_build_array() {
 
 #[test]
 fn test_build_object() {
-    let sources = vec![
+    let sources = [
         r#"true"#,
         r#"123.45"#,
         r#""abc""#,
