@@ -18,8 +18,9 @@ use std::cmp::Ordering;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
-    is_object, object_keys, parse_value, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string,
-    to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object, Value,
+    is_object, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64, to_i64,
+    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object,
+    Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -132,6 +133,38 @@ fn test_array_length() {
         let res = array_length(&buf);
         assert_eq!(res, expect);
         buf.clear();
+    }
+}
+
+#[test]
+fn test_path_exists() {
+    let sources = vec![
+        (r#"{"a":1,"b":2}"#, r#"$.a"#, true),
+        (r#"{"a":1,"b":2}"#, r#"$.c"#, false),
+        (r#"{"a":1,"b":2}"#, r#"$.a ? (@ == 1)"#, true),
+        (r#"{"a":1,"b":2}"#, r#"$.a ? (@ > 1)"#, false),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0]"#, true),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3]"#, false),
+        (
+            r#"{"a":1,"b":[1,2,3]}"#,
+            r#"$.b[1 to last] ? (@ >=2 && @ <=3)"#,
+            true,
+        ),
+    ];
+    for (json, path, expect) in sources {
+        // Check from JSONB
+        {
+            let value = parse_value(json.as_bytes()).unwrap().to_vec();
+            let json_path = parse_json_path(path.as_bytes()).unwrap();
+            let res = path_exists(value.as_slice(), json_path);
+            assert_eq!(res, expect);
+        }
+        // Check from String JSON
+        {
+            let json_path = parse_json_path(path.as_bytes()).unwrap();
+            let res = path_exists(json.as_bytes(), json_path);
+            assert_eq!(res, expect);
+        }
     }
 }
 
