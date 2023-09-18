@@ -144,6 +144,22 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
     }
 }
 
+/// Checks whether the JSON path returns any item for the `JSONB` value.
+pub fn path_exists<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> bool {
+    let selector = Selector::new(json_path, Mode::Mixed);
+    if !is_jsonb(value) {
+        match parse_value(value) {
+            Ok(val) => {
+                let value = val.to_vec();
+                selector.exists(value.as_slice())
+            }
+            Err(_) => false,
+        }
+    } else {
+        selector.exists(value)
+    }
+}
+
 /// Get the inner elements of `JSONB` value by JSON path.
 /// The return value may contains multiple matching elements.
 pub fn get_by_path<'a>(

@@ -73,6 +73,30 @@ impl<'a> Selector<'a> {
     }
 
     pub fn select(&'a self, root: &'a [u8], data: &mut Vec<u8>, offsets: &mut Vec<u64>) {
+        let mut poses = self.find_positions(root);
+        match self.mode {
+            Mode::All => Self::build_values(root, &mut poses, data, offsets),
+            Mode::First => {
+                poses.truncate(1);
+                Self::build_values(root, &mut poses, data, offsets)
+            }
+            Mode::Array => Self::build_scalar_array(root, &mut poses, data, offsets),
+            Mode::Mixed => {
+                if poses.len() > 1 {
+                    Self::build_scalar_array(root, &mut poses, data, offsets)
+                } else {
+                    Self::build_values(root, &mut poses, data, offsets)
+                }
+            }
+        }
+    }
+
+    pub fn exists(&'a self, root: &'a [u8]) -> bool {
+        let poses = self.find_positions(root);
+        !poses.is_empty()
+    }
+
+    fn find_positions(&'a self, root: &'a [u8]) -> VecDeque<Position> {
         let mut poses = VecDeque::new();
         poses.push_back(Position::Container((0, root.len())));
 
@@ -110,22 +134,7 @@ impl<'a> Selector<'a> {
                 }
             }
         }
-
-        match self.mode {
-            Mode::All => Self::build_values(root, &mut poses, data, offsets),
-            Mode::First => {
-                poses.truncate(1);
-                Self::build_values(root, &mut poses, data, offsets)
-            }
-            Mode::Array => Self::build_scalar_array(root, &mut poses, data, offsets),
-            Mode::Mixed => {
-                if poses.len() > 1 {
-                    Self::build_scalar_array(root, &mut poses, data, offsets)
-                } else {
-                    Self::build_values(root, &mut poses, data, offsets)
-                }
-            }
-        }
+        poses
     }
 
     fn select_path(

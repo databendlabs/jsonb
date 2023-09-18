@@ -28,7 +28,7 @@ fn test_json_path() {
         r#"$.store.book[*].*"#,
         r#"$.store.book[0].price"#,
         r#"$.store.book[last].isbn"#,
-        r#"$.store.book[last].test_key\uD83D\uDC8E测试"#,
+        r"$.store.book[last].test_key\uD83D\uDC8E测试",
         r#"$.store.book[0,1, last - 2].price"#,
         r#"$.store.book[0,1 to last-1]"#,
         r#"$."store"."book""#,
