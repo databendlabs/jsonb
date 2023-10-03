@@ -14,13 +14,14 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
-    is_object, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64, to_i64,
-    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object,
-    Value,
+    is_object, object_each, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64,
+    to_i64, to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number,
+    Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -972,6 +973,74 @@ fn test_type_of() {
         // Check from String JSON
         {
             assert_eq!(expect, type_of(s.as_bytes()).unwrap());
+        }
+    }
+}
+
+#[test]
+fn test_object_each() {
+    fn init_object<'a>(entries: Vec<(&str, Value<'a>)>) -> Value<'a> {
+        let mut map = BTreeMap::new();
+        for (key, val) in entries {
+            map.insert(key.to_string(), val);
+        }
+        Value::Object(map)
+    }
+    let sources = vec![
+        ("true", None),
+        (r#"[1,2,3]"#, None),
+        (
+            r#"{"a":1,"b":false}"#,
+            Some(vec![
+                ("a", Value::Number(Number::Int64(1))),
+                ("b", Value::Bool(false)),
+            ]),
+        ),
+        (
+            r#"{"a":[1,2,3],"b":{"k":1}}"#,
+            Some(vec![
+                (
+                    "a",
+                    Value::Array(vec![
+                        Value::Number(Number::Int64(1)),
+                        Value::Number(Number::Int64(2)),
+                        Value::Number(Number::Int64(3)),
+                    ]),
+                ),
+                (
+                    "b",
+                    init_object(vec![("k", Value::Number(Number::Int64(1)))]),
+                ),
+            ]),
+        ),
+    ];
+    for (src, expected) in sources {
+        {
+            let res = object_each(src.as_bytes());
+            match expected.clone() {
+                Some(expected) => {
+                    let arr = res.unwrap();
+                    for (v, e) in arr.iter().zip(expected.iter()) {
+                        assert_eq!(v.0, e.0.as_bytes().to_vec());
+                        assert_eq!(from_slice(&v.1).unwrap(), e.1);
+                    }
+                }
+                None => assert_eq!(res, None),
+            }
+        }
+        {
+            let jsonb = parse_value(src.as_bytes()).unwrap().to_vec();
+            let res = object_each(&jsonb);
+            match expected {
+                Some(expected) => {
+                    let arr = res.unwrap();
+                    for (v, e) in arr.iter().zip(expected.iter()) {
+                        assert_eq!(v.0, e.0.as_bytes().to_vec());
+                        assert_eq!(from_slice(&v.1).unwrap(), e.1);
+                    }
+                }
+                None => assert_eq!(res, None),
+            }
         }
     }
 }

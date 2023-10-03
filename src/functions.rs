@@ -390,6 +390,72 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Convert the values of a `JSONB` object to vector of key-value pairs.
+pub fn object_each(value: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+    if !is_jsonb(value) {
+        return match parse_value(value) {
+            Ok(val) => match val {
+                Value::Object(obj) => {
+                    let mut result = Vec::with_capacity(obj.len());
+                    for (k, v) in obj {
+                        result.push((k.as_bytes().to_vec(), v.to_vec()));
+                    }
+                    Some(result)
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+    }
+
+    let header = read_u32(value, 0).unwrap();
+
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+            let mut items: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(length);
+            let mut jentries: VecDeque<(JEntry, u32)> = VecDeque::with_capacity(length * 2);
+            let mut offset = 4;
+
+            for _ in 0..length * 2 {
+                let encoded = read_u32(value, offset).unwrap();
+                offset += 4;
+                jentries.push_back((JEntry::decode_jentry(encoded), encoded));
+            }
+
+            let mut keys: VecDeque<Vec<u8>> = VecDeque::with_capacity(length);
+            for _ in 0..length {
+                let (jentry, _) = jentries.pop_front().unwrap();
+                let key_len = jentry.length as usize;
+                keys.push_back(value[offset..offset + key_len].to_vec());
+                offset += key_len;
+            }
+
+            for _ in 0..length {
+                let (jentry, encoded) = jentries.pop_front().unwrap();
+                let key = keys.pop_front().unwrap();
+                let val_length = jentry.length as usize;
+                let val = match jentry.type_code {
+                    CONTAINER_TAG => value[offset..offset + val_length].to_vec(),
+                    _ => {
+                        let mut buf = Vec::with_capacity(val_length + 8);
+                        buf.extend_from_slice(&SCALAR_CONTAINER_TAG.to_be_bytes());
+                        buf.extend_from_slice(&encoded.to_be_bytes());
+                        if jentry.length > 0 {
+                            buf.extend_from_slice(&value[offset..offset + val_length]);
+                        }
+                        buf
+                    }
+                };
+                offset += val_length;
+                items.push((key, val));
+            }
+            Some(items)
+        }
+        _ => None,
+    }
+}
+
 /// Convert the values of a `JSONB` array to vector.
 pub fn array_values(value: &[u8]) -> Option<Vec<Vec<u8>>> {
     if !is_jsonb(value) {
