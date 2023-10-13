@@ -1054,7 +1054,12 @@ pub fn is_object(value: &[u8]) -> bool {
 /// Convert `JSONB` value to String
 pub fn to_string(value: &[u8]) -> String {
     if !is_jsonb(value) {
-        return String::from_utf8_lossy(value).to_string();
+        // empty value as default null
+        if value.is_empty() {
+            return "null".to_string();
+        } else {
+            return String::from_utf8_lossy(value).to_string();
+        }
     }
 
     let mut json = String::new();
@@ -1065,7 +1070,12 @@ pub fn to_string(value: &[u8]) -> String {
 /// Convert `JSONB` value to pretty String
 pub fn to_pretty_string(value: &[u8]) -> String {
     if !is_jsonb(value) {
-        return String::from_utf8_lossy(value).to_string();
+        // empty value as default null
+        if value.is_empty() {
+            return "null".to_string();
+        } else {
+            return String::from_utf8_lossy(value).to_string();
+        }
     }
 
     let mut json = String::new();
