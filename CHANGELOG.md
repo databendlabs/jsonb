@@ -1,3 +1,18 @@
+## [v0.3.0] - 2023-10-13
+
+### Added
+
+Docs: Add more jsonb encoding format descriptions. (#34)
+Feat: Support `object_each` api. (#33)
+Feat: Support `path_exists` api. (#32)
+Feat: Support `type_of` api. (#31)
+Feat: Support `strip_nulls` api. (#30)
+Perf: Add benches for parser and `get_path`. (#29)
+Chore: Add check fmt and clippy. (#27)
+Feat: Support `to_pretty_string` api. (#26)
+Feat: Support `traverse_check_string` function. (#25)
+Feat: Improve json path selector using less memory. (#24)
+
 ## [v0.2.3] - 2023-07-10
 
 ### Fixed
