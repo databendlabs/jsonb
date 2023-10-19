@@ -18,13 +18,14 @@ use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, convert_to_comparable, from_slice, get_by_index, get_by_name, get_by_path, is_array,
-    is_object, object_each, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64,
-    to_i64, to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number,
-    Object, Value,
+    compare, convert_to_comparable, from_slice, get_by_index, get_by_keypath, get_by_name,
+    get_by_path, is_array, is_object, object_each, object_keys, parse_value, path_exists,
+    strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64,
+    traverse_check_string, type_of, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
+use nom::AsBytes;
 
 #[test]
 fn test_build_array() {
@@ -979,13 +980,6 @@ fn test_type_of() {
 
 #[test]
 fn test_object_each() {
-    fn init_object<'a>(entries: Vec<(&str, Value<'a>)>) -> Value<'a> {
-        let mut map = BTreeMap::new();
-        for (key, val) in entries {
-            map.insert(key.to_string(), val);
-        }
-        Value::Object(map)
-    }
     let sources = vec![
         ("true", None),
         (r#"[1,2,3]"#, None),
@@ -1043,4 +1037,59 @@ fn test_object_each() {
             }
         }
     }
+}
+
+#[test]
+fn test_get_by_keypath() {
+    let sources = vec![
+        ("null", vec!["a", "b"], None),
+        ("true", vec!["a", "b"], None),
+        (r#""sdasd""#, vec!["1"], None),
+        (
+            "[10,20,30]",
+            vec!["1"],
+            Some(Value::Number(Number::UInt64(20))),
+        ),
+        (
+            r#"[10,20,["a","b","c"]]"#,
+            vec!["2", "0"],
+            Some(Value::String(Cow::from("a"))),
+        ),
+        (r#"[10,20,["a","b","c"]]"#, vec!["2", "a"], None),
+        (
+            r#"[10,20,[{"k1":[1,2,3],"k2":{"w":1,"z":2}},"b","c"]]"#,
+            vec!["2", "0", "k2"],
+            Some(init_object(vec![
+                ("w", Value::Number(Number::UInt64(1))),
+                ("z", Value::Number(Number::UInt64(2))),
+            ])),
+        ),
+    ];
+    for (json_str, path_str, expected) in sources {
+        let path = path_str.into_iter().map(|p| p.as_bytes());
+        {
+            let json = parse_value(json_str.as_bytes()).unwrap().to_vec();
+            let result = get_by_keypath(&json, path.clone());
+            match expected.clone() {
+                Some(e) => assert_eq!(e, from_slice(&result.unwrap()).unwrap()),
+                None => assert_eq!(result, None),
+            }
+        }
+        {
+            let json = json_str.as_bytes();
+            let result = get_by_keypath(json, path);
+            match expected {
+                Some(e) => assert_eq!(e, from_slice(&result.unwrap()).unwrap()),
+                None => assert_eq!(result, None),
+            }
+        }
+    }
+}
+
+fn init_object<'a>(entries: Vec<(&str, Value<'a>)>) -> Value<'a> {
+    let mut map = BTreeMap::new();
+    for (key, val) in entries {
+        map.insert(key.to_string(), val);
+    }
+    Value::Object(map)
 }
