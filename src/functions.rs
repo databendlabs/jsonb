@@ -16,7 +16,6 @@ use core::convert::TryInto;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
-use std::str::from_utf8;
 
 use crate::constants::*;
 use crate::error::*;
@@ -25,6 +24,7 @@ use crate::jentry::JEntry;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Mode;
 use crate::jsonpath::Selector;
+use crate::keypath::KeyPath;
 use crate::number::Number;
 use crate::parser::parse_value;
 use crate::value::Object;
@@ -271,32 +271,41 @@ pub fn get_by_name(value: &[u8], name: &str, ignore_case: bool) -> Option<Vec<u8
 
 /// Extracts JSON sub-object at the specified path,
 /// where path elements can be either field keys or array indexes encoded in utf-8 string.
-pub fn get_by_keypath<'a, I: Iterator<Item = &'a [u8]>>(
+pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
     value: &[u8],
-    keypath: I,
+    keypaths: I,
 ) -> Option<Vec<u8>> {
     if !is_jsonb(value) {
         return match parse_value(value) {
             Ok(val) => {
                 let mut current_val = &val;
-                for key in keypath {
-                    match from_utf8(key) {
-                        Ok(k) => {
-                            let res = match current_val {
-                                Value::Array(arr) => match k.parse::<usize>() {
-                                    Ok(idx) => arr.get(idx),
-                                    Err(_) => None,
-                                },
-                                Value::Object(obj) => obj.get(k),
-                                _ => None,
-                            };
-                            match res {
-                                Some(v) => current_val = v,
-                                None => return None,
-                            };
-                        }
-                        Err(_) => return None,
-                    }
+                for path in keypaths {
+                    let res = match path {
+                        KeyPath::Index(idx) => match current_val {
+                            Value::Array(arr) => {
+                                let length = arr.len() as i32;
+                                if *idx > length || length + *idx < 0 {
+                                    None
+                                } else {
+                                    let idx = if *idx >= 0 {
+                                        *idx as usize
+                                    } else {
+                                        (length + *idx) as usize
+                                    };
+                                    arr.get(idx)
+                                }
+                            }
+                            _ => None,
+                        },
+                        KeyPath::QuotedName(name) | KeyPath::Name(name) => match current_val {
+                            Value::Object(obj) => obj.get(name.as_ref()),
+                            _ => None,
+                        },
+                    };
+                    match res {
+                        Some(v) => current_val = v,
+                        None => return None,
+                    };
                 }
                 Some(current_val.to_vec())
             }
@@ -308,42 +317,50 @@ pub fn get_by_keypath<'a, I: Iterator<Item = &'a [u8]>>(
     let mut curr_jentry_encoded = 0;
     let mut curr_jentry: Option<JEntry> = None;
 
-    for key in keypath {
-        match from_utf8(key) {
-            Ok(k) => {
-                if let Some(ref jentry) = curr_jentry {
-                    if jentry.type_code != CONTAINER_TAG {
-                        return None;
+    for path in keypaths {
+        if let Some(ref jentry) = curr_jentry {
+            if jentry.type_code != CONTAINER_TAG {
+                return None;
+            }
+        }
+        let header = read_u32(value, curr_val_offset).unwrap();
+        let length = (header & CONTAINER_HEADER_LEN_MASK) as i32;
+        match (path, header & CONTAINER_HEADER_TYPE_MASK) {
+            (KeyPath::QuotedName(name) | KeyPath::Name(name), OBJECT_CONTAINER_TAG) => {
+                match get_jentry_by_name(value, curr_val_offset, header, name, false) {
+                    Some((jentry, encoded, value_offset)) => {
+                        curr_jentry_encoded = encoded;
+                        curr_jentry = Some(jentry);
+                        curr_val_offset = value_offset;
                     }
+                    None => return None,
                 };
-                let header = read_u32(value, curr_val_offset).unwrap();
-                match header & CONTAINER_HEADER_TYPE_MASK {
-                    OBJECT_CONTAINER_TAG => {
-                        match get_jentry_by_name(value, curr_val_offset, header, k, false) {
-                            Some((jentry, encoded, value_offset)) => {
-                                curr_jentry_encoded = encoded;
-                                curr_jentry = Some(jentry);
-                                curr_val_offset = value_offset;
-                            }
-                            None => return None,
-                        };
+            }
+            (KeyPath::Index(idx), ARRAY_CONTAINER_TAG) => {
+                if *idx > length || length + *idx < 0 {
+                    return None;
+                } else {
+                    let idx = if *idx >= 0 {
+                        *idx as usize
+                    } else {
+                        (length + *idx) as usize
+                    };
+                    match get_jentry_by_index(value, curr_val_offset, header, idx) {
+                        Some((jentry, encoded, value_offset)) => {
+                            curr_jentry_encoded = encoded;
+                            curr_jentry = Some(jentry);
+                            curr_val_offset = value_offset;
+                        }
+                        None => return None,
                     }
-                    ARRAY_CONTAINER_TAG => match k.parse::<usize>() {
-                        Ok(idx) => match get_jentry_by_index(value, curr_val_offset, header, idx) {
-                            Some((jentry, encoded, value_offset)) => {
-                                curr_jentry_encoded = encoded;
-                                curr_jentry = Some(jentry);
-                                curr_val_offset = value_offset;
-                            }
-                            None => return None,
-                        },
-                        Err(_) => return None,
-                    },
-                    _ => return None,
                 }
             }
-            Err(_) => return None,
+            (_, _) => return None,
         }
+    }
+    // If the key paths is empty, return original value.
+    if curr_jentry_encoded == 0 {
+        return Some(value.to_vec());
     }
     curr_jentry
         .map(|jentry| extract_by_jentry(&jentry, curr_jentry_encoded, curr_val_offset, value))

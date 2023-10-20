@@ -80,6 +80,7 @@ pub enum Error {
     InvalidJsonbJEntry,
 
     InvalidJsonPath,
+    InvalidKeyPath,
 
     Syntax(ParseErrorCode, usize),
 }
