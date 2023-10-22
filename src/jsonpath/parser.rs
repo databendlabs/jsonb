@@ -40,7 +40,7 @@ pub fn parse_json_path(input: &[u8]) -> Result<JsonPath<'_>, Error> {
             }
             Ok(json_path)
         }
-        Err(nom::Err::Error(_err) | nom::Err::Failure(_err)) => Err(Error::InvalidJsonb),
+        Err(nom::Err::Error(_) | nom::Err::Failure(_)) => Err(Error::InvalidJsonPath),
         Err(nom::Err::Incomplete(_)) => unreachable!(),
     }
 }
@@ -73,7 +73,7 @@ fn check_escaped(input: &[u8], i: &mut usize) -> bool {
     true
 }
 
-fn raw_string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+pub(crate) fn raw_string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
     let mut i = 0;
     let mut escapes = 0;
     while i < input.len() {
@@ -85,8 +85,9 @@ fn raw_string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
                     return Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)));
                 }
             }
-            b' ' | b'.' | b':' | b'[' | b']' | b'(' | b')' | b'?' | b'@' | b'$' | b'|' | b'<'
-            | b'>' | b'!' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'"' | b'\'' => {
+            b' ' | b',' | b'.' | b':' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'?' | b'@'
+            | b'$' | b'|' | b'<' | b'>' | b'!' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'"'
+            | b'\'' => {
                 break;
             }
             _ => {
@@ -111,7 +112,7 @@ fn raw_string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
     Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)))
 }
 
-fn string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
+pub(crate) fn string(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
     if input.is_empty() || input[0] != b'"' {
         return Err(nom::Err::Error(NomError::new(input, ErrorKind::Char)));
     }
@@ -215,9 +216,9 @@ fn array_index(input: &[u8]) -> IResult<&[u8], ArrayIndex> {
 
 fn array_indices(input: &[u8]) -> IResult<&[u8], Vec<ArrayIndex>> {
     delimited(
-        terminated(char('['), multispace0),
-        separated_list1(delimited(multispace0, char(','), multispace0), array_index),
-        preceded(multispace0, char(']')),
+        char('['),
+        separated_list1(char(','), delimited(multispace0, array_index, multispace0)),
+        char(']'),
     )(input)
 }
 

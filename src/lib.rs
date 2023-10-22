@@ -70,6 +70,7 @@ mod from;
 mod functions;
 mod jentry;
 pub mod jsonpath;
+pub mod keypath;
 mod number;
 mod parser;
 mod ser;

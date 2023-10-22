@@ -17,5 +17,7 @@ mod path;
 mod selector;
 
 pub use parser::parse_json_path;
+pub(crate) use parser::raw_string;
+pub(crate) use parser::string;
 pub use path::*;
 pub use selector::*;
