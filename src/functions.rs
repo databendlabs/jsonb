@@ -16,6 +16,8 @@ use core::convert::TryInto;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::str::from_utf8;
+use std::str::from_utf8_unchecked;
 
 use crate::constants::*;
 use crate::error::*;
@@ -364,6 +366,120 @@ pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
     }
     curr_jentry
         .map(|jentry| extract_by_jentry(&jentry, curr_jentry_encoded, curr_val_offset, value))
+}
+
+/// Checks whether all of the strings exist as top-level keys or array elements.
+pub fn exists_all_keys<'a, I: Iterator<Item = &'a [u8]>>(value: &[u8], keys: I) -> bool {
+    if !is_jsonb(value) {
+        match parse_value(value) {
+            Ok(val) => {
+                for key in keys {
+                    match from_utf8(key) {
+                        Ok(key) => {
+                            if !exists_value_key(&val, key) {
+                                return false;
+                            }
+                        }
+                        Err(_) => return false,
+                    }
+                }
+            }
+            Err(_) => return false,
+        };
+        return true;
+    }
+
+    let header = read_u32(value, 0).unwrap();
+
+    for key in keys {
+        match from_utf8(key) {
+            Ok(key) => {
+                if !exists_jsonb_key(value, header, key) {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Checks whether any of the strings exist as top-level keys or array elements.
+pub fn exists_any_keys<'a, I: Iterator<Item = &'a [u8]>>(value: &[u8], keys: I) -> bool {
+    if !is_jsonb(value) {
+        if let Ok(val) = parse_value(value) {
+            for key in keys {
+                if let Ok(key) = from_utf8(key) {
+                    if exists_value_key(&val, key) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    let header = read_u32(value, 0).unwrap();
+
+    for key in keys {
+        if let Ok(key) = from_utf8(key) {
+            if exists_jsonb_key(value, header, key) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn exists_value_key(value: &Value, key: &str) -> bool {
+    match value {
+        Value::Array(arr) => {
+            let mut found = false;
+            for item in arr {
+                let matches = match item {
+                    Value::String(v) => key.eq(v),
+                    _ => false,
+                };
+                if matches {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        }
+        Value::Object(obj) => obj.contains_key(key),
+        _ => false,
+    }
+}
+
+fn exists_jsonb_key(value: &[u8], header: u32, key: &str) -> bool {
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let mut matches = false;
+            for obj_key in iteate_object_keys(value, header) {
+                if obj_key.eq(key) {
+                    matches = true;
+                    break;
+                }
+            }
+            matches
+        }
+        ARRAY_CONTAINER_TAG => {
+            let mut matches = false;
+            for (jentry, val) in iterate_array(value, header) {
+                if jentry.type_code != STRING_TAG {
+                    continue;
+                }
+                let val = unsafe { from_utf8_unchecked(val) };
+                if val.eq(key) {
+                    matches = true;
+                    break;
+                }
+            }
+            matches
+        }
+        _ => false,
+    }
 }
 
 fn get_jentry_by_name(
@@ -1682,4 +1798,90 @@ fn read_u32(buf: &[u8], idx: usize) -> Result<u32, Error> {
         .try_into()
         .unwrap();
     Ok(u32::from_be_bytes(bytes))
+}
+
+fn iterate_array(value: &[u8], header: u32) -> ArrayIterator<'_> {
+    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+    ArrayIterator {
+        value,
+        jentry_offset: 4,
+        val_offset: 4 * length + 4,
+        length,
+        idx: 0,
+    }
+}
+
+fn iteate_object_keys(value: &[u8], header: u32) -> ObjectKeyIterator<'_> {
+    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+    ObjectKeyIterator {
+        value,
+        jentry_offset: 4,
+        key_offset: 8 * length + 4,
+        length,
+        idx: 0,
+    }
+}
+
+struct ArrayIterator<'a> {
+    value: &'a [u8],
+    jentry_offset: usize,
+    val_offset: usize,
+    length: usize,
+    idx: usize,
+}
+
+impl<'a> Iterator for ArrayIterator<'a> {
+    type Item = (JEntry, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.length {
+            return None;
+        }
+        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+        let jentry = JEntry::decode_jentry(encoded);
+        let val_length = jentry.length as usize;
+
+        let item = (
+            jentry,
+            &self.value[self.val_offset..self.val_offset + val_length],
+        );
+
+        self.idx += 1;
+        self.val_offset += val_length;
+        self.jentry_offset += 4;
+
+        Some(item)
+    }
+}
+
+struct ObjectKeyIterator<'a> {
+    value: &'a [u8],
+    jentry_offset: usize,
+    key_offset: usize,
+    length: usize,
+    idx: usize,
+}
+
+impl<'a> Iterator for ObjectKeyIterator<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.length {
+            return None;
+        }
+
+        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+        let jentry = JEntry::decode_jentry(encoded);
+        let key_length = jentry.length as usize;
+
+        let key = unsafe {
+            from_utf8_unchecked(&self.value[self.key_offset..self.key_offset + key_length])
+        };
+
+        self.idx += 1;
+        self.key_offset += key_length;
+        self.jentry_offset += 4;
+
+        Some(key)
+    }
 }
