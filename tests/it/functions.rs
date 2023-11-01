@@ -18,10 +18,11 @@ use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, convert_to_comparable, from_slice, get_by_index, get_by_keypath, get_by_name,
-    get_by_path, is_array, is_object, keypath::parse_key_paths, object_each, object_keys,
-    parse_value, path_exists, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_str,
-    to_string, to_u64, traverse_check_string, type_of, Number, Object, Value,
+    compare, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice, get_by_index,
+    get_by_keypath, get_by_name, get_by_path, is_array, is_object, keypath::parse_key_paths,
+    object_each, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64, to_i64,
+    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object,
+    Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -1084,6 +1085,64 @@ fn test_get_by_keypath() {
                 Some(e) => assert_eq!(e, from_slice(&result.unwrap()).unwrap()),
                 None => assert_eq!(result, None),
             }
+        }
+    }
+}
+
+#[test]
+fn test_exists_all_keys() {
+    let sources = vec![
+        (r#"true"#, vec!["10", "20", "40"], false),
+        (r#"[]"#, vec!["10", "20", "40"], false),
+        (r#"{}"#, vec!["10", "20", "40"], false),
+        (r#"["10","20","30"]"#, vec!["10", "20", "40"], false),
+        (r#"["10","20","30"]"#, vec!["10", "20", "30"], true),
+        (r#"[10,20,30]"#, vec!["10", "20", "30"], false),
+        (r#"["10","20","30"]"#, vec!["10", "20", "20"], true),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "f", "a"], false),
+    ];
+    for (json, keys, expected) in sources {
+        let keys = keys.iter().map(|k| k.as_bytes());
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let result = exists_all_keys(&json, keys.clone());
+            assert_eq!(result, expected);
+        }
+        {
+            let json = json.as_bytes();
+            let result = exists_all_keys(json, keys.clone());
+            assert_eq!(result, expected);
+        }
+    }
+}
+
+#[test]
+fn test_exists_any_keys() {
+    let sources = vec![
+        (r#"true"#, vec!["10", "20", "40"], false),
+        (r#"[]"#, vec!["10", "20", "40"], false),
+        (r#"{}"#, vec!["10", "20", "40"], false),
+        (r#"[10,20,30]"#, vec!["10", "20", "30"], false),
+        (r#"["10","20","30"]"#, vec!["10", "20", "40"], true),
+        (r#"["10","20","30"]"#, vec!["10", "20", "30"], true),
+        (r#"["10","20","30"]"#, vec!["40", "50", "60"], false),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
+        (r#"{"a":1,"b":2,"c":3}"#, vec!["z", "f", "x"], false),
+    ];
+    for (json, keys, expected) in sources {
+        let keys = keys.iter().map(|k| k.as_bytes());
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let result = exists_any_keys(&json, keys.clone());
+            assert_eq!(result, expected);
+        }
+        {
+            let json = json.as_bytes();
+            let result = exists_any_keys(json, keys.clone());
+            assert_eq!(result, expected);
         }
     }
 }
