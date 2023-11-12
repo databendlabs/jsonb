@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::mem::discriminant;
 
 use super::number::Number;
 use super::ser::Encoder;
@@ -104,6 +105,10 @@ impl<'a> Display for Value<'a> {
 }
 
 impl<'a> Value<'a> {
+    pub fn is_scalar(&self) -> bool {
+        !self.is_array() && !self.is_object()
+    }
+
     pub fn is_object(&self) -> bool {
         self.as_object().is_some()
     }
@@ -251,5 +256,9 @@ impl<'a> Value<'a> {
             }
             _ => None,
         }
+    }
+
+    pub fn eq_variant(&self, other: &Value) -> bool {
+        discriminant(self) == discriminant(other)
     }
 }

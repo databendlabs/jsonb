@@ -482,6 +482,155 @@ fn exists_jsonb_key(value: &[u8], header: u32, key: &str) -> bool {
     }
 }
 
+/// Checks whether the right value contains in the left value.
+pub fn contains(left: &[u8], right: &[u8]) -> bool {
+    if !is_jsonb(left) || !is_jsonb(right) {
+        return match (from_slice(left), from_slice(right)) {
+            (Ok(left), Ok(right)) => contains_value(&left, &right),
+            _ => false,
+        };
+    }
+    contains_jsonb(left, right)
+}
+
+fn contains_value(left: &Value, right: &Value) -> bool {
+    // special case for the left array and the right scalar
+    if left.is_array() && right.is_scalar() {
+        return left.as_array().unwrap().contains(right);
+    }
+    if !left.eq_variant(right) {
+        return false;
+    }
+    match right {
+        Value::Object(r_obj) => {
+            let l_obj = left.as_object().unwrap();
+            if l_obj.len() < r_obj.len() {
+                return false;
+            }
+            for (r_key, r_val) in r_obj {
+                match l_obj.get(r_key) {
+                    Some(l_val) => {
+                        if !l_val.eq_variant(r_val) {
+                            return false;
+                        }
+                        if l_val.is_scalar() {
+                            if !l_val.eq(r_val) {
+                                return false;
+                            }
+                        } else if !contains_value(l_val, r_val) {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                };
+            }
+            true
+        }
+        Value::Array(r_arr) => {
+            let l_arr = left.as_array().unwrap();
+            for r_val in r_arr {
+                if r_val.is_scalar() {
+                    if !l_arr.contains(r_val) {
+                        return false;
+                    }
+                } else {
+                    let l_nested: Vec<_> =
+                        l_arr.iter().filter(|l_val| !l_val.is_scalar()).collect();
+
+                    let mut contains_nested = false;
+
+                    for l_nested_val in l_nested {
+                        if contains_value(l_nested_val, r_val) {
+                            contains_nested = true;
+                            break;
+                        }
+                    }
+                    if !contains_nested {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        _ => left.eq(right),
+    }
+}
+
+fn contains_jsonb(left: &[u8], right: &[u8]) -> bool {
+    let l_header = read_u32(left, 0).unwrap();
+    let r_header = read_u32(right, 0).unwrap();
+
+    let l_type = l_header & CONTAINER_HEADER_TYPE_MASK;
+    let r_type = r_header & CONTAINER_HEADER_TYPE_MASK;
+
+    // special case for the left array and the right scalar
+    if l_type == ARRAY_CONTAINER_TAG && r_type == SCALAR_CONTAINER_TAG {
+        let r_jentry = JEntry::decode_jentry(read_u32(right, 4).unwrap());
+        return array_contains(left, l_header, &right[8..], r_jentry);
+    }
+
+    if l_type != r_type {
+        return false;
+    }
+
+    match r_type {
+        OBJECT_CONTAINER_TAG => {
+            let l_size = l_header & CONTAINER_HEADER_LEN_MASK;
+            let r_size = r_header & CONTAINER_HEADER_LEN_MASK;
+            if l_size < r_size {
+                return false;
+            }
+            for (r_key, r_jentry, r_val) in iterate_object_entries(right, r_header) {
+                match get_jentry_by_name(left, 0, l_header, r_key, false) {
+                    Some((l_jentry, _, l_val_offset)) => {
+                        if l_jentry.type_code != r_jentry.type_code {
+                            return false;
+                        }
+                        let l_val = &left[l_val_offset..l_val_offset + l_jentry.length as usize];
+                        if r_jentry.type_code != CONTAINER_TAG {
+                            if !l_val.eq(r_val) {
+                                return false;
+                            }
+                        } else if !contains_jsonb(l_val, r_val) {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                }
+            }
+            true
+        }
+        ARRAY_CONTAINER_TAG => {
+            for (r_jentry, r_val) in iterate_array(right, r_header) {
+                if r_jentry.type_code != CONTAINER_TAG {
+                    if !array_contains(left, l_header, r_val, r_jentry) {
+                        return false;
+                    }
+                } else {
+                    let l_nested: Vec<_> = iterate_array(left, l_header)
+                        .filter(|(l_jentry, _)| l_jentry.type_code == CONTAINER_TAG)
+                        .map(|(_, l_val)| l_val)
+                        .collect();
+
+                    let mut contains_nested = false;
+
+                    for l_nested_val in l_nested {
+                        if contains_jsonb(l_nested_val, r_val) {
+                            contains_nested = true;
+                            break;
+                        }
+                    }
+                    if !contains_nested {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        _ => left.eq(right),
+    }
+}
+
 fn get_jentry_by_name(
     value: &[u8],
     offset: usize,
@@ -1800,6 +1949,18 @@ fn read_u32(buf: &[u8], idx: usize) -> Result<u32, Error> {
     Ok(u32::from_be_bytes(bytes))
 }
 
+fn array_contains(arr: &[u8], arr_header: u32, val: &[u8], val_jentry: JEntry) -> bool {
+    for (jentry, arr_val) in iterate_array(arr, arr_header) {
+        if jentry.type_code != val_jentry.type_code {
+            continue;
+        }
+        if val.eq(arr_val) {
+            return true;
+        }
+    }
+    false
+}
+
 fn iterate_array(value: &[u8], header: u32) -> ArrayIterator<'_> {
     let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
     ArrayIterator {
@@ -1819,6 +1980,18 @@ fn iteate_object_keys(value: &[u8], header: u32) -> ObjectKeyIterator<'_> {
         key_offset: 8 * length + 4,
         length,
         idx: 0,
+    }
+}
+
+fn iterate_object_entries(value: &[u8], header: u32) -> ObjectEntryIterator<'_> {
+    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+    ObjectEntryIterator {
+        value,
+        jentry_offset: 4,
+        key_offset: 4 + length * 8,
+        val_offset: 4 + length * 8,
+        length,
+        keys: None,
     }
 }
 
@@ -1852,6 +2025,10 @@ impl<'a> Iterator for ArrayIterator<'a> {
 
         Some(item)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.length, Some(self.length))
+    }
 }
 
 struct ObjectKeyIterator<'a> {
@@ -1883,5 +2060,71 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
         self.jentry_offset += 4;
 
         Some(key)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.length, Some(self.length))
+    }
+}
+
+struct ObjectEntryIterator<'a> {
+    value: &'a [u8],
+    jentry_offset: usize,
+    key_offset: usize,
+    val_offset: usize,
+    length: usize,
+    keys: Option<VecDeque<JEntry>>,
+}
+
+impl<'a> Iterator for ObjectEntryIterator<'a> {
+    type Item = (&'a str, JEntry, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.keys.is_none() {
+            self.fill_keys();
+        }
+        match self.keys.as_mut().unwrap().pop_front() {
+            Some(key_jentry) => {
+                let prev_key_offset = self.key_offset;
+                self.key_offset += key_jentry.length as usize;
+
+                let key = unsafe {
+                    std::str::from_utf8_unchecked(&self.value[prev_key_offset..self.key_offset])
+                };
+
+                let val_encoded = read_u32(self.value, self.jentry_offset).unwrap();
+                let val_jentry = JEntry::decode_jentry(val_encoded);
+                let val_length = val_jentry.length as usize;
+
+                let val =
+                    &self.value[self.val_offset..self.val_offset + val_jentry.length as usize];
+                let result = (key, val_jentry, val);
+
+                self.jentry_offset += 4;
+                self.val_offset += val_length;
+
+                Some(result)
+            }
+            None => None,
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.length, Some(self.length))
+    }
+}
+
+impl<'a> ObjectEntryIterator<'a> {
+    fn fill_keys(&mut self) {
+        let mut keys: VecDeque<JEntry> = VecDeque::with_capacity(self.length);
+        for _ in 0..self.length {
+            let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+            let key_jentry = JEntry::decode_jentry(encoded);
+
+            self.jentry_offset += 4;
+            self.val_offset += key_jentry.length as usize;
+            keys.push_back(key_jentry);
+        }
+        self.keys = Some(keys);
     }
 }
