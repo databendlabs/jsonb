@@ -2025,10 +2025,6 @@ impl<'a> Iterator for ArrayIterator<'a> {
 
         Some(item)
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.length, Some(self.length))
-    }
 }
 
 struct ObjectKeyIterator<'a> {
@@ -2060,10 +2056,6 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
         self.jentry_offset += 4;
 
         Some(key)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.length, Some(self.length))
     }
 }
 
@@ -2107,10 +2099,6 @@ impl<'a> Iterator for ObjectEntryIterator<'a> {
             }
             None => None,
         }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.length, Some(self.length))
     }
 }
 
