@@ -18,11 +18,11 @@ use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice, get_by_index,
-    get_by_keypath, get_by_name, get_by_path, is_array, is_object, keypath::parse_key_paths,
-    object_each, object_keys, parse_value, path_exists, strip_nulls, to_bool, to_f64, to_i64,
-    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Number, Object,
-    Value,
+    compare, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
+    get_by_index, get_by_keypath, get_by_name, get_by_path, is_array, is_object,
+    keypath::parse_key_paths, object_each, object_keys, parse_value, path_exists, strip_nulls,
+    to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64, traverse_check_string,
+    type_of, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -1142,6 +1142,44 @@ fn test_exists_any_keys() {
         {
             let json = json.as_bytes();
             let result = exists_any_keys(json, keys.clone());
+            assert_eq!(result, expected);
+        }
+    }
+}
+
+#[test]
+fn test_contains() {
+    let sources = vec![
+        ("true", "true", true),
+        ("false", "true", false),
+        ("1", "1", true),
+        ("1", "2", false),
+        (r#""asd""#, r#""asd""#, true),
+        (r#""asd""#, r#""dsa""#, false),
+        (r#"[1,2,3,4]"#, "1", true),
+        (r#"[1,2,3,4]"#, "5", false),
+        (r#"["1","2","3","4"]"#, r#""1""#, true),
+        (r#"[1,2,3,4]"#, "[2,1,3]", true),
+        (r#"[1,2,3,4]"#, "[2,1,1]", true),
+        (r#"[1,2,[1,3]]"#, "[1,3]", false),
+        (r#"[1,2,[1,3]]"#, "[[1,3]]", true),
+        (r#"[1,2,[1,3]]"#, "[[[1,3]]]", false),
+        (r#"[{"a":1}]"#, r#"{"a":1}"#, false),
+        (r#"[{"a":1},{"b":2}]"#, r#"[{"a":1}]"#, true),
+        (r#"{"a":1,"b":2}"#, r#"{"a":1}"#, true),
+        (r#"{"a":1,"b":2}"#, r#"{"a":2}"#, false),
+        (r#"{"z":2,"b":{"a":1}}"#, r#"{"a":1}"#, false),
+        (r#"{"a":{"c":100,"d":200},"b":2}"#, r#"{"a":{}}"#, true),
+    ];
+    for (left, right, expected) in sources {
+        {
+            let left = parse_value(left.as_bytes()).unwrap().to_vec();
+            let right = parse_value(right.as_bytes()).unwrap().to_vec();
+            let result = contains(&left, &right);
+            assert_eq!(result, expected);
+        }
+        {
+            let result = contains(left.as_bytes(), right.as_bytes());
             assert_eq!(result, expected);
         }
     }
