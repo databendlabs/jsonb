@@ -660,3 +660,171 @@ JsonPath {
 }
 
 
+---------- Input ----------
+$ > 1
+---------- Output ---------
+$ > 1
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            BinaryOp {
+                op: Gt,
+                left: Paths(
+                    [
+                        Root,
+                    ],
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            1,
+                        ),
+                    ),
+                ),
+            },
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.* == 0
+---------- Output ---------
+$.* == 0
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            BinaryOp {
+                op: Eq,
+                left: Paths(
+                    [
+                        Root,
+                        DotWildcard,
+                    ],
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            0,
+                        ),
+                    ),
+                ),
+            },
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$[*] > 1
+---------- Output ---------
+$[*] > 1
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            BinaryOp {
+                op: Gt,
+                left: Paths(
+                    [
+                        Root,
+                        BracketWildcard,
+                    ],
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            1,
+                        ),
+                    ),
+                ),
+            },
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.a > $.b
+---------- Output ---------
+$.a > $.b
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            BinaryOp {
+                op: Gt,
+                left: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "a",
+                        ),
+                    ],
+                ),
+                right: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "b",
+                        ),
+                    ],
+                ),
+            },
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.price > 10 || $.category == "reference"
+---------- Output ---------
+$.price > 10 || $.category == "reference"
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            BinaryOp {
+                op: Or,
+                left: BinaryOp {
+                    op: Gt,
+                    left: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "price",
+                            ),
+                        ],
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                10,
+                            ),
+                        ),
+                    ),
+                },
+                right: BinaryOp {
+                    op: Eq,
+                    left: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "category",
+                            ),
+                        ],
+                    ),
+                    right: Value(
+                        String(
+                            "reference",
+                        ),
+                    ),
+                },
+            },
+        ),
+    ],
+}
+
+

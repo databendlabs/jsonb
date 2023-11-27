@@ -16,7 +16,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
     character::complete::{char, i32, i64, multispace0, u64},
-    combinator::{map, opt, value},
+    combinator::{cond, map, map_res, opt, value},
     error::{Error as NomError, ErrorKind},
     multi::{many0, separated_list1},
     number::complete::double,
@@ -46,9 +46,10 @@ pub fn parse_json_path(input: &[u8]) -> Result<JsonPath<'_>, Error> {
 }
 
 fn json_path(input: &[u8]) -> IResult<&[u8], JsonPath<'_>> {
-    map(delimited(multispace0, paths, multispace0), |paths| {
-        JsonPath { paths }
-    })(input)
+    map(
+        delimited(multispace0, predicate_or_paths, multispace0),
+        |paths| JsonPath { paths },
+    )(input)
 }
 
 fn check_escaped(input: &[u8], i: &mut usize) -> bool {
@@ -252,6 +253,17 @@ fn path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
     ))(input)
 }
 
+fn predicate_or_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+    alt((predicate, paths))(input)
+}
+
+fn predicate(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+    map(
+        delimited(multispace0, |i| expr_or(i, true), multispace0),
+        |v| vec![Path::Predicate(Box::new(v))],
+    )(input)
+}
+
 fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     map(
         pair(opt(pre_path), many0(path)),
@@ -264,13 +276,17 @@ fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     )(input)
 }
 
-fn expr_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+fn expr_paths(input: &[u8], root_predicate: bool) -> IResult<&[u8], Vec<Path<'_>>> {
+    let parse_current = map_res(
+        cond(!root_predicate, value(Path::Current, char('@'))),
+        |res| match res {
+            Some(v) => Ok(v),
+            None => Err(NomError::new(input, ErrorKind::Char)),
+        },
+    );
     map(
         pair(
-            alt((
-                value(Path::Root, char('$')),
-                value(Path::Current, char('@')),
-            )),
+            alt((value(Path::Root, char('$')), parse_current)),
             many0(delimited(multispace0, inner_path, multispace0)),
         ),
         |(pre_path, mut paths)| {
@@ -284,7 +300,7 @@ fn filter_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
     map(
         delimited(
             delimited(char('?'), multispace0, char('(')),
-            delimited(multispace0, expr_or, multispace0),
+            delimited(multispace0, |i| expr_or(i, false), multispace0),
             char(')'),
         ),
         |v| v,
@@ -315,21 +331,21 @@ fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
     ))(input)
 }
 
-fn inner_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+fn inner_expr(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
-        map(expr_paths, Expr::Paths),
+        map(|i| expr_paths(i, root_predicate), Expr::Paths),
         map(path_value, |v| Expr::Value(Box::new(v))),
     ))(input)
 }
 
-fn expr_atom(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     // TODO, support arithmetic expressions.
     alt((
         map(
             tuple((
-                delimited(multispace0, inner_expr, multispace0),
+                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
                 op,
-                delimited(multispace0, inner_expr, multispace0),
+                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
             )),
             |(left, op, right)| Expr::BinaryOp {
                 op,
@@ -340,7 +356,7 @@ fn expr_atom(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
         map(
             delimited(
                 terminated(char('('), multispace0),
-                expr_or,
+                |i| expr_or(i, root_predicate),
                 preceded(multispace0, char(')')),
             ),
             |expr| expr,
@@ -348,9 +364,11 @@ fn expr_atom(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
     ))(input)
 }
 
-fn expr_and(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     map(
-        separated_list1(delimited(multispace0, tag("&&"), multispace0), expr_atom),
+        separated_list1(delimited(multispace0, tag("&&"), multispace0), |i| {
+            expr_atom(i, root_predicate)
+        }),
         |exprs| {
             let mut expr = exprs[0].clone();
             for right in exprs.iter().skip(1) {
@@ -365,9 +383,11 @@ fn expr_and(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
     )(input)
 }
 
-fn expr_or(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
+fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     map(
-        separated_list1(delimited(multispace0, tag("||"), multispace0), expr_and),
+        separated_list1(delimited(multispace0, tag("||"), multispace0), |i| {
+            expr_and(i, root_predicate)
+        }),
         |exprs| {
             let mut expr = exprs[0].clone();
             for right in exprs.iter().skip(1) {
