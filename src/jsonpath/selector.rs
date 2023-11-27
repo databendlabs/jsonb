@@ -471,7 +471,10 @@ impl<'a> Selector<'a> {
 
                 for path in paths.iter().skip(1) {
                     match path {
-                        &Path::Root | &Path::Current | &Path::FilterExpr(_) | &Path::Predicate(_) => unreachable!(),
+                        &Path::Root
+                        | &Path::Current
+                        | &Path::FilterExpr(_)
+                        | &Path::Predicate(_) => unreachable!(),
                         _ => {
                             let len = poses.len();
                             for _ in 0..len {
