@@ -28,6 +28,7 @@ use crate::jsonpath::JsonPath;
 use crate::jsonpath::Path;
 use crate::jsonpath::PathValue;
 use crate::number::Number;
+use crate::Error;
 
 use nom::{
     bytes::complete::take, combinator::map, multi::count, number::complete::be_u32, IResult,
@@ -74,6 +75,12 @@ impl<'a> Selector<'a> {
 
     pub fn select(&'a self, root: &'a [u8], data: &mut Vec<u8>, offsets: &mut Vec<u64>) {
         let mut poses = self.find_positions(root);
+
+        if self.json_path.is_predicate() {
+            Self::build_predicate_result(&mut poses, data);
+            return;
+        }
+
         match self.mode {
             Mode::All => Self::build_values(root, &mut poses, data, offsets),
             Mode::First => {
@@ -92,8 +99,19 @@ impl<'a> Selector<'a> {
     }
 
     pub fn exists(&'a self, root: &'a [u8]) -> bool {
+        if self.json_path.is_predicate() {
+            return true;
+        }
         let poses = self.find_positions(root);
         !poses.is_empty()
+    }
+
+    pub fn predicate_match(&'a self, root: &'a [u8]) -> Result<bool, Error> {
+        if !self.json_path.is_predicate() {
+            return Err(Error::InvalidJsonPathPredicate);
+        }
+        let poses = self.find_positions(root);
+        Ok(!poses.is_empty())
     }
 
     fn find_positions(&'a self, root: &'a [u8]) -> VecDeque<Position> {
@@ -106,7 +124,7 @@ impl<'a> Selector<'a> {
                     continue;
                 }
                 &Path::Current => unreachable!(),
-                Path::FilterExpr(expr) => {
+                Path::FilterExpr(expr) | Path::Predicate(expr) => {
                     let len = poses.len();
                     for _ in 0..len {
                         let pos = poses.pop_front().unwrap();
@@ -313,6 +331,15 @@ impl<'a> Selector<'a> {
         }
     }
 
+    fn build_predicate_result(poses: &mut VecDeque<Position>, data: &mut Vec<u8>) {
+        let jentry = match poses.pop_front() {
+            Some(_) => TRUE_TAG,
+            None => FALSE_TAG,
+        };
+        data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG).unwrap();
+        data.write_u32::<BigEndian>(jentry).unwrap();
+    }
+
     fn build_values(
         root: &'a [u8],
         poses: &mut VecDeque<Position>,
@@ -444,7 +471,10 @@ impl<'a> Selector<'a> {
 
                 for path in paths.iter().skip(1) {
                     match path {
-                        &Path::Root | &Path::Current | &Path::FilterExpr(_) => unreachable!(),
+                        &Path::Root
+                        | &Path::Current
+                        | &Path::FilterExpr(_)
+                        | &Path::Predicate(_) => unreachable!(),
                         _ => {
                             let len = poses.len();
                             for _ in 0..len {

@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use jsonb::path_match;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
@@ -153,6 +154,9 @@ fn test_path_exists() {
             r#"$.b[1 to last] ? (@ >=2 && @ <=3)"#,
             true,
         ),
+        // predicates always return true in path_exists.
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] > 10"#, true),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] > 1"#, true),
     ];
     for (json, path, expect) in sources {
         // Check from JSONB
@@ -224,6 +228,10 @@ fn test_get_by_path() {
         ),
         (r#"$.car_no"#, vec![r#"123"#]),
         (r#"$.测试\"\uD83D\uDC8E"#, vec![r#""ab""#]),
+        // predicates return the result of the filter expression.
+        (r#"$.phones[0 to last].number == 3720453"#, vec!["true"]),
+        (r#"$.phones[0 to last].type == "workk""#, vec!["false"]),
+        (r#"$.name == "Fred" && $.car_no == 123"#, vec!["true"]),
     ];
 
     let mut buf: Vec<u8> = Vec::new();
@@ -1180,6 +1188,37 @@ fn test_contains() {
         }
         {
             let result = contains(left.as_bytes(), right.as_bytes());
+            assert_eq!(result, expected);
+        }
+    }
+}
+
+#[test]
+fn test_path_match() {
+    let sources = vec![
+        (r#"{"a":1,"b":2}"#, r#"$.a == 1"#, true),
+        (r#"{"a":1,"b":2}"#, r#"$.a > 1"#, false),
+        (r#"{"a":1,"b":2}"#, r#"$.c > 0"#, false),
+        (r#"{"a":1,"b":2}"#, r#"$.b < 2"#, false),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] == 1"#, true),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] > 1"#, false),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3] == 0"#, false),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] >= 2"#, true),
+        (
+            r#"{"a":1,"b":[1,2,3]}"#,
+            r#"$.b[1 to last] == 2 || $.b[1 to last] == 3"#,
+            true,
+        ),
+    ];
+    for (json, predicate, expected) in sources {
+        let json_path = parse_json_path(predicate.as_bytes()).unwrap();
+        {
+            let result = path_match(json.as_bytes(), json_path.clone()).unwrap();
+            assert_eq!(result, expected);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let result = path_match(&json, json_path).unwrap();
             assert_eq!(result, expected);
         }
     }

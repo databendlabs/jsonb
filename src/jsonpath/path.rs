@@ -25,6 +25,12 @@ pub struct JsonPath<'a> {
     pub paths: Vec<Path<'a>>,
 }
 
+impl<'a> JsonPath<'a> {
+    pub fn is_predicate(&self) -> bool {
+        self.paths.len() == 1 && matches!(self.paths[0], Path::Predicate(_))
+    }
+}
+
 /// Represents a valid JSON Path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Path<'a> {
@@ -58,6 +64,8 @@ pub enum Path<'a> {
     ArrayIndices(Vec<ArrayIndex>),
     /// `?(<expression>)` represents selecting all elements in an object or array that match the filter expression, like `$.book[?(@.price < 10)]`.
     FilterExpr(Box<Expr<'a>>),
+    /// `<expression>` standalone filter expression, like `$.book[*].price > 10`.
+    Predicate(Box<Expr<'a>>),
 }
 
 /// Represents the single index in an Array.
@@ -209,6 +217,9 @@ impl<'a> Display for Path<'a> {
             }
             Path::FilterExpr(expr) => {
                 write!(f, "?({expr})")?;
+            }
+            Path::Predicate(expr) => {
+                write!(f, "{expr}")?;
             }
         }
         Ok(())

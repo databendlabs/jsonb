@@ -44,6 +44,12 @@ fn test_json_path() {
         r#"["k1"]["k2"]"#,
         r#"k1.k2:k3"#,
         r#"k1["k2"][1]"#,
+        // predicates
+        r#"$ > 1"#,
+        r#"$.* == 0"#,
+        r#"$[*] > 1"#,
+        r#"$.a > $.b"#,
+        r#"$.price > 10 || $.category == "reference""#,
     ];
 
     for case in cases {
@@ -74,6 +80,7 @@ fn test_json_path_error() {
         r#"$['1','2',]"#,
         r#"$['1', ,'3']"#,
         r#"$['aaa'}'bbb']"#,
+        r#"@ > 10"#,
     ];
 
     for case in cases {

@@ -163,6 +163,17 @@ pub fn path_exists<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> bool {
     }
 }
 
+/// Returns the result of a JSON path predicate check for the specified `JSONB` value.
+pub fn path_match<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Result<bool, Error> {
+    let selector = Selector::new(json_path, Mode::First);
+    if !is_jsonb(value) {
+        let val = parse_value(value)?;
+        selector.predicate_match(&val.to_vec())
+    } else {
+        selector.predicate_match(value)
+    }
+}
+
 /// Get the inner elements of `JSONB` value by JSON path.
 /// The return value may contains multiple matching elements.
 pub fn get_by_path<'a>(
