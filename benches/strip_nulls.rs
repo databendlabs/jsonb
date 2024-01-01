@@ -29,7 +29,7 @@ fn strip_nulls_deser(data: &[u8]) {
     let mut json = from_slice(data).unwrap();
     strip_value_nulls(&mut json);
     json.write_to_vec(&mut buf);
-    assert_eq!(buf.is_empty(), false);
+    assert!(!buf.is_empty());
 }
 
 fn strip_value_nulls(val: &mut Value<'_>) {
@@ -52,7 +52,7 @@ fn strip_value_nulls(val: &mut Value<'_>) {
 fn strip_nulls_fast(data: &[u8]) {
     let mut buf = Vec::new();
     strip_nulls(data, &mut buf).unwrap();
-    assert_eq!(buf.is_empty(), false);
+    assert!(!buf.is_empty());
 }
 
 fn add_benchmark(c: &mut Criterion) {

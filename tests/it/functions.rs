@@ -18,13 +18,12 @@ use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
+    compare, concat, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
     get_by_index, get_by_keypath, get_by_name, get_by_path, is_array, is_object,
-    keypath::parse_key_paths, object_each, object_keys, parse_value, path_exists, strip_nulls,
-    to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64, traverse_check_string,
-    type_of, Number, Object, Value,
+    keypath::parse_key_paths, object_each, object_keys, parse_value, path_exists, path_match,
+    strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64,
+    traverse_check_string, type_of, Number, Object, Value,
 };
-use jsonb::{concat, path_match};
 
 use jsonb::jsonpath::parse_json_path;
 use nom::AsBytes;
