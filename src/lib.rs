@@ -63,11 +63,13 @@
 
 #![allow(clippy::uninlined_format_args)]
 
+mod builder;
 mod constants;
 mod de;
 mod error;
 mod from;
 mod functions;
+mod iterator;
 mod jentry;
 pub mod jsonpath;
 pub mod keypath;

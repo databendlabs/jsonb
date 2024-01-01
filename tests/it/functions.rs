@@ -16,7 +16,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use jsonb::path_match;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
@@ -25,6 +24,7 @@ use jsonb::{
     to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64, traverse_check_string,
     type_of, Number, Object, Value,
 };
+use jsonb::{concat, path_match};
 
 use jsonb::jsonpath::parse_json_path;
 use nom::AsBytes;
@@ -1220,6 +1220,67 @@ fn test_path_match() {
             let json = parse_value(json.as_bytes()).unwrap().to_vec();
             let result = path_match(&json, json_path).unwrap();
             assert_eq!(result, expected);
+        }
+    }
+}
+
+#[test]
+fn test_concat() {
+    let sources = vec![
+        ("null", "null", "[null,null]"),
+        ("true", "null", "[true,null]"),
+        ("1", r#""asdasd""#, r#"[1,"asdasd"]"#),
+        (r#""asd""#, r#"[1,2,3]"#, r#"["asd",1,2,3]"#),
+        (r#"[1,2,3]"#, r#""asd""#, r#"[1,2,3,"asd"]"#),
+        (
+            r#"[1,{"a":1,"b":2,"c":[1,2,3]},3]"#,
+            r#""asd""#,
+            r#"[1,{"a":1,"b":2,"c":[1,2,3]},3,"asd"]"#,
+        ),
+        (
+            r#"[1,{"a":1,"b":2,"c":[1,2,3]},3]"#,
+            r#"[10,20,30]"#,
+            r#"[1,{"a":1,"b":2,"c":[1,2,3]},3,10,20,30]"#,
+        ),
+        (
+            r#"[1,[1,2,3],3]"#,
+            r#"[[10,20,30]]"#,
+            r#"[1,[1,2,3],3,[10,20,30]]"#,
+        ),
+        (r#"{"a":1,"b":2}"#, r#"true"#, r#"[{"a":1,"b":2},true]"#),
+        (r#"[1,2,3]"#, r#"{"a":1,"b":2}"#, r#"[1,2,3,{"a":1,"b":2}]"#),
+        (r#"{"a":1,"b":2}"#, r#"[1,2,3]"#, r#"[{"a":1,"b":2},1,2,3]"#),
+        (
+            r#"{"a":1,"b":2}"#,
+            r#"{"c":3,"d":4}"#,
+            r#"{"a":1,"b":2,"c":3,"d":4}"#,
+        ),
+        (
+            r#"{"a":1,"b":2,"d":10}"#,
+            r#"{"a":3,"b":4}"#,
+            r#"{"a":3,"b":4,"d":10}"#,
+        ),
+    ];
+    for (left, right, result) in sources {
+        {
+            let mut buf = Vec::new();
+
+            concat(left.as_bytes(), right.as_bytes(), &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let mut buf = Vec::new();
+            let left_json = parse_value(left.as_bytes()).unwrap().to_vec();
+            let right_json = parse_value(right.as_bytes()).unwrap().to_vec();
+
+            concat(&left_json, &right_json, &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
         }
     }
 }

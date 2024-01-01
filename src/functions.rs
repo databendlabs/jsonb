@@ -19,9 +19,14 @@ use std::collections::VecDeque;
 use std::str::from_utf8;
 use std::str::from_utf8_unchecked;
 
+use crate::builder::ArrayBuilder;
+use crate::builder::ObjectBuilder;
 use crate::constants::*;
 use crate::error::*;
 use crate::from_slice;
+use crate::iterator::iteate_object_keys;
+use crate::iterator::iterate_array;
+use crate::iterator::iterate_object_entries;
 use crate::jentry::JEntry;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Mode;
@@ -1876,13 +1881,150 @@ pub fn traverse_check_string(value: &[u8], func: impl Fn(&[u8]) -> bool) -> bool
     false
 }
 
+/// Concatenates two jsonb values. Concatenating two arrays generates an array containing all the elements of each input.
+/// Concatenating two objects generates an object containing the union of their keys, taking the second object's value when there are duplicate keys.
+/// All other cases are treated by converting a non-array input into a single-element array, and then proceeding as for two arrays.
+pub fn concat(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(left) || !is_jsonb(right) {
+        let left_val = from_slice(left)?;
+        let right_val = from_slice(right)?;
+        let result = concat_values(left_val, right_val);
+        result.write_to_vec(buf);
+        return Ok(());
+    }
+    concat_jsonb(left, right, buf)
+}
+
+fn concat_values<'a>(left: Value<'a>, right: Value<'a>) -> Value<'a> {
+    match (left, right) {
+        (Value::Object(left), Value::Object(mut right)) => {
+            let mut result = left;
+            result.append(&mut right);
+            Value::Object(result)
+        }
+        (Value::Array(left), Value::Array(mut right)) => {
+            let mut result = left;
+            result.append(&mut right);
+            Value::Array(result)
+        }
+        (left, Value::Array(mut right)) => {
+            let mut result = Vec::with_capacity(right.len() + 1);
+            result.push(left);
+            result.append(&mut right);
+            Value::Array(result)
+        }
+        (Value::Array(left), right) => {
+            let mut result = left;
+            result.push(right);
+            Value::Array(result)
+        }
+        (left, right) => Value::Array(vec![left, right]),
+    }
+}
+
+fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let left_header = read_u32(left, 0)?;
+    let right_header = read_u32(right, 0)?;
+
+    let left_len = (left_header & CONTAINER_HEADER_LEN_MASK) as usize;
+    let right_len = (right_header & CONTAINER_HEADER_LEN_MASK) as usize;
+
+    let left_type = left_header & CONTAINER_HEADER_TYPE_MASK;
+    let right_type = right_header & CONTAINER_HEADER_TYPE_MASK;
+
+    match (left_type, right_type) {
+        (OBJECT_CONTAINER_TAG, OBJECT_CONTAINER_TAG) => {
+            let mut builder = ObjectBuilder::new();
+            for (key, jentry, item) in iterate_object_entries(left, left_header) {
+                builder.push_raw(key, jentry, item);
+            }
+            for (key, jentry, item) in iterate_object_entries(right, right_header) {
+                builder.push_raw(key, jentry, item);
+            }
+            builder.build_into(buf);
+        }
+        (ARRAY_CONTAINER_TAG, ARRAY_CONTAINER_TAG) => {
+            let mut builder = ArrayBuilder::new(left_len + right_len);
+            for (jentry, item) in iterate_array(left, left_header) {
+                builder.push_raw(jentry, item);
+            }
+            for (jentry, item) in iterate_array(right, right_header) {
+                builder.push_raw(jentry, item);
+            }
+            builder.build_into(buf);
+        }
+        (_, ARRAY_CONTAINER_TAG) => {
+            let mut builder = ArrayBuilder::new(right_len + 1);
+            match left_type {
+                OBJECT_CONTAINER_TAG => {
+                    let jentry = JEntry::make_container_jentry(left_len);
+                    builder.push_raw(jentry, left);
+                }
+                _ => {
+                    let jentry = JEntry::decode_jentry(read_u32(left, 4)?);
+                    builder.push_raw(jentry, &left[8..]);
+                }
+            };
+            for (jentry, item) in iterate_array(right, right_header) {
+                builder.push_raw(jentry, item);
+            }
+            builder.build_into(buf);
+        }
+        (ARRAY_CONTAINER_TAG, _) => {
+            let mut builder = ArrayBuilder::new(left_len + 1);
+            for (jentry, item) in iterate_array(left, left_header) {
+                builder.push_raw(jentry, item);
+            }
+            match right_type {
+                OBJECT_CONTAINER_TAG => {
+                    let jentry = JEntry::make_container_jentry(right_len);
+                    builder.push_raw(jentry, right);
+                }
+                _ => {
+                    let jentry = JEntry::decode_jentry(read_u32(right, 4)?);
+                    builder.push_raw(jentry, &right[8..]);
+                }
+            };
+            builder.build_into(buf);
+        }
+        (_, _) => {
+            let mut builder = ArrayBuilder::new(2);
+            match left_type {
+                OBJECT_CONTAINER_TAG => {
+                    let jentry = JEntry::make_container_jentry(left_len);
+                    builder.push_raw(jentry, left);
+                }
+                _ => {
+                    let jentry = JEntry::decode_jentry(read_u32(left, 4)?);
+                    builder.push_raw(jentry, &left[8..]);
+                }
+            };
+            match right_type {
+                OBJECT_CONTAINER_TAG => {
+                    let jentry = JEntry::make_container_jentry(right_len);
+                    builder.push_raw(jentry, right);
+                }
+                _ => {
+                    let jentry = JEntry::decode_jentry(read_u32(right, 4)?);
+                    builder.push_raw(jentry, &right[8..]);
+                }
+            };
+            builder.build_into(buf);
+        }
+    }
+    Ok(())
+}
+
 /// Deletes all object fields that have null values from the given JSON value, recursively.
 /// Null values that are not object fields are untouched.
 pub fn strip_nulls(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
-    let mut json = from_slice(value)?;
-    strip_value_nulls(&mut json);
-    json.write_to_vec(buf);
-    Ok(())
+    if !is_jsonb(value) {
+        let mut json = parse_value(value)?;
+        strip_value_nulls(&mut json);
+        json.write_to_vec(buf);
+        return Ok(());
+    }
+    strip_nulls_jsonb(value, buf)
 }
 
 fn strip_value_nulls(val: &mut Value<'_>) {
@@ -1900,6 +2042,70 @@ fn strip_value_nulls(val: &mut Value<'_>) {
         }
         _ => {}
     }
+}
+
+fn strip_nulls_jsonb(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let builder = strip_nulls_object(header, value)?;
+            builder.build_into(buf);
+        }
+        ARRAY_CONTAINER_TAG => {
+            let builder = strip_nulls_array(header, value)?;
+            builder.build_into(buf);
+        }
+        _ => buf.extend_from_slice(value),
+    }
+    Ok(())
+}
+
+fn strip_nulls_array(header: u32, value: &[u8]) -> Result<ArrayBuilder<'_>, Error> {
+    let len = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+    let mut builder = ArrayBuilder::new(len);
+
+    for (jentry, item) in iterate_array(value, header) {
+        match jentry.type_code {
+            CONTAINER_TAG => {
+                let item_header = read_u32(item, 0).unwrap();
+                match item_header & CONTAINER_HEADER_TYPE_MASK {
+                    OBJECT_CONTAINER_TAG => {
+                        builder.push_object(strip_nulls_object(item_header, item)?);
+                    }
+                    ARRAY_CONTAINER_TAG => {
+                        builder.push_array(strip_nulls_array(item_header, item)?);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => builder.push_raw(jentry, item),
+        }
+    }
+    Ok(builder)
+}
+
+fn strip_nulls_object(header: u32, value: &[u8]) -> Result<ObjectBuilder<'_>, Error> {
+    let mut builder = ObjectBuilder::new();
+    for (key, jentry, item) in iterate_object_entries(value, header) {
+        match jentry.type_code {
+            CONTAINER_TAG => {
+                let item_header = read_u32(item, 0).unwrap();
+                match item_header & CONTAINER_HEADER_TYPE_MASK {
+                    OBJECT_CONTAINER_TAG => {
+                        builder.push_object(key, strip_nulls_object(item_header, item)?);
+                    }
+                    ARRAY_CONTAINER_TAG => {
+                        builder.push_array(key, strip_nulls_array(item_header, item)?);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            NULL_TAG => continue,
+            _ => builder.push_raw(key, jentry, item),
+        }
+    }
+    Ok(builder)
 }
 
 /// Returns the type of the top-level JSON value as a text string.
@@ -1970,160 +2176,4 @@ fn array_contains(arr: &[u8], arr_header: u32, val: &[u8], val_jentry: JEntry) -
         }
     }
     false
-}
-
-fn iterate_array(value: &[u8], header: u32) -> ArrayIterator<'_> {
-    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-    ArrayIterator {
-        value,
-        jentry_offset: 4,
-        val_offset: 4 * length + 4,
-        length,
-        idx: 0,
-    }
-}
-
-fn iteate_object_keys(value: &[u8], header: u32) -> ObjectKeyIterator<'_> {
-    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-    ObjectKeyIterator {
-        value,
-        jentry_offset: 4,
-        key_offset: 8 * length + 4,
-        length,
-        idx: 0,
-    }
-}
-
-fn iterate_object_entries(value: &[u8], header: u32) -> ObjectEntryIterator<'_> {
-    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-    ObjectEntryIterator {
-        value,
-        jentry_offset: 4,
-        key_offset: 4 + length * 8,
-        val_offset: 4 + length * 8,
-        length,
-        keys: None,
-    }
-}
-
-struct ArrayIterator<'a> {
-    value: &'a [u8],
-    jentry_offset: usize,
-    val_offset: usize,
-    length: usize,
-    idx: usize,
-}
-
-impl<'a> Iterator for ArrayIterator<'a> {
-    type Item = (JEntry, &'a [u8]);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.length {
-            return None;
-        }
-        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
-        let jentry = JEntry::decode_jentry(encoded);
-        let val_length = jentry.length as usize;
-
-        let item = (
-            jentry,
-            &self.value[self.val_offset..self.val_offset + val_length],
-        );
-
-        self.idx += 1;
-        self.val_offset += val_length;
-        self.jentry_offset += 4;
-
-        Some(item)
-    }
-}
-
-struct ObjectKeyIterator<'a> {
-    value: &'a [u8],
-    jentry_offset: usize,
-    key_offset: usize,
-    length: usize,
-    idx: usize,
-}
-
-impl<'a> Iterator for ObjectKeyIterator<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.length {
-            return None;
-        }
-
-        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
-        let jentry = JEntry::decode_jentry(encoded);
-        let key_length = jentry.length as usize;
-
-        let key = unsafe {
-            from_utf8_unchecked(&self.value[self.key_offset..self.key_offset + key_length])
-        };
-
-        self.idx += 1;
-        self.key_offset += key_length;
-        self.jentry_offset += 4;
-
-        Some(key)
-    }
-}
-
-struct ObjectEntryIterator<'a> {
-    value: &'a [u8],
-    jentry_offset: usize,
-    key_offset: usize,
-    val_offset: usize,
-    length: usize,
-    keys: Option<VecDeque<JEntry>>,
-}
-
-impl<'a> Iterator for ObjectEntryIterator<'a> {
-    type Item = (&'a str, JEntry, &'a [u8]);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.keys.is_none() {
-            self.fill_keys();
-        }
-        match self.keys.as_mut().unwrap().pop_front() {
-            Some(key_jentry) => {
-                let prev_key_offset = self.key_offset;
-                self.key_offset += key_jentry.length as usize;
-
-                let key = unsafe {
-                    std::str::from_utf8_unchecked(&self.value[prev_key_offset..self.key_offset])
-                };
-
-                let val_encoded = read_u32(self.value, self.jentry_offset).unwrap();
-                let val_jentry = JEntry::decode_jentry(val_encoded);
-                let val_length = val_jentry.length as usize;
-
-                let val =
-                    &self.value[self.val_offset..self.val_offset + val_jentry.length as usize];
-                let result = (key, val_jentry, val);
-
-                self.jentry_offset += 4;
-                self.val_offset += val_length;
-
-                Some(result)
-            }
-            None => None,
-        }
-    }
-}
-
-impl<'a> ObjectEntryIterator<'a> {
-    fn fill_keys(&mut self) {
-        let mut keys: VecDeque<JEntry> = VecDeque::with_capacity(self.length);
-        for _ in 0..self.length {
-            let encoded = read_u32(self.value, self.jentry_offset).unwrap();
-            let key_jentry = JEntry::decode_jentry(encoded);
-
-            self.jentry_offset += 4;
-            self.val_offset += key_jentry.length as usize;
-            keys.push_back(key_jentry);
-        }
-        self.keys = Some(keys);
-    }
 }
