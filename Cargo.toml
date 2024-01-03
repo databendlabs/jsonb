@@ -51,3 +51,6 @@ harness = false
 name = "get_path"
 harness = false
 
+[[bench]]
+name = "strip_nulls"
+harness = false
