@@ -1247,6 +1247,8 @@ fn test_concat() {
             r#"[1,[1,2,3],3,[10,20,30]]"#,
         ),
         (r#"{"a":1,"b":2}"#, r#"true"#, r#"[{"a":1,"b":2},true]"#),
+        (r#"{"a":1,"b":2}"#, r#"123"#, r#"[{"a":1,"b":2},123]"#),
+        (r#"{"a":1,"b":2}"#, r#""asd""#, r#"[{"a":1,"b":2},"asd"]"#),
         (r#"[1,2,3]"#, r#"{"a":1,"b":2}"#, r#"[1,2,3,{"a":1,"b":2}]"#),
         (r#"{"a":1,"b":2}"#, r#"[1,2,3]"#, r#"[{"a":1,"b":2},1,2,3]"#),
         (
@@ -1268,7 +1270,9 @@ fn test_concat() {
 
             let actual = from_slice(&buf).unwrap();
             let expected = parse_value(result.as_bytes()).unwrap();
+
             assert_eq!(actual, expected);
+            assert_eq!(to_string(&buf), result);
         }
         {
             let mut buf = Vec::new();
@@ -1279,7 +1283,9 @@ fn test_concat() {
 
             let actual = from_slice(&buf).unwrap();
             let expected = parse_value(result.as_bytes()).unwrap();
+
             assert_eq!(actual, expected);
+            assert_eq!(to_string(&buf), result);
         }
     }
 }
