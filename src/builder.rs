@@ -50,20 +50,19 @@ impl<'a> ArrayBuilder<'a> {
         self.entries.push(Entry::ObjectBuilder(builder));
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub(crate) fn build_into(self, buf: &mut Vec<u8>) {
+    pub(crate) fn build_into(self, buf: &mut Vec<u8>) -> usize {
         let header = ARRAY_CONTAINER_TAG | self.entries.len() as u32;
         buf.write_u32::<BigEndian>(header).unwrap();
 
+        let mut array_len = 4 + self.entries.len() * 4;
         let mut jentry_index = reserve_jentries(buf, self.entries.len() * 4);
 
         for entry in self.entries.into_iter() {
             let jentry = write_entry(buf, entry);
+            array_len += jentry.length as usize;
             replace_jentry(buf, jentry, &mut jentry_index);
         }
+        array_len
     }
 }
 
@@ -90,18 +89,16 @@ impl<'a> ObjectBuilder<'a> {
         self.entries.insert(key, Entry::ObjectBuilder(builder));
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub(crate) fn build_into(self, buf: &mut Vec<u8>) {
+    pub(crate) fn build_into(self, buf: &mut Vec<u8>) -> usize {
         let header = OBJECT_CONTAINER_TAG | self.entries.len() as u32;
         buf.write_u32::<BigEndian>(header).unwrap();
 
+        let mut object_len = 4 + self.entries.len() * 8;
         let mut jentry_index = reserve_jentries(buf, self.entries.len() * 8);
 
         for (key, _) in self.entries.iter() {
             let key_len = key.len();
+            object_len += key_len;
             buf.extend_from_slice(key.as_bytes());
             let jentry = JEntry::make_string_jentry(key_len);
             replace_jentry(buf, jentry, &mut jentry_index)
@@ -109,22 +106,22 @@ impl<'a> ObjectBuilder<'a> {
 
         for (_, entry) in self.entries.into_iter() {
             let jentry = write_entry(buf, entry);
+            object_len += jentry.length as usize;
             replace_jentry(buf, jentry, &mut jentry_index);
         }
+        object_len
     }
 }
 
 fn write_entry(buf: &mut Vec<u8>, entry: Entry<'_>) -> JEntry {
     match entry {
         Entry::ArrayBuilder(builder) => {
-            let jentry = JEntry::make_container_jentry(builder.len());
-            builder.build_into(buf);
-            jentry
+            let size = builder.build_into(buf);
+            JEntry::make_container_jentry(size)
         }
         Entry::ObjectBuilder(builder) => {
-            let jentry = JEntry::make_container_jentry(builder.len());
-            builder.build_into(buf);
-            jentry
+            let size = builder.build_into(buf);
+            JEntry::make_container_jentry(size)
         }
         Entry::Raw(jentry, data) => {
             buf.extend_from_slice(data);
@@ -146,4 +143,62 @@ fn replace_jentry(buf: &mut [u8], jentry: JEntry, jentry_index: &mut usize) {
         buf[*jentry_index + i] = *b;
     }
     *jentry_index += 4;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{jentry::JEntry, Value};
+
+    use super::{ArrayBuilder, ObjectBuilder};
+
+    #[test]
+    fn test_build_with_inner_array() {
+        let mut from_builder = Vec::new();
+        {
+            let mut builder = ObjectBuilder::new();
+            let mut inner_array_builder = ArrayBuilder::new(1);
+            inner_array_builder.push_raw(JEntry::make_false_jentry(), &[]);
+
+            builder.push_array("arr", inner_array_builder);
+            builder.build_into(&mut from_builder);
+        }
+        let mut from_encoder = Vec::new();
+        {
+            let value = init_object(vec![("arr", Value::Array(vec![Value::Bool(false)]))]);
+            value.write_to_vec(&mut from_encoder);
+        }
+        assert_eq!(from_builder, from_encoder);
+    }
+
+    #[test]
+    fn test_build_with_inner_object() {
+        let mut from_builder = Vec::new();
+        {
+            let mut builder = ObjectBuilder::new();
+            let mut inner_obj_builder = ObjectBuilder::new();
+            inner_obj_builder.push_raw("field", JEntry::make_true_jentry(), &[]);
+
+            builder.push_object("obj", inner_obj_builder);
+            builder.build_into(&mut from_builder);
+        }
+        let mut from_encoder = Vec::new();
+        {
+            let value = init_object(vec![(
+                "obj",
+                init_object(vec![("field", Value::Bool(true))]),
+            )]);
+            value.write_to_vec(&mut from_encoder);
+        }
+        assert_eq!(from_builder, from_encoder);
+    }
+
+    fn init_object<'a>(entries: Vec<(&str, Value<'a>)>) -> Value<'a> {
+        let mut map = BTreeMap::new();
+        for (key, val) in entries {
+            map.insert(key.to_string(), val);
+        }
+        Value::Object(map)
+    }
 }

@@ -1957,7 +1957,7 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
             let mut builder = ArrayBuilder::new(right_len + 1);
             match left_type {
                 OBJECT_CONTAINER_TAG => {
-                    let jentry = JEntry::make_container_jentry(left_len);
+                    let jentry = JEntry::make_container_jentry(left.len());
                     builder.push_raw(jentry, left);
                 }
                 _ => {
@@ -1977,7 +1977,7 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
             }
             match right_type {
                 OBJECT_CONTAINER_TAG => {
-                    let jentry = JEntry::make_container_jentry(right_len);
+                    let jentry = JEntry::make_container_jentry(right.len());
                     builder.push_raw(jentry, right);
                 }
                 _ => {
@@ -1991,7 +1991,7 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
             let mut builder = ArrayBuilder::new(2);
             match left_type {
                 OBJECT_CONTAINER_TAG => {
-                    let jentry = JEntry::make_container_jentry(left_len);
+                    let jentry = JEntry::make_container_jentry(left.len());
                     builder.push_raw(jentry, left);
                 }
                 _ => {
@@ -2001,7 +2001,7 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
             };
             match right_type {
                 OBJECT_CONTAINER_TAG => {
-                    let jentry = JEntry::make_container_jentry(right_len);
+                    let jentry = JEntry::make_container_jentry(right.len());
                     builder.push_raw(jentry, right);
                 }
                 _ => {
