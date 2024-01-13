@@ -18,11 +18,11 @@ use std::collections::BTreeMap;
 
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, concat, contains, convert_to_comparable, exists_all_keys, exists_any_keys, from_slice,
-    get_by_index, get_by_keypath, get_by_name, get_by_path, is_array, is_object,
-    keypath::parse_key_paths, object_each, object_keys, parse_value, path_exists, path_match,
-    strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_str, to_string, to_u64,
-    traverse_check_string, type_of, Number, Object, Value,
+    compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_name,
+    exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
+    get_by_path, is_array, is_object, keypath::parse_key_paths, object_each, object_keys,
+    parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string,
+    to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -1286,6 +1286,132 @@ fn test_concat() {
 
             assert_eq!(actual, expected);
             assert_eq!(to_string(&buf), result);
+        }
+    }
+}
+
+#[test]
+fn test_delete_by_name() {
+    let sources = vec![
+        ("[1,2,3]", "1", "[1,2,3]"),
+        (r#"["1","2","3"]"#, "0", r#"["1","2","3"]"#),
+        (r#"["1","2","3"]"#, "1", r#"["2","3"]"#),
+        (
+            r#"["1","2","3",{"a":1,"b":2}]"#,
+            "1",
+            r#"["2","3",{"a":1,"b":2}]"#,
+        ),
+        (r#"{"a":1,"b":2}"#, "c", r#"{"a":1,"b":2}"#),
+        (r#"{"a":1,"b":2}"#, "a", r#"{"b":2}"#),
+        (r#"{"b":2}"#, "b", "{}"),
+    ];
+    for (json, name, result) in sources {
+        {
+            let mut buf = Vec::new();
+            delete_by_name(json.as_bytes(), name, &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+
+            delete_by_name(&json, name, &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_delete_by_name_errors() {
+    let sources = vec![(r#""asd""#, "asd"), ("true", "true"), ("1", "1")];
+    for (json, name) in sources {
+        {
+            let mut buf = Vec::new();
+            let result = delete_by_name(json.as_bytes(), name, &mut buf);
+
+            assert!(result.is_err());
+            matches!(result.unwrap_err(), Error::InvalidJsonType);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+
+            let result = delete_by_name(&json, name, &mut buf);
+
+            assert!(result.is_err());
+            matches!(result.unwrap_err(), Error::InvalidJsonType);
+        }
+    }
+}
+
+#[test]
+fn test_delete_by_index() {
+    let sources = vec![
+        ("[1,2,3]", 0, "[2,3]"),
+        ("[1,2,3]", 1, "[1,3]"),
+        ("[1,2,3]", 2, "[1,2]"),
+        ("[1,2,3]", -1, "[1,2]"),
+        ("[1,2,3]", -2, "[1,3]"),
+        ("[1,2,3]", -3, "[2,3]"),
+        ("[1,2,3]", -4, "[1,2,3]"),
+        (r#"[1,2,{"a":[1,2,3],"b":[40,50,60]}]"#, 2, "[1,2]"),
+    ];
+    for (json, index, result) in sources {
+        {
+            let mut buf = Vec::new();
+            delete_by_index(json.as_bytes(), index, &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+
+            delete_by_index(&json, index, &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_delete_by_index_errors() {
+    let sources = vec![
+        (r#""asd""#, 1),
+        ("true", 0),
+        ("1", 10),
+        (r#"{"a":1,"b":2}"#, 20),
+    ];
+    for (json, index) in sources {
+        {
+            let mut buf = Vec::new();
+            let result = delete_by_index(json.as_bytes(), index, &mut buf);
+
+            assert!(result.is_err());
+            matches!(result.unwrap_err(), Error::InvalidJsonType);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+
+            let result = delete_by_index(&json, index, &mut buf);
+
+            assert!(result.is_err());
+            matches!(result.unwrap_err(), Error::InvalidJsonType);
         }
     }
 }
