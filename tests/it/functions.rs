@@ -1338,7 +1338,7 @@ fn test_delete_by_name_errors() {
             let result = delete_by_name(json.as_bytes(), name, &mut buf);
 
             assert!(result.is_err());
-            matches!(result.unwrap_err(), Error::InvalidJsonType);
+            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
         }
         {
             let json = parse_value(json.as_bytes()).unwrap().to_vec();
@@ -1347,7 +1347,7 @@ fn test_delete_by_name_errors() {
             let result = delete_by_name(&json, name, &mut buf);
 
             assert!(result.is_err());
-            matches!(result.unwrap_err(), Error::InvalidJsonType);
+            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
         }
     }
 }
@@ -1402,7 +1402,7 @@ fn test_delete_by_index_errors() {
             let result = delete_by_index(json.as_bytes(), index, &mut buf);
 
             assert!(result.is_err());
-            matches!(result.unwrap_err(), Error::InvalidJsonType);
+            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
         }
         {
             let json = parse_value(json.as_bytes()).unwrap().to_vec();
@@ -1411,7 +1411,7 @@ fn test_delete_by_index_errors() {
             let result = delete_by_index(&json, index, &mut buf);
 
             assert!(result.is_err());
-            matches!(result.unwrap_err(), Error::InvalidJsonType);
+            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
         }
     }
 }
