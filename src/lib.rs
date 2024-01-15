@@ -81,6 +81,7 @@ mod value;
 
 pub use de::from_slice;
 pub use error::Error;
+#[allow(unused_imports)]
 pub use from::*;
 pub use functions::*;
 pub use number::Number;

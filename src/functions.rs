@@ -2015,6 +2015,104 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
     Ok(())
 }
 
+/// Deletes a key (and its value) from a JSON object, or matching string value(s) from a JSON array.
+pub fn delete_by_name(value: &[u8], name: &str, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let mut val = parse_value(value)?;
+        match &mut val {
+            Value::Array(arr) => {
+                arr.retain(|item| !matches!(item, Value::String(v) if v.eq(name)));
+            }
+            Value::Object(obj) => {
+                obj.remove(name);
+            }
+            _ => return Err(Error::InvalidJsonType),
+        };
+        val.write_to_vec(buf);
+        return Ok(());
+    }
+    delete_jsonb_by_name(value, name, buf)
+}
+
+fn delete_jsonb_by_name(value: &[u8], name: &str, buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let mut builder = ObjectBuilder::new();
+            for (key, jentry, item) in iterate_object_entries(value, header) {
+                if !key.eq(name) {
+                    builder.push_raw(key, jentry, item);
+                }
+            }
+            builder.build_into(buf);
+        }
+        ARRAY_CONTAINER_TAG => {
+            let mut builder = ArrayBuilder::new((header & CONTAINER_HEADER_LEN_MASK) as usize);
+            for (jentry, item) in iterate_array(value, header) {
+                let matches = match jentry.type_code {
+                    STRING_TAG => {
+                        let v = unsafe { from_utf8_unchecked(item) };
+                        v.eq(name)
+                    }
+                    _ => false,
+                };
+                if !matches {
+                    builder.push_raw(jentry, item);
+                }
+            }
+            builder.build_into(buf);
+        }
+        _ => return Err(Error::InvalidJsonType),
+    }
+    Ok(())
+}
+
+/// Deletes the array element with specified index (negative integers count from the end).
+pub fn delete_by_index(value: &[u8], index: i32, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let mut val = parse_value(value)?;
+        match &mut val {
+            Value::Array(arr) => {
+                let len = arr.len() as i32;
+                let index = if index < 0 { len - index.abs() } else { index };
+                if index >= 0 && index < len {
+                    arr.remove(index as usize);
+                }
+            }
+            _ => return Err(Error::InvalidJsonType),
+        };
+        val.write_to_vec(buf);
+        return Ok(());
+    }
+    delete_jsonb_by_index(value, index, buf)
+}
+
+fn delete_jsonb_by_index(value: &[u8], index: i32, buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            let len = (header & CONTAINER_HEADER_LEN_MASK) as i32;
+            let index = if index < 0 { len - index.abs() } else { index };
+            if index < 0 || index >= len {
+                buf.extend_from_slice(value);
+            } else {
+                let mut builder = ArrayBuilder::new((header & CONTAINER_HEADER_LEN_MASK) as usize);
+                let index = index as usize;
+                for (i, entry) in iterate_array(value, header).enumerate() {
+                    if i != index {
+                        builder.push_raw(entry.0, entry.1);
+                    }
+                }
+                builder.build_into(buf);
+            }
+        }
+        _ => return Err(Error::InvalidJsonType),
+    }
+    Ok(())
+}
+
 /// Deletes all object fields that have null values from the given JSON value, recursively.
 /// Null values that are not object fields are untouched.
 pub fn strip_nulls(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {

@@ -463,7 +463,7 @@ impl<'a> Selector<'a> {
             Expr::Paths(paths) => {
                 // get value from path and convert to `ExprValue`.
                 let mut poses = VecDeque::new();
-                if let Some(Path::Current) = paths.get(0) {
+                if let Some(Path::Current) = paths.first() {
                     poses.push_back(pos.clone());
                 } else {
                     poses.push_back(Position::Container((0, root.len())));

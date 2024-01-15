@@ -83,6 +83,8 @@ pub enum Error {
     InvalidJsonPathPredicate,
     InvalidKeyPath,
 
+    InvalidJsonType,
+
     Syntax(ParseErrorCode, usize),
 }
 
