@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use jsonb::delete_by_keypath;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_name,
@@ -1412,6 +1413,45 @@ fn test_delete_by_index_errors() {
 
             assert!(result.is_err());
             assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
+        }
+    }
+}
+
+#[test]
+fn test_delete_by_keypath() {
+    let sources = vec![
+        (r#"{"a":1,"b":[1,2,3]}"#, "{}", r#"{"a":1,"b":[1,2,3]}"#),
+        (r#"{"a":1,"b":[1,2,3]}"#, "{b}", r#"{"a":1}"#),
+        (r#"{"a":1,"b":[1,2,3]}"#, "{b,2}", r#"{"a":1,"b":[1,2]}"#),
+        (r#"{"a":1,"b":[1,2,3]}"#, "{b,-2}", r#"{"a":1,"b":[1,3]}"#),
+        (r#"{"a":1,"b":[{"c":1,"d":10},2,3]}"#, "{b,0,d}", r#"{"a":1,"b":[{"c":1},2,3]}"#),
+        (r#"{"a":1,"b":[1,2,3]}"#, "{b,20}", r#"{"a":1,"b":[1,2,3]}"#),
+        (r#"{"a":1,"b":[1,2,3]}"#, "{b,20,c,e}", r#"{"a":1,"b":[1,2,3]}"#),
+    ];
+    for (json, keypath, result) in sources {
+        {
+            let json = json.as_bytes();
+            let keypath = parse_key_paths(keypath.as_bytes()).unwrap();
+            let mut buf = Vec::new();
+
+            delete_by_keypath(json, keypath.paths.iter(), &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
+        }
+        {
+            let json = parse_value(json.as_bytes()).unwrap().to_vec();
+            let keypath = parse_key_paths(keypath.as_bytes()).unwrap();
+            let mut buf = Vec::new();
+
+            delete_by_keypath(&json, keypath.paths.iter(), &mut buf).unwrap();
+
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+
+            assert_eq!(actual, expected);
         }
     }
 }
