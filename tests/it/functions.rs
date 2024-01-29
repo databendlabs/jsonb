@@ -16,14 +16,14 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use jsonb::delete_by_keypath;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_name,
-    exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
-    get_by_path, is_array, is_object, keypath::parse_key_paths, object_each, object_keys,
-    parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64, to_pretty_string,
-    to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number, Object, Value,
+    compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_keypath,
+    delete_by_name, exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath,
+    get_by_name, get_by_path, is_array, is_object, keypath::parse_key_paths, object_each,
+    object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64,
+    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number,
+    Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
