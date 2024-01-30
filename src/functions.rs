@@ -15,6 +15,7 @@
 use core::convert::TryInto;
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::str::from_utf8;
 use std::str::from_utf8_unchecked;
@@ -288,7 +289,7 @@ pub fn get_by_name(value: &[u8], name: &str, ignore_case: bool) -> Option<Vec<u8
 }
 
 /// Extracts JSON sub-object at the specified path,
-/// where path elements can be either field keys or array indexes encoded in utf-8 string.
+/// where path elements can be either field keys or array indexes.
 pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
     value: &[u8],
     keypaths: I,
@@ -2015,6 +2016,211 @@ fn concat_jsonb(left: &[u8], right: &[u8], buf: &mut Vec<u8>) -> Result<(), Erro
     Ok(())
 }
 
+/// Deletes a value from a JSON object by the specified path,
+/// where path elements can be either field keys or array indexes.
+pub fn delete_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
+    value: &[u8],
+    keypath: I,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let mut keypath: VecDeque<_> = keypath.collect();
+    if !is_jsonb(value) {
+        let mut value = parse_value(value)?;
+        match value {
+            Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, &mut keypath),
+            Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, &mut keypath),
+            _ => return Err(Error::InvalidJsonType),
+        };
+        value.write_to_vec(buf);
+        return Ok(());
+    }
+    delete_by_keypath_jsonb(value, keypath, buf)
+}
+
+fn delete_value_array_by_keypath<'a>(
+    arr: &mut Vec<Value<'_>>,
+    keypath: &mut VecDeque<&'a KeyPath<'a>>,
+) {
+    if let Some(KeyPath::Index(idx)) = keypath.pop_front() {
+        let len = arr.len() as i32;
+        let idx = if *idx < 0 { len - idx.abs() } else { *idx };
+        if idx < 0 || idx >= len {
+            return;
+        }
+        if keypath.is_empty() {
+            arr.remove(idx as usize);
+        } else {
+            match arr[idx as usize] {
+                Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
+                Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn delete_value_object_by_keypath<'a>(
+    obj: &mut BTreeMap<String, Value<'_>>,
+    keypath: &mut VecDeque<&'a KeyPath<'a>>,
+) {
+    if let Some(path) = keypath.pop_front() {
+        match path {
+            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
+                if keypath.is_empty() {
+                    obj.remove(name.as_ref());
+                } else if let Some(val) = obj.get_mut(name.as_ref()) {
+                    match val {
+                        Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
+                        Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn delete_by_keypath_jsonb<'a>(
+    value: &[u8],
+    mut keypath: VecDeque<&'a KeyPath<'a>>,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            match delete_jsonb_array_by_keypath(value, header, &mut keypath)? {
+                Some(builder) => {
+                    builder.build_into(buf);
+                }
+                None => {
+                    buf.extend_from_slice(value);
+                }
+            };
+        }
+        OBJECT_CONTAINER_TAG => {
+            match delete_jsonb_object_by_keypath(value, header, &mut keypath)? {
+                Some(builder) => {
+                    builder.build_into(buf);
+                }
+                None => {
+                    buf.extend_from_slice(value);
+                }
+            }
+        }
+        _ => return Err(Error::InvalidJsonType),
+    }
+    Ok(())
+}
+
+fn delete_jsonb_array_by_keypath<'a, 'b>(
+    value: &'b [u8],
+    header: u32,
+    keypath: &mut VecDeque<&'a KeyPath<'a>>,
+) -> Result<Option<ArrayBuilder<'b>>, Error> {
+    let len = (header & CONTAINER_HEADER_LEN_MASK) as i32;
+    match keypath.pop_front() {
+        Some(KeyPath::Index(idx)) => {
+            let idx = if *idx < 0 { len - idx.abs() } else { *idx };
+            if idx < 0 || idx >= len {
+                return Ok(None);
+            }
+            let mut builder = ArrayBuilder::new(len as usize);
+            let idx = idx as usize;
+            for (i, entry) in iterate_array(value, header).enumerate() {
+                if i != idx {
+                    builder.push_raw(entry.0, entry.1);
+                } else if !keypath.is_empty() {
+                    let item_value = entry.1;
+                    match entry.0.type_code {
+                        CONTAINER_TAG => {
+                            let item_header = read_u32(item_value, 0)?;
+                            match item_header & CONTAINER_HEADER_TYPE_MASK {
+                                ARRAY_CONTAINER_TAG => {
+                                    match delete_jsonb_array_by_keypath(
+                                        item_value,
+                                        item_header,
+                                        keypath,
+                                    )? {
+                                        Some(item_builder) => builder.push_array(item_builder),
+                                        None => return Ok(None),
+                                    }
+                                }
+                                OBJECT_CONTAINER_TAG => {
+                                    match delete_jsonb_object_by_keypath(
+                                        item_value,
+                                        item_header,
+                                        keypath,
+                                    )? {
+                                        Some(item_builder) => builder.push_object(item_builder),
+                                        None => return Ok(None),
+                                    }
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        _ => return Ok(None),
+                    }
+                }
+            }
+            Ok(Some(builder))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn delete_jsonb_object_by_keypath<'a, 'b>(
+    value: &'b [u8],
+    header: u32,
+    keypath: &mut VecDeque<&'a KeyPath<'a>>,
+) -> Result<Option<ObjectBuilder<'b>>, Error> {
+    match keypath.pop_front() {
+        Some(path) => match path {
+            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
+                let mut builder = ObjectBuilder::new();
+                for (key, jentry, item) in iterate_object_entries(value, header) {
+                    if !key.eq(name) {
+                        builder.push_raw(key, jentry, item);
+                    } else if !keypath.is_empty() {
+                        match jentry.type_code {
+                            CONTAINER_TAG => {
+                                let item_header = read_u32(item, 0)?;
+                                match item_header & CONTAINER_HEADER_TYPE_MASK {
+                                    ARRAY_CONTAINER_TAG => match delete_jsonb_array_by_keypath(
+                                        item,
+                                        item_header,
+                                        keypath,
+                                    )? {
+                                        Some(item_builder) => builder.push_array(key, item_builder),
+                                        None => return Ok(None),
+                                    },
+                                    OBJECT_CONTAINER_TAG => {
+                                        match delete_jsonb_object_by_keypath(
+                                            item,
+                                            item_header,
+                                            keypath,
+                                        )? {
+                                            Some(item_builder) => {
+                                                builder.push_object(key, item_builder)
+                                            }
+                                            None => return Ok(None),
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            }
+                            _ => return Ok(None),
+                        }
+                    }
+                }
+                Ok(Some(builder))
+            }
+            _ => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
 /// Deletes a key (and its value) from a JSON object, or matching string value(s) from a JSON array.
 pub fn delete_by_name(value: &[u8], name: &str, buf: &mut Vec<u8>) -> Result<(), Error> {
     if !is_jsonb(value) {
@@ -2166,7 +2372,7 @@ fn strip_nulls_array(header: u32, value: &[u8]) -> Result<ArrayBuilder<'_>, Erro
     for (jentry, item) in iterate_array(value, header) {
         match jentry.type_code {
             CONTAINER_TAG => {
-                let item_header = read_u32(item, 0).unwrap();
+                let item_header = read_u32(item, 0)?;
                 match item_header & CONTAINER_HEADER_TYPE_MASK {
                     OBJECT_CONTAINER_TAG => {
                         builder.push_object(strip_nulls_object(item_header, item)?);
@@ -2188,7 +2394,7 @@ fn strip_nulls_object(header: u32, value: &[u8]) -> Result<ObjectBuilder<'_>, Er
     for (key, jentry, item) in iterate_object_entries(value, header) {
         match jentry.type_code {
             CONTAINER_TAG => {
-                let item_header = read_u32(item, 0).unwrap();
+                let item_header = read_u32(item, 0)?;
                 match item_header & CONTAINER_HEADER_TYPE_MASK {
                     OBJECT_CONTAINER_TAG => {
                         builder.push_object(key, strip_nulls_object(item_header, item)?);
