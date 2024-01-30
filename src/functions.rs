@@ -143,7 +143,7 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
             Err(_) => None,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         ARRAY_CONTAINER_TAG => {
             let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
@@ -249,7 +249,7 @@ pub fn get_by_index(value: &[u8], index: usize) -> Option<Vec<u8>> {
         };
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         ARRAY_CONTAINER_TAG => {
             get_jentry_by_index(value, 0, header, index).map(|(jentry, encoded, val_offset)| {
@@ -279,7 +279,7 @@ pub fn get_by_name(value: &[u8], name: &str, ignore_case: bool) -> Option<Vec<u8
         };
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         OBJECT_CONTAINER_TAG => get_jentry_by_name(value, 0, header, name, ignore_case).map(
             |(jentry, encoded, val_offset)| extract_by_jentry(&jentry, encoded, val_offset, value),
@@ -342,7 +342,7 @@ pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
                 return None;
             }
         }
-        let header = read_u32(value, curr_val_offset).unwrap();
+        let header = read_u32(value, curr_val_offset).ok()?;
         let length = (header & CONTAINER_HEADER_LEN_MASK) as i32;
         match (path, header & CONTAINER_HEADER_TYPE_MASK) {
             (KeyPath::QuotedName(name) | KeyPath::Name(name), OBJECT_CONTAINER_TAG) => {
@@ -406,7 +406,7 @@ pub fn exists_all_keys<'a, I: Iterator<Item = &'a [u8]>>(value: &[u8], keys: I) 
         return true;
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).unwrap_or_default();
 
     for key in keys {
         match from_utf8(key) {
@@ -436,7 +436,7 @@ pub fn exists_any_keys<'a, I: Iterator<Item = &'a [u8]>>(value: &[u8], keys: I) 
         return false;
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).unwrap_or_default();
 
     for key in keys {
         if let Ok(key) = from_utf8(key) {
@@ -507,7 +507,7 @@ pub fn contains(left: &[u8], right: &[u8]) -> bool {
             _ => false,
         };
     }
-    contains_jsonb(left, right)
+    contains_jsonb(left, right).unwrap_or(false)
 }
 
 fn contains_value(left: &Value, right: &Value) -> bool {
@@ -573,21 +573,21 @@ fn contains_value(left: &Value, right: &Value) -> bool {
     }
 }
 
-fn contains_jsonb(left: &[u8], right: &[u8]) -> bool {
-    let l_header = read_u32(left, 0).unwrap();
-    let r_header = read_u32(right, 0).unwrap();
+fn contains_jsonb(left: &[u8], right: &[u8]) -> Result<bool, Error> {
+    let l_header = read_u32(left, 0)?;
+    let r_header = read_u32(right, 0)?;
 
     let l_type = l_header & CONTAINER_HEADER_TYPE_MASK;
     let r_type = r_header & CONTAINER_HEADER_TYPE_MASK;
 
     // special case for the left array and the right scalar
     if l_type == ARRAY_CONTAINER_TAG && r_type == SCALAR_CONTAINER_TAG {
-        let r_jentry = JEntry::decode_jentry(read_u32(right, 4).unwrap());
-        return array_contains(left, l_header, &right[8..], r_jentry);
+        let r_jentry = JEntry::decode_jentry(read_u32(right, 4)?);
+        return Ok(array_contains(left, l_header, &right[8..], r_jentry));
     }
 
     if l_type != r_type {
-        return false;
+        return Ok(false);
     }
 
     match r_type {
@@ -595,33 +595,33 @@ fn contains_jsonb(left: &[u8], right: &[u8]) -> bool {
             let l_size = l_header & CONTAINER_HEADER_LEN_MASK;
             let r_size = r_header & CONTAINER_HEADER_LEN_MASK;
             if l_size < r_size {
-                return false;
+                return Ok(false);
             }
             for (r_key, r_jentry, r_val) in iterate_object_entries(right, r_header) {
                 match get_jentry_by_name(left, 0, l_header, r_key, false) {
                     Some((l_jentry, _, l_val_offset)) => {
                         if l_jentry.type_code != r_jentry.type_code {
-                            return false;
+                            return Ok(false);
                         }
                         let l_val = &left[l_val_offset..l_val_offset + l_jentry.length as usize];
                         if r_jentry.type_code != CONTAINER_TAG {
                             if !l_val.eq(r_val) {
-                                return false;
+                                return Ok(false);
                             }
-                        } else if !contains_jsonb(l_val, r_val) {
-                            return false;
+                        } else if !contains_jsonb(l_val, r_val)? {
+                            return Ok(false);
                         }
                     }
-                    None => return false,
+                    None => return Ok(false),
                 }
             }
-            true
+            Ok(true)
         }
         ARRAY_CONTAINER_TAG => {
             for (r_jentry, r_val) in iterate_array(right, r_header) {
                 if r_jentry.type_code != CONTAINER_TAG {
                     if !array_contains(left, l_header, r_val, r_jentry) {
-                        return false;
+                        return Ok(false);
                     }
                 } else {
                     let l_nested: Vec<_> = iterate_array(left, l_header)
@@ -632,19 +632,19 @@ fn contains_jsonb(left: &[u8], right: &[u8]) -> bool {
                     let mut contains_nested = false;
 
                     for l_nested_val in l_nested {
-                        if contains_jsonb(l_nested_val, r_val) {
+                        if contains_jsonb(l_nested_val, r_val)? {
                             contains_nested = true;
                             break;
                         }
                     }
                     if !contains_nested {
-                        return false;
+                        return Ok(false);
                     }
                 }
             }
-            true
+            Ok(true)
         }
-        _ => left.eq(right),
+        _ => Ok(left.eq(right)),
     }
 }
 
@@ -661,7 +661,7 @@ fn get_jentry_by_name(
 
     let mut key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
     for _ in 0..length {
-        let encoded = read_u32(value, jentry_offset).unwrap();
+        let encoded = read_u32(value, jentry_offset).ok()?;
         let key_jentry = JEntry::decode_jentry(encoded);
 
         jentry_offset += 4;
@@ -677,7 +677,7 @@ fn get_jentry_by_name(
         key_offset += key_jentry.length as usize;
         let key = unsafe { std::str::from_utf8_unchecked(&value[prev_key_offset..key_offset]) };
 
-        let val_encoded = read_u32(value, jentry_offset).unwrap();
+        let val_encoded = read_u32(value, jentry_offset).ok()?;
         let val_jentry = JEntry::decode_jentry(val_encoded);
         let val_length = val_jentry.length as usize;
 
@@ -710,7 +710,7 @@ fn get_jentry_by_index(
     let mut val_offset = offset + 4 * length + 4;
 
     for i in 0..length {
-        let encoded = read_u32(value, jentry_offset).unwrap();
+        let encoded = read_u32(value, jentry_offset).ok()?;
         let jentry = JEntry::decode_jentry(encoded);
         let val_length = jentry.length as usize;
         if i < index {
@@ -732,7 +732,7 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
         };
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         OBJECT_CONTAINER_TAG => {
             let mut buf: Vec<u8> = Vec::new();
@@ -744,7 +744,7 @@ pub fn object_keys(value: &[u8]) -> Option<Vec<u8>> {
             let mut key_offset = 8 * length + 4;
             let mut key_offsets = Vec::with_capacity(length);
             for _ in 0..length {
-                let key_encoded = read_u32(value, jentry_offset).unwrap();
+                let key_encoded = read_u32(value, jentry_offset).ok()?;
                 let key_jentry = JEntry::decode_jentry(key_encoded);
                 buf.extend_from_slice(&key_encoded.to_be_bytes());
 
@@ -783,7 +783,7 @@ pub fn object_each(value: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
         };
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
 
     match header & CONTAINER_HEADER_TYPE_MASK {
         OBJECT_CONTAINER_TAG => {
@@ -793,7 +793,7 @@ pub fn object_each(value: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
             let mut offset = 4;
 
             for _ in 0..length * 2 {
-                let encoded = read_u32(value, offset).unwrap();
+                let encoded = read_u32(value, offset).ok()?;
                 offset += 4;
                 jentries.push_back((JEntry::decode_jentry(encoded), encoded));
             }
@@ -834,7 +834,7 @@ pub fn array_values(value: &[u8]) -> Option<Vec<Vec<u8>>> {
         };
     }
 
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         ARRAY_CONTAINER_TAG => {
             let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
@@ -842,7 +842,7 @@ pub fn array_values(value: &[u8]) -> Option<Vec<Vec<u8>>> {
             let mut val_offset = 4 * length + 4;
             let mut items = Vec::with_capacity(length);
             for _ in 0..length {
-                let encoded = read_u32(value, jentry_offset).unwrap();
+                let encoded = read_u32(value, jentry_offset).ok()?;
                 let jentry = JEntry::decode_jentry(encoded);
                 let val_length = jentry.length as usize;
                 let item = extract_by_jentry(&jentry, encoded, val_offset, value);
@@ -1168,10 +1168,10 @@ pub fn as_null(value: &[u8]) -> Option<()> {
             Err(_) => None,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
-            let jentry = read_u32(value, 4).unwrap();
+            let jentry = read_u32(value, 4).ok()?;
             match jentry {
                 NULL_TAG => Some(()),
                 _ => None,
@@ -1194,10 +1194,10 @@ pub fn as_bool(value: &[u8]) -> Option<bool> {
             Err(_) => None,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
-            let jentry = read_u32(value, 4).unwrap();
+            let jentry = read_u32(value, 4).ok()?;
             match jentry {
                 FALSE_TAG => Some(false),
                 TRUE_TAG => Some(true),
@@ -1235,10 +1235,10 @@ pub fn as_number(value: &[u8]) -> Option<Number> {
             Err(_) => None,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
-            let jentry_encoded = read_u32(value, 4).unwrap();
+            let jentry_encoded = read_u32(value, 4).ok()?;
             let jentry = JEntry::decode_jentry(jentry_encoded);
             match jentry.type_code {
                 NUMBER_TAG => {
@@ -1362,10 +1362,10 @@ pub fn as_str(value: &[u8]) -> Option<Cow<'_, str>> {
             Err(_) => None,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).ok()?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
-            let jentry_encoded = read_u32(value, 4).unwrap();
+            let jentry_encoded = read_u32(value, 4).ok()?;
             let jentry = JEntry::decode_jentry(jentry_encoded);
             match jentry.type_code {
                 STRING_TAG => {
@@ -1404,7 +1404,7 @@ pub fn is_array(value: &[u8]) -> bool {
             Err(_) => false,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).unwrap_or_default();
     matches!(header & CONTAINER_HEADER_TYPE_MASK, ARRAY_CONTAINER_TAG)
 }
 
@@ -1416,7 +1416,7 @@ pub fn is_object(value: &[u8]) -> bool {
             Err(_) => false,
         };
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).unwrap_or_default();
     matches!(header & CONTAINER_HEADER_TYPE_MASK, OBJECT_CONTAINER_TAG)
 }
 
@@ -1432,7 +1432,10 @@ pub fn to_string(value: &[u8]) -> String {
     }
 
     let mut json = String::new();
-    container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(false));
+    if container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(false)).is_err() {
+        json.clear();
+        json.push_str("null");
+    }
     json
 }
 
@@ -1448,7 +1451,10 @@ pub fn to_pretty_string(value: &[u8]) -> String {
     }
 
     let mut json = String::new();
-    container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(true));
+    if container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(true)).is_err() {
+        json.clear();
+        json.push_str("null");
+    }
     json
 }
 
@@ -1479,8 +1485,8 @@ fn container_to_string(
     offset: &mut usize,
     json: &mut String,
     pretty_opts: &PrettyOpts,
-) {
-    let header = read_u32(value, *offset).unwrap();
+) -> Result<(), Error> {
+    let header = read_u32(value, *offset)?;
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
             let mut jentry_offset = 4 + *offset;
@@ -1491,7 +1497,7 @@ fn container_to_string(
                 &mut value_offset,
                 json,
                 pretty_opts,
-            );
+            )?;
         }
         ARRAY_CONTAINER_TAG => {
             if pretty_opts.enabled {
@@ -1520,7 +1526,7 @@ fn container_to_string(
                     &mut value_offset,
                     json,
                     &inner_pretty_ops,
-                );
+                )?;
             }
             if pretty_opts.enabled {
                 json.push('\n');
@@ -1539,7 +1545,7 @@ fn container_to_string(
             let mut key_offset = 4 + *offset + 8 * length;
             let mut keys = VecDeque::with_capacity(length);
             for _ in 0..length {
-                let jentry_encoded = read_u32(value, jentry_offset).unwrap();
+                let jentry_encoded = read_u32(value, jentry_offset)?;
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 let key_length = jentry.length as usize;
                 keys.push_back((key_offset, key_offset + key_length));
@@ -1571,7 +1577,7 @@ fn container_to_string(
                     &mut value_offset,
                     json,
                     &inner_pretty_ops,
-                );
+                )?;
             }
             if pretty_opts.enabled {
                 json.push('\n');
@@ -1581,6 +1587,7 @@ fn container_to_string(
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn scalar_to_string(
@@ -1589,8 +1596,8 @@ fn scalar_to_string(
     value_offset: &mut usize,
     json: &mut String,
     pretty_opts: &PrettyOpts,
-) {
-    let jentry_encoded = read_u32(value, *jentry_offset).unwrap();
+) -> Result<(), Error> {
+    let jentry_encoded = read_u32(value, *jentry_offset)?;
     let jentry = JEntry::decode_jentry(jentry_encoded);
     let length = jentry.length as usize;
     match jentry.type_code {
@@ -1605,12 +1612,13 @@ fn scalar_to_string(
             escape_scalar_string(value, *value_offset, *value_offset + length, json);
         }
         CONTAINER_TAG => {
-            container_to_string(value, value_offset, json, pretty_opts);
+            container_to_string(value, value_offset, json, pretty_opts)?;
         }
         _ => {}
     }
     *jentry_offset += 4;
     *value_offset += length;
+    Ok(())
 }
 
 fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut String) {
@@ -1663,10 +1671,15 @@ pub fn convert_to_comparable(value: &[u8], buf: &mut Vec<u8>) {
         }
         return;
     }
-    let header = read_u32(value, 0).unwrap();
+    let header = read_u32(value, 0).unwrap_or_default();
     match header & CONTAINER_HEADER_TYPE_MASK {
         SCALAR_CONTAINER_TAG => {
-            let encoded = read_u32(value, 4).unwrap();
+            let encoded = match read_u32(value, 4) {
+                Ok(encoded) => encoded,
+                Err(_) => {
+                    return;
+                }
+            };
             let jentry = JEntry::decode_jentry(encoded);
             scalar_convert_to_comparable(depth, &jentry, &value[8..], buf);
         }
@@ -1691,7 +1704,12 @@ fn scalar_convert_to_comparable(depth: u8, jentry: &JEntry, value: &[u8], buf: &
     let level = jentry_compare_level(jentry);
     match jentry.type_code {
         CONTAINER_TAG => {
-            let header = read_u32(value, 0).unwrap();
+            let header = match read_u32(value, 0) {
+                Ok(header) => header,
+                Err(_) => {
+                    return;
+                }
+            };
             let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
             match header & CONTAINER_HEADER_TYPE_MASK {
                 ARRAY_CONTAINER_TAG => {
@@ -1734,7 +1752,12 @@ fn array_convert_to_comparable(depth: u8, length: usize, value: &[u8], buf: &mut
     let mut jentry_offset = 0;
     let mut val_offset = 4 * length;
     for _ in 0..length {
-        let encoded = read_u32(value, jentry_offset).unwrap();
+        let encoded = match read_u32(value, jentry_offset) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                return;
+            }
+        };
         let jentry = JEntry::decode_jentry(encoded);
         scalar_convert_to_comparable(depth, &jentry, &value[val_offset..], buf);
         jentry_offset += 4;
@@ -1749,7 +1772,12 @@ fn object_convert_to_comparable(depth: u8, length: usize, value: &[u8], buf: &mu
     // read all key jentries first
     let mut key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
     for _ in 0..length {
-        let encoded = read_u32(value, jentry_offset).unwrap();
+        let encoded = match read_u32(value, jentry_offset) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                return;
+            }
+        };
         let key_jentry = JEntry::decode_jentry(encoded);
 
         jentry_offset += 4;
@@ -1762,7 +1790,12 @@ fn object_convert_to_comparable(depth: u8, length: usize, value: &[u8], buf: &mu
         let key_jentry = key_jentries.pop_front().unwrap();
         scalar_convert_to_comparable(depth, &key_jentry, &value[key_offset..], buf);
 
-        let encoded = read_u32(value, jentry_offset).unwrap();
+        let encoded = match read_u32(value, jentry_offset) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                return;
+            }
+        };
         let val_jentry = JEntry::decode_jentry(encoded);
         scalar_convert_to_comparable(depth, &val_jentry, &value[val_offset..], buf);
 
@@ -1847,7 +1880,12 @@ pub fn traverse_check_string(value: &[u8], func: impl Fn(&[u8]) -> bool) -> bool
     offsets.push_back(0);
 
     while let Some(offset) = offsets.pop_front() {
-        let header = read_u32(value, offset).unwrap();
+        let header = match read_u32(value, offset) {
+            Ok(header) => header,
+            Err(_) => {
+                return false;
+            }
+        };
         let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
 
         let size = match header & CONTAINER_HEADER_TYPE_MASK {
@@ -1860,7 +1898,12 @@ pub fn traverse_check_string(value: &[u8], func: impl Fn(&[u8]) -> bool) -> bool
         let mut jentry_offset = offset + 4;
         let mut val_offset = offset + 4 + 4 * size;
         for _ in 0..size {
-            let encoded = read_u32(value, jentry_offset).unwrap();
+            let encoded = match read_u32(value, jentry_offset) {
+                Ok(encoded) => encoded,
+                Err(_) => {
+                    return false;
+                }
+            };
             let jentry = JEntry::decode_jentry(encoded);
             match jentry.type_code {
                 CONTAINER_TAG => {
