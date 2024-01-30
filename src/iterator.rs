@@ -65,7 +65,7 @@ impl<'a> Iterator for ArrayIterator<'a> {
         if self.idx >= self.length {
             return None;
         }
-        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+        let encoded = read_u32(self.value, self.jentry_offset).ok()?;
         let jentry = JEntry::decode_jentry(encoded);
         let val_length = jentry.length as usize;
 
@@ -98,7 +98,7 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
             return None;
         }
 
-        let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+        let encoded = read_u32(self.value, self.jentry_offset).ok()?;
         let jentry = JEntry::decode_jentry(encoded);
         let key_length = jentry.length as usize;
 
@@ -139,7 +139,7 @@ impl<'a> Iterator for ObjectEntryIterator<'a> {
                     std::str::from_utf8_unchecked(&self.value[prev_key_offset..self.key_offset])
                 };
 
-                let val_encoded = read_u32(self.value, self.jentry_offset).unwrap();
+                let val_encoded = read_u32(self.value, self.jentry_offset).ok()?;
                 let val_jentry = JEntry::decode_jentry(val_encoded);
                 let val_length = val_jentry.length as usize;
 
@@ -161,7 +161,13 @@ impl<'a> ObjectEntryIterator<'a> {
     fn fill_keys(&mut self) {
         let mut keys: VecDeque<JEntry> = VecDeque::with_capacity(self.length);
         for _ in 0..self.length {
-            let encoded = read_u32(self.value, self.jentry_offset).unwrap();
+            let encoded = match read_u32(self.value, self.jentry_offset) {
+                Ok(encoded) => encoded,
+                Err(_) => {
+                    self.keys = None;
+                    return;
+                }
+            };
             let key_jentry = JEntry::decode_jentry(encoded);
 
             self.jentry_offset += 4;
