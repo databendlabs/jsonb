@@ -1054,6 +1054,8 @@ fn test_get_by_keypath() {
         ("null", " {  } ", Some(Value::Null)),
         ("null", " { a , b } ", None),
         ("true", "{a,b}", None),
+        (r#"{"a":{"b":null}}"#, "{a,b}", Some(Value::Null)),
+        (r#"[1,"a",null]"#, "{2}", Some(Value::Null)),
         (r#""sdasd""#, "{1}", None),
         ("[10,20,30]", "{1}", Some(Value::Number(Number::UInt64(20)))),
         (
