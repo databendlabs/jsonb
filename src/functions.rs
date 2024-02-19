@@ -378,7 +378,7 @@ pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
         }
     }
     // If the key paths is empty, return original value.
-    if curr_jentry_encoded == 0 {
+    if curr_val_offset == 0 {
         return Some(value.to_vec());
     }
     curr_jentry
