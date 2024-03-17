@@ -133,6 +133,13 @@ pub enum Expr<'a> {
         left: Box<Expr<'a>>,
         right: Box<Expr<'a>>,
     },
+    /// Filter function, returns a boolean value.
+    FilterFunc(FilterFunc<'a>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterFunc<'a> {
+    Exists(Vec<Path<'a>>),
 }
 
 impl<'a> Display for JsonPath<'a> {
@@ -312,6 +319,15 @@ impl<'a> Display for Expr<'a> {
                     write!(f, "{right}")?;
                 }
             }
+            Expr::FilterFunc(func) => match func {
+                FilterFunc::Exists(paths) => {
+                    f.write_str("exists(")?;
+                    for path in paths {
+                        write!(f, "{path}")?;
+                    }
+                    f.write_str(")")?;
+                }
+            },
         }
         Ok(())
     }

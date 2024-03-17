@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use jsonb::get_by_path_array;
 use jsonb::{
     array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
     compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_keypath,
@@ -172,6 +173,74 @@ fn test_path_exists() {
             let res = path_exists(json.as_bytes(), json_path);
             assert_eq!(res, expect);
         }
+    }
+}
+
+#[test]
+fn test_path_exists_expr() {
+    let source = r#"{"items": [
+        {"id": 0, "name": "Andrew", "car": "Volvo"},
+        {"id": 1, "name": "Fred", "car": "BMW"},
+        {"id": 2, "name": "James"},
+        {"id": 3, "name": "Ken"}
+    ]}"#;
+    let paths = vec![
+        (
+            "$.items[*]?(exists($.items))",
+            r#"[
+                {"id": 0, "name": "Andrew", "car": "Volvo"},
+                {"id": 1, "name": "Fred", "car": "BMW"},
+                {"id": 2, "name": "James"},
+                {"id": 3, "name": "Ken"}
+            ]"#,
+        ),
+        (
+            "$.items[*]?(exists(@.car))",
+            r#"[
+                {"id": 0, "name": "Andrew", "car": "Volvo"},
+                {"id": 1, "name": "Fred", "car": "BMW"}
+            ]"#,
+        ),
+        (
+            r#"$.items[*]?(exists(@.car?(@ == "Volvo")))"#,
+            r#"[
+                {"id": 0, "name": "Andrew", "car": "Volvo"}
+            ]"#,
+        ),
+        (
+            r#"$.items[*]?(exists(@.car) && @.id >= 1)"#,
+            r#"[
+                {"id": 1, "name": "Fred", "car": "BMW"}
+            ]"#,
+        ),
+        (
+            r#"$ ? (exists(@.items[*]?(exists(@.car))))"#,
+            r#"[{"items": [
+                {"id": 0, "name": "Andrew", "car": "Volvo"},
+                {"id": 1, "name": "Fred", "car": "BMW"},
+                {"id": 2, "name": "James"},
+                {"id": 3, "name": "Ken"}
+            ]}]"#,
+        ),
+        (
+            r#"$ ? (exists(@.items[*]?(exists(@.car) && @.id == 5)))"#,
+            r#"[]"#,
+        ),
+    ];
+
+    let mut buf: Vec<u8> = Vec::new();
+    let value = parse_value(source.as_bytes()).unwrap();
+    value.write_to_vec(&mut buf);
+
+    for (path, expected) in paths {
+        let mut out_buf: Vec<u8> = Vec::new();
+        let mut out_offsets: Vec<u64> = Vec::new();
+        let json_path = parse_json_path(path.as_bytes()).unwrap();
+
+        get_by_path_array(&buf, json_path, &mut out_buf, &mut out_offsets);
+        let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
+
+        assert_eq!(out_buf, expected_buf);
     }
 }
 
