@@ -473,7 +473,6 @@ impl<'a> Selector<'a> {
 
     fn eval_exists(&'a self, root: &'a [u8], pos: &Position, paths: &[Path<'a>]) -> bool {
         let poses = self.find_positions(root, Some(pos), paths);
-
         !poses.is_empty()
     }
 
