@@ -137,6 +137,7 @@ pub enum Expr<'a> {
     FilterFunc(FilterFunc<'a>),
 }
 
+/// Represents filter function, returns a boolean value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterFunc<'a> {
     Exists(Vec<Path<'a>>),
