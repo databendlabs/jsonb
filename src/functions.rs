@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::str::from_utf8;
 use std::str::from_utf8_unchecked;
+use std::str::FromStr;
 
 use crate::builder::ArrayBuilder;
 use crate::builder::ObjectBuilder;
@@ -1420,6 +1421,130 @@ pub fn is_object(value: &[u8]) -> bool {
     matches!(header & CONTAINER_HEADER_TYPE_MASK, OBJECT_CONTAINER_TAG)
 }
 
+/// Convert `JSONB` value to `serde_json` Value
+pub fn to_serde_json(value: &[u8]) -> Result<serde_json::Value, Error> {
+    if !is_jsonb(value) {
+        let json_str = std::str::from_utf8(value)?;
+        return match serde_json::Value::from_str(json_str) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(Error::InvalidJson),
+        };
+    }
+
+    containter_to_serde_json(value)
+}
+
+/// Convert `JSONB` value to `serde_json` Object Value
+pub fn to_serde_json_object(
+    value: &[u8],
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
+    if !is_jsonb(value) {
+        let json_str = std::str::from_utf8(value)?;
+        return match serde_json::Value::from_str(json_str) {
+            Ok(v) => match v {
+                serde_json::Value::Object(obj) => Ok(Some(obj.clone())),
+                _ => Ok(None),
+            },
+            Err(_) => Err(Error::InvalidJson),
+        };
+    }
+
+    containter_to_serde_json_object(value)
+}
+
+fn containter_to_serde_json_object(
+    value: &[u8],
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
+    let header = read_u32(value, 0).unwrap_or_default();
+    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+
+    let obj_value = match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let mut obj = serde_json::Map::with_capacity(length);
+            for (key, jentry, val) in iterate_object_entries(value, header) {
+                let item = scalar_to_serde_json(jentry, val)?;
+                obj.insert(key.to_string(), item);
+            }
+            Some(obj)
+        }
+        ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => None,
+        _ => {
+            return Err(Error::InvalidJsonb);
+        }
+    };
+    Ok(obj_value)
+}
+
+fn containter_to_serde_json(value: &[u8]) -> Result<serde_json::Value, Error> {
+    let header = read_u32(value, 0).unwrap_or_default();
+    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+
+    let json_value = match header & CONTAINER_HEADER_TYPE_MASK {
+        OBJECT_CONTAINER_TAG => {
+            let mut obj = serde_json::Map::with_capacity(length);
+            for (key, jentry, val) in iterate_object_entries(value, header) {
+                let item = scalar_to_serde_json(jentry, val)?;
+                obj.insert(key.to_string(), item);
+            }
+            serde_json::Value::Object(obj)
+        }
+        ARRAY_CONTAINER_TAG => {
+            let mut arr = Vec::with_capacity(length);
+            for (jentry, val) in iterate_array(value, header) {
+                let item = scalar_to_serde_json(jentry, val)?;
+                arr.push(item);
+            }
+            serde_json::Value::Array(arr)
+        }
+        SCALAR_CONTAINER_TAG => {
+            let encoded = match read_u32(value, 4) {
+                Ok(encoded) => encoded,
+                Err(_) => {
+                    return Err(Error::InvalidJsonb);
+                }
+            };
+            let jentry = JEntry::decode_jentry(encoded);
+            scalar_to_serde_json(jentry, &value[8..])?
+        }
+        _ => {
+            return Err(Error::InvalidJsonb);
+        }
+    };
+    Ok(json_value)
+}
+
+fn scalar_to_serde_json(jentry: JEntry, value: &[u8]) -> Result<serde_json::Value, Error> {
+    let json_value = match jentry.type_code {
+        NULL_TAG => serde_json::Value::Null,
+        TRUE_TAG => serde_json::Value::Bool(true),
+        FALSE_TAG => serde_json::Value::Bool(false),
+        NUMBER_TAG => {
+            let len = jentry.length as usize;
+            let n = Number::decode(&value[..len]);
+            match n {
+                Number::Int64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
+                Number::UInt64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
+                Number::Float64(v) => match serde_json::Number::from_f64(v) {
+                    Some(v) => serde_json::Value::Number(v),
+                    None => {
+                        return Err(Error::InvalidJson);
+                    }
+                },
+            }
+        }
+        STRING_TAG => {
+            let len = jentry.length as usize;
+            let s = unsafe { String::from_utf8_unchecked(value[..len].to_vec()) };
+            serde_json::Value::String(s)
+        }
+        CONTAINER_TAG => containter_to_serde_json(value)?,
+        _ => {
+            return Err(Error::InvalidJsonb);
+        }
+    };
+    Ok(json_value)
+}
+
 /// Convert `JSONB` value to String
 pub fn to_string(value: &[u8]) -> String {
     if !is_jsonb(value) {
@@ -1606,7 +1731,7 @@ fn scalar_to_string(
         FALSE_TAG => json.push_str("false"),
         NUMBER_TAG => {
             let num = Number::decode(&value[*value_offset..*value_offset + length]);
-            json.push_str(&format!("{num}"));
+            json.push_str(&num.to_string());
         }
         STRING_TAG => {
             escape_scalar_string(value, *value_offset, *value_offset + length, json);

@@ -75,6 +75,7 @@ pub enum Error {
     InvalidToken,
     InvalidCast,
 
+    InvalidJson,
     InvalidJsonb,
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
