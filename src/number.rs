@@ -244,9 +244,21 @@ impl Ord for Number {
 impl Display for Number {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            Number::Int64(v) => write!(f, "{}", v),
-            Number::UInt64(v) => write!(f, "{}", v),
-            Number::Float64(v) => write!(f, "{}", v),
+            Number::Int64(v) => {
+                let mut buffer = itoa::Buffer::new();
+                let s = buffer.format(*v);
+                write!(f, "{}", s)
+            }
+            Number::UInt64(v) => {
+                let mut buffer = itoa::Buffer::new();
+                let s = buffer.format(*v);
+                write!(f, "{}", s)
+            }
+            Number::Float64(v) => {
+                let mut buffer = ryu::Buffer::new();
+                let s = buffer.format(*v);
+                write!(f, "{}", s)
+            }
         }
     }
 }

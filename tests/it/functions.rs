@@ -22,8 +22,8 @@ use jsonb::{
     delete_by_name, exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath,
     get_by_name, get_by_path, is_array, is_object, keypath::parse_key_paths, object_each,
     object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64,
-    to_pretty_string, to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number,
-    Object, Value,
+    to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
+    traverse_check_string, type_of, Error, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -77,7 +77,7 @@ fn test_build_object() {
         r#"[1,2,3]"#,
         r#"{"k":"v"}"#,
     ];
-    let keys = vec![
+    let keys = [
         "k1".to_string(),
         "k2".to_string(),
         "k3".to_string(),
@@ -1462,6 +1462,39 @@ fn test_delete_by_keypath() {
             let expected = parse_value(result.as_bytes()).unwrap();
 
             assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_to_serde_json() {
+    let sources = vec![
+        r#"true"#,
+        r#"1e20"#,
+        r#"[100,"abc",{"xx":"✅❌💻"}]"#,
+        r#"{"a":1,"b":[1,2,3]}"#,
+        r#"{"ab":{"k1":"v1","k2":"v2"},"cd":[true,100.23,"测试"]}"#,
+    ];
+    let mut buf: Vec<u8> = Vec::new();
+    for s in sources {
+        let value = parse_value(s.as_bytes()).unwrap();
+        buf.clear();
+        value.write_to_vec(&mut buf);
+        let jsonb_val_str = to_string(&buf);
+
+        let json_val = to_serde_json(&buf).unwrap();
+        let json_val_str = json_val.to_string();
+        assert_eq!(jsonb_val_str, json_val_str);
+
+        let obj_val = to_serde_json_object(&buf).unwrap();
+        if is_object(&buf) {
+            assert!(obj_val.is_some());
+            let obj_val = obj_val.unwrap();
+            let json_val = serde_json::Value::Object(obj_val);
+            let obj_val_str = json_val.to_string();
+            assert_eq!(jsonb_val_str, obj_val_str);
+        } else {
+            assert!(obj_val.is_none());
         }
     }
 }
