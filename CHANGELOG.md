@@ -1,3 +1,24 @@
+## [v0.4.0] - 2024-05-17
+
+### Fixed
+
+Fix: Fix get by keypath with null value. (#47)
+Fix: Handle invalid jsonb value to avoid panic in functions. (#46)
+Fix: Fix builder & concat container jentry len. (#43) 
+
+### Added
+
+Feat: Support convert jsonb value to `serde_json` value. (#49) 
+Feat: Add `exists` filter expression. (48)` 
+Feat: Add `delete_by_keypath`. (#45)
+Feat: Add `delete_by_index` & `delete_by_name`. (#44)
+Feat: Add `concat` & improve `strip_nulls`. (#42)
+Feat: Add jsonpath predicate support. (#41) 
+Feat: Add `contains` api. (#40) 
+Feat: Add `exists_any_keys` & `exists_all_keys`. (#38) 
+Feat: Support parse key paths. (#37)
+Feat: Add `get_by_keypath`. (#36)
+
 ## [v0.3.0] - 2023-10-13
 
 ### Added
