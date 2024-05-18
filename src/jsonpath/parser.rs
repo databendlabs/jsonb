@@ -366,7 +366,7 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
 }
 
 fn filter_func(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
-    alt((exists,))(input)
+    alt((exists, starts_with))(input)
 }
 
 fn exists(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
@@ -397,6 +397,10 @@ fn exists_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
             paths
         },
     )(input)
+}
+
+fn starts_with(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
+    preceded(tag("starts with "), map(string, FilterFunc::StartsWith))(input)
 }
 
 fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
@@ -435,4 +439,20 @@ fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             expr
         },
     )(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_starts_with() {
+        // The string must be double-quoted: "abc"
+        let input = b"starts with \"abc\"";
+        let res = starts_with(input).unwrap();
+        assert_eq!(
+            res,
+            (&b""[..], FilterFunc::StartsWith(Cow::Borrowed("abc")))
+        );
+    }
 }
