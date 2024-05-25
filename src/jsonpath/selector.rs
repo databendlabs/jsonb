@@ -478,7 +478,6 @@ impl<'a> Selector<'a> {
     }
 
     fn eval_starts_with(&'a self, _root: &'a [u8], _pos: &Position, _prefix: &str) -> bool {
-        // check if string starts with prefix.
         false
     }
 
