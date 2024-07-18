@@ -155,7 +155,7 @@ pub fn array_length(value: &[u8]) -> Option<usize> {
 }
 
 /// Checks whether the JSON path returns any item for the `JSONB` value.
-pub fn path_exists<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> bool {
+pub fn path_exists<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> Result<bool, Error> {
     let selector = Selector::new(json_path, Mode::Mixed);
     if !is_jsonb(value) {
         match parse_value(value) {
@@ -163,7 +163,7 @@ pub fn path_exists<'a>(value: &'a [u8], json_path: JsonPath<'a>) -> bool {
                 let value = val.to_vec();
                 selector.exists(value.as_slice())
             }
-            Err(_) => false,
+            Err(_) => Ok(false),
         }
     } else {
         selector.exists(value)
@@ -188,16 +188,17 @@ pub fn get_by_path<'a>(
     json_path: JsonPath<'a>,
     data: &mut Vec<u8>,
     offsets: &mut Vec<u64>,
-) {
+) -> Result<(), Error> {
     let selector = Selector::new(json_path, Mode::Mixed);
     if !is_jsonb(value) {
         if let Ok(val) = parse_value(value) {
             let value = val.to_vec();
-            selector.select(value.as_slice(), data, offsets)
+            selector.select(value.as_slice(), data, offsets)?;
         }
     } else {
-        selector.select(value, data, offsets)
+        selector.select(value, data, offsets)?;
     }
+    Ok(())
 }
 
 /// Get the inner element of `JSONB` value by JSON path.
@@ -207,16 +208,17 @@ pub fn get_by_path_first<'a>(
     json_path: JsonPath<'a>,
     data: &mut Vec<u8>,
     offsets: &mut Vec<u64>,
-) {
+) -> Result<(), Error> {
     let selector = Selector::new(json_path, Mode::First);
     if !is_jsonb(value) {
         if let Ok(val) = parse_value(value) {
             let value = val.to_vec();
-            selector.select(value.as_slice(), data, offsets)
+            selector.select(value.as_slice(), data, offsets)?;
         }
     } else {
-        selector.select(value, data, offsets)
+        selector.select(value, data, offsets)?;
     }
+    Ok(())
 }
 
 /// Get the inner elements of `JSONB` value by JSON path.
@@ -226,16 +228,17 @@ pub fn get_by_path_array<'a>(
     json_path: JsonPath<'a>,
     data: &mut Vec<u8>,
     offsets: &mut Vec<u64>,
-) {
+) -> Result<(), Error> {
     let selector = Selector::new(json_path, Mode::Array);
     if !is_jsonb(value) {
         if let Ok(val) = parse_value(value) {
             let value = val.to_vec();
-            selector.select(value.as_slice(), data, offsets)
+            selector.select(value.as_slice(), data, offsets)?;
         }
     } else {
-        selector.select(value, data, offsets)
+        selector.select(value, data, offsets)?;
     }
+    Ok(())
 }
 
 /// Get the inner element of `JSONB` Array by index.

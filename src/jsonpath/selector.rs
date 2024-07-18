@@ -74,44 +74,50 @@ impl<'a> Selector<'a> {
         Self { json_path, mode }
     }
 
-    pub fn select(&'a self, root: &'a [u8], data: &mut Vec<u8>, offsets: &mut Vec<u64>) {
-        let mut poses = self.find_positions(root, None, &self.json_path.paths);
+    pub fn select(
+        &'a self,
+        root: &'a [u8],
+        data: &mut Vec<u8>,
+        offsets: &mut Vec<u64>,
+    ) -> Result<(), Error> {
+        let mut poses = self.find_positions(root, None, &self.json_path.paths)?;
 
         if self.json_path.is_predicate() {
-            Self::build_predicate_result(&mut poses, data);
-            return;
+            Self::build_predicate_result(&mut poses, data)?;
+            return Ok(());
         }
 
         match self.mode {
-            Mode::All => Self::build_values(root, &mut poses, data, offsets),
+            Mode::All => Self::build_values(root, &mut poses, data, offsets)?,
             Mode::First => {
                 poses.truncate(1);
-                Self::build_values(root, &mut poses, data, offsets)
+                Self::build_values(root, &mut poses, data, offsets)?
             }
-            Mode::Array => Self::build_scalar_array(root, &mut poses, data, offsets),
+            Mode::Array => Self::build_scalar_array(root, &mut poses, data, offsets)?,
             Mode::Mixed => {
                 if poses.len() > 1 {
-                    Self::build_scalar_array(root, &mut poses, data, offsets)
+                    Self::build_scalar_array(root, &mut poses, data, offsets)?
                 } else {
-                    Self::build_values(root, &mut poses, data, offsets)
+                    Self::build_values(root, &mut poses, data, offsets)?
                 }
             }
         }
+        Ok(())
     }
 
-    pub fn exists(&'a self, root: &'a [u8]) -> bool {
+    pub fn exists(&'a self, root: &'a [u8]) -> Result<bool, Error> {
         if self.json_path.is_predicate() {
-            return true;
+            return Ok(true);
         }
-        let poses = self.find_positions(root, None, &self.json_path.paths);
-        !poses.is_empty()
+        let poses = self.find_positions(root, None, &self.json_path.paths)?;
+        Ok(!poses.is_empty())
     }
 
     pub fn predicate_match(&'a self, root: &'a [u8]) -> Result<bool, Error> {
         if !self.json_path.is_predicate() {
             return Err(Error::InvalidJsonPathPredicate);
         }
-        let poses = self.find_positions(root, None, &self.json_path.paths);
+        let poses = self.find_positions(root, None, &self.json_path.paths)?;
         Ok(!poses.is_empty())
     }
 
@@ -120,7 +126,7 @@ impl<'a> Selector<'a> {
         root: &'a [u8],
         current: Option<&Position>,
         paths: &[Path<'a>],
-    ) -> VecDeque<Position> {
+    ) -> Result<VecDeque<Position>, Error> {
         let mut poses = VecDeque::new();
 
         let start_pos = if let Some(Path::Current) = paths.first() {
@@ -139,7 +145,8 @@ impl<'a> Selector<'a> {
                     let len = poses.len();
                     for _ in 0..len {
                         let pos = poses.pop_front().unwrap();
-                        if self.filter_expr(root, &pos, expr) {
+                        let res = self.filter_expr(root, &pos, expr)?;
+                        if res {
                             poses.push_back(pos);
                         }
                     }
@@ -150,7 +157,7 @@ impl<'a> Selector<'a> {
                         let pos = poses.pop_front().unwrap();
                         match pos {
                             Position::Container((offset, length)) => {
-                                self.select_path(root, offset, length, path, &mut poses);
+                                self.select_path(root, offset, length, path, &mut poses)?;
                             }
                             Position::Scalar(_) => {
                                 // In lax mode, bracket wildcard allow Scalar value.
@@ -163,7 +170,7 @@ impl<'a> Selector<'a> {
                 }
             }
         }
-        poses
+        Ok(poses)
     }
 
     fn select_path(
@@ -173,22 +180,23 @@ impl<'a> Selector<'a> {
         length: usize,
         path: &Path<'a>,
         poses: &mut VecDeque<Position>,
-    ) {
+    ) -> Result<(), Error> {
         match path {
             Path::DotWildcard => {
-                self.select_object_values(root, offset, poses);
+                self.select_object_values(root, offset, poses)?;
             }
             Path::BracketWildcard => {
-                self.select_array_values(root, offset, length, poses);
+                self.select_array_values(root, offset, length, poses)?;
             }
             Path::ColonField(name) | Path::DotField(name) | Path::ObjectField(name) => {
-                self.select_by_name(root, offset, name, poses);
+                self.select_by_name(root, offset, name, poses)?;
             }
             Path::ArrayIndices(indices) => {
-                self.select_by_indices(root, offset, indices, poses);
+                self.select_by_indices(root, offset, indices, poses)?;
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
     // select all values in an Object.
@@ -197,13 +205,13 @@ impl<'a> Selector<'a> {
         root: &'a [u8],
         root_offset: usize,
         poses: &mut VecDeque<Position>,
-    ) {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..]).unwrap();
+    ) -> Result<(), Error> {
+        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
-            return;
+            return Ok(());
         }
-        let (rest, key_jentries) = decode_jentries(rest, length).unwrap();
-        let (_, val_jentries) = decode_jentries(rest, length).unwrap();
+        let (rest, key_jentries) = decode_jentries(rest, length)?;
+        let (_, val_jentries) = decode_jentries(rest, length)?;
         let mut offset = root_offset + 4 + length * 8;
         for (_, length) in key_jentries.iter() {
             offset += length;
@@ -217,6 +225,7 @@ impl<'a> Selector<'a> {
             poses.push_back(pos);
             offset += jlength;
         }
+        Ok(())
     }
 
     // select all values in an Array.
@@ -226,14 +235,14 @@ impl<'a> Selector<'a> {
         root_offset: usize,
         root_length: usize,
         poses: &mut VecDeque<Position>,
-    ) {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..]).unwrap();
+    ) -> Result<(), Error> {
+        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG {
             // In lax mode, bracket wildcard allow Scalar value.
             poses.push_back(Position::Container((root_offset, root_length)));
-            return;
+            return Ok(());
         }
-        let (_, val_jentries) = decode_jentries(rest, length).unwrap();
+        let (_, val_jentries) = decode_jentries(rest, length)?;
         let mut offset = root_offset + 4 + length * 4;
         for (jty, jlength) in val_jentries.iter() {
             let pos = if *jty == CONTAINER_TAG {
@@ -244,6 +253,7 @@ impl<'a> Selector<'a> {
             poses.push_back(pos);
             offset += jlength;
         }
+        Ok(())
     }
 
     // select value in an Object by key name.
@@ -253,13 +263,13 @@ impl<'a> Selector<'a> {
         root_offset: usize,
         name: &str,
         poses: &mut VecDeque<Position>,
-    ) {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..]).unwrap();
+    ) -> Result<(), Error> {
+        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
-            return;
+            return Ok(());
         }
-        let (rest, key_jentries) = decode_jentries(rest, length).unwrap();
-        let (_, val_jentries) = decode_jentries(rest, length).unwrap();
+        let (rest, key_jentries) = decode_jentries(rest, length)?;
+        let (_, val_jentries) = decode_jentries(rest, length)?;
         let mut idx = 0;
         let mut offset = root_offset + 4 + length * 8;
         let mut found = false;
@@ -268,7 +278,7 @@ impl<'a> Selector<'a> {
                 offset += jlength;
                 continue;
             }
-            let (_, key) = decode_string(&root[offset..], *jlength).unwrap();
+            let (_, key) = decode_string(&root[offset..], *jlength)?;
             if name == unsafe { std::str::from_utf8_unchecked(key) } {
                 found = true;
                 idx = i;
@@ -276,7 +286,7 @@ impl<'a> Selector<'a> {
             offset += jlength;
         }
         if !found {
-            return;
+            return Ok(());
         }
         for (i, (jty, jlength)) in val_jentries.iter().enumerate() {
             if i != idx {
@@ -291,6 +301,7 @@ impl<'a> Selector<'a> {
             poses.push_back(pos);
             break;
         }
+        Ok(())
     }
 
     // select values in an Array by indices.
@@ -300,10 +311,10 @@ impl<'a> Selector<'a> {
         root_offset: usize,
         indices: &Vec<ArrayIndex>,
         poses: &mut VecDeque<Position>,
-    ) {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..]).unwrap();
+    ) -> Result<(), Error> {
+        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG || length == 0 {
-            return;
+            return Ok(());
         }
         let mut val_indices = Vec::new();
         for index in indices {
@@ -321,9 +332,9 @@ impl<'a> Selector<'a> {
             }
         }
         if val_indices.is_empty() {
-            return;
+            return Ok(());
         }
-        let (_, jentries) = decode_jentries(rest, length).unwrap();
+        let (_, jentries) = decode_jentries(rest, length)?;
         let mut offset = root_offset + 4 + length * 4;
         let mut offsets = Vec::with_capacity(jentries.len());
         for (_, jlength) in jentries.iter() {
@@ -340,15 +351,20 @@ impl<'a> Selector<'a> {
             };
             poses.push_back(pos);
         }
+        Ok(())
     }
 
-    fn build_predicate_result(poses: &mut VecDeque<Position>, data: &mut Vec<u8>) {
+    fn build_predicate_result(
+        poses: &mut VecDeque<Position>,
+        data: &mut Vec<u8>,
+    ) -> Result<(), Error> {
         let jentry = match poses.pop_front() {
             Some(_) => TRUE_TAG,
             None => FALSE_TAG,
         };
-        data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG).unwrap();
-        data.write_u32::<BigEndian>(jentry).unwrap();
+        data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
+        data.write_u32::<BigEndian>(jentry)?;
+        Ok(())
     }
 
     fn build_values(
@@ -356,16 +372,16 @@ impl<'a> Selector<'a> {
         poses: &mut VecDeque<Position>,
         data: &mut Vec<u8>,
         offsets: &mut Vec<u64>,
-    ) {
+    ) -> Result<(), Error> {
         while let Some(pos) = poses.pop_front() {
             match pos {
                 Position::Container((offset, length)) => {
                     data.extend_from_slice(&root[offset..offset + length]);
                 }
                 Position::Scalar((ty, offset, length)) => {
-                    data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG).unwrap();
+                    data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
                     let jentry = ty | length as u32;
-                    data.write_u32::<BigEndian>(jentry).unwrap();
+                    data.write_u32::<BigEndian>(jentry)?;
                     if length > 0 {
                         data.extend_from_slice(&root[offset..offset + length]);
                     }
@@ -373,6 +389,7 @@ impl<'a> Selector<'a> {
             }
             offsets.push(data.len() as u64);
         }
+        Ok(())
     }
 
     fn build_scalar_array(
@@ -380,11 +397,11 @@ impl<'a> Selector<'a> {
         poses: &mut VecDeque<Position>,
         data: &mut Vec<u8>,
         offsets: &mut Vec<u64>,
-    ) {
+    ) -> Result<(), Error> {
         let len = poses.len();
         let header = ARRAY_CONTAINER_TAG | len as u32;
         // write header.
-        data.write_u32::<BigEndian>(header).unwrap();
+        data.write_u32::<BigEndian>(header)?;
         let mut jentry_offset = data.len();
         // reserve space for jentry.
         data.resize(jentry_offset + 4 * len, 0);
@@ -407,6 +424,7 @@ impl<'a> Selector<'a> {
             jentry_offset += 4;
         }
         offsets.push(data.len() as u64);
+        Ok(())
     }
 
     // check and convert index to Array index.
@@ -445,23 +463,29 @@ impl<'a> Selector<'a> {
         }
     }
 
-    fn filter_expr(&'a self, root: &'a [u8], pos: &Position, expr: &Expr<'a>) -> bool {
+    fn filter_expr(
+        &'a self,
+        root: &'a [u8],
+        pos: &Position,
+        expr: &Expr<'a>,
+    ) -> Result<bool, Error> {
         match expr {
             Expr::BinaryOp { op, left, right } => match op {
                 BinaryOperator::Or => {
-                    let lhs = self.filter_expr(root, pos, left);
-                    let rhs = self.filter_expr(root, pos, right);
-                    lhs || rhs
+                    let lhs = self.filter_expr(root, pos, left)?;
+                    let rhs = self.filter_expr(root, pos, right)?;
+                    Ok(lhs || rhs)
                 }
                 BinaryOperator::And => {
-                    let lhs = self.filter_expr(root, pos, left);
-                    let rhs = self.filter_expr(root, pos, right);
-                    lhs && rhs
+                    let lhs = self.filter_expr(root, pos, left)?;
+                    let rhs = self.filter_expr(root, pos, right)?;
+                    Ok(lhs && rhs)
                 }
                 _ => {
-                    let lhs = self.convert_expr_val(root, pos, *left.clone());
-                    let rhs = self.convert_expr_val(root, pos, *right.clone());
-                    self.compare(op, &lhs, &rhs)
+                    let lhs = self.convert_expr_val(root, pos, *left.clone())?;
+                    let rhs = self.convert_expr_val(root, pos, *right.clone())?;
+                    let res = self.compare(op, &lhs, &rhs);
+                    Ok(res)
                 }
             },
             Expr::FilterFunc(filter_expr) => match filter_expr {
@@ -471,14 +495,25 @@ impl<'a> Selector<'a> {
         }
     }
 
-    fn eval_exists(&'a self, root: &'a [u8], pos: &Position, paths: &[Path<'a>]) -> bool {
-        let poses = self.find_positions(root, Some(pos), paths);
-        !poses.is_empty()
+    fn eval_exists(
+        &'a self,
+        root: &'a [u8],
+        pos: &Position,
+        paths: &[Path<'a>],
+    ) -> Result<bool, Error> {
+        let poses = self.find_positions(root, Some(pos), paths)?;
+        let res = !poses.is_empty();
+        Ok(res)
     }
 
-    fn convert_expr_val(&'a self, root: &'a [u8], pos: &Position, expr: Expr<'a>) -> ExprValue<'a> {
+    fn convert_expr_val(
+        &'a self,
+        root: &'a [u8],
+        pos: &Position,
+        expr: Expr<'a>,
+    ) -> Result<ExprValue<'a>, Error> {
         match expr {
-            Expr::Value(value) => ExprValue::Value(value.clone()),
+            Expr::Value(value) => Ok(ExprValue::Value(value.clone())),
             Expr::Paths(paths) => {
                 // get value from path and convert to `ExprValue`.
                 let mut poses = VecDeque::new();
@@ -500,7 +535,7 @@ impl<'a> Selector<'a> {
                                 let pos = poses.pop_front().unwrap();
                                 match pos {
                                     Position::Container((offset, length)) => {
-                                        self.select_path(root, offset, length, path, &mut poses);
+                                        self.select_path(root, offset, length, path, &mut poses)?;
                                     }
                                     Position::Scalar(_) => {
                                         // In lax mode, bracket wildcard allow Scalar value.
@@ -535,7 +570,7 @@ impl<'a> Selector<'a> {
                         values.push(value);
                     }
                 }
-                ExprValue::Values(values)
+                Ok(ExprValue::Values(values))
             }
             _ => unreachable!(),
         }

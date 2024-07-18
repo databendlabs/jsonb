@@ -164,13 +164,13 @@ fn test_path_exists() {
             let value = parse_value(json.as_bytes()).unwrap().to_vec();
             let json_path = parse_json_path(path.as_bytes()).unwrap();
             let res = path_exists(value.as_slice(), json_path);
-            assert_eq!(res, expect);
+            assert_eq!(res, Ok(expect));
         }
         // Check from String JSON
         {
             let json_path = parse_json_path(path.as_bytes()).unwrap();
             let res = path_exists(json.as_bytes(), json_path);
-            assert_eq!(res, expect);
+            assert_eq!(res, Ok(expect));
         }
     }
 }
@@ -236,7 +236,8 @@ fn test_path_exists_expr() {
         let mut out_offsets: Vec<u64> = Vec::new();
         let json_path = parse_json_path(path.as_bytes()).unwrap();
 
-        get_by_path_array(&buf, json_path, &mut out_buf, &mut out_offsets);
+        let res = get_by_path_array(&buf, json_path, &mut out_buf, &mut out_offsets);
+        assert!(res.is_ok());
         let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
 
         assert_eq!(out_buf, expected_buf);
@@ -311,7 +312,8 @@ fn test_get_by_path() {
         out_buf.clear();
         out_offsets.clear();
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        get_by_path(&buf, json_path, &mut out_buf, &mut out_offsets);
+        let res = get_by_path(&buf, json_path, &mut out_buf, &mut out_offsets);
+        assert!(res.is_ok());
         if expects.is_empty() {
             assert_eq!(out_offsets.len(), expects.len());
         } else if expects.len() == 1 {

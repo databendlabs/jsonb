@@ -27,7 +27,7 @@ fn jsonb_get(data: &[u8], paths: &[&str], expected: &str) {
     let mut result_data = vec![];
     let mut result_offsets = vec![];
 
-    jsonb::get_by_path(data, json_path, &mut result_data, &mut result_offsets);
+    jsonb::get_by_path(data, json_path, &mut result_data, &mut result_offsets).unwrap();
 
     let s = jsonb::as_str(&result_data).unwrap();
     assert_eq!(s, expected);
