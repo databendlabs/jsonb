@@ -109,3 +109,9 @@ impl From<std::str::Utf8Error> for Error {
         Error::InvalidUtf8
     }
 }
+
+impl From<nom::Err<nom::error::Error<&[u8]>>> for Error {
+    fn from(_error: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+        Error::InvalidJsonb
+    }
+}
