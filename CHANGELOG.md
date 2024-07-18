@@ -1,3 +1,8 @@
+## [v0.4.1] - 2024-07-18
+
+### Fixed
+Fix: Fix jsonpath selector unwrap panic. (#53)
+
 ## [v0.4.0] - 2024-05-17
 
 ### Fixed
