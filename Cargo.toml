@@ -44,8 +44,7 @@ mockalloc = "0.1.2"
 criterion = "0.5.1"
 
 [features]
-default = []
-preserve_order = ["serde_json/preserve_order"]
+default = ["serde_json/preserve_order"]
 
 [[bench]]
 name = "parser"
