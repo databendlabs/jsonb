@@ -1,3 +1,8 @@
+## [v0.4.2] - 2024-09-19
+
+### Added
+Feat: make `preserve_order` a default feature (#56)
+
 ## [v0.4.1] - 2024-07-18
 
 ### Fixed
