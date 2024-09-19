@@ -2234,20 +2234,15 @@ fn delete_value_object_by_keypath<'a>(
     obj: &mut BTreeMap<String, Value<'_>>,
     keypath: &mut VecDeque<&'a KeyPath<'a>>,
 ) {
-    if let Some(path) = keypath.pop_front() {
-        match path {
-            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
-                if keypath.is_empty() {
-                    obj.remove(name.as_ref());
-                } else if let Some(val) = obj.get_mut(name.as_ref()) {
-                    match val {
-                        Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
-                        Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
-                        _ => {}
-                    }
-                }
+    if let Some(KeyPath::QuotedName(name) | KeyPath::Name(name)) = keypath.pop_front() {
+        if keypath.is_empty() {
+            obj.remove(name.as_ref());
+        } else if let Some(val) = obj.get_mut(name.as_ref()) {
+            match val {
+                Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
+                Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -2346,49 +2341,45 @@ fn delete_jsonb_object_by_keypath<'a, 'b>(
     keypath: &mut VecDeque<&'a KeyPath<'a>>,
 ) -> Result<Option<ObjectBuilder<'b>>, Error> {
     match keypath.pop_front() {
-        Some(path) => match path {
-            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
-                let mut builder = ObjectBuilder::new();
-                for (key, jentry, item) in iterate_object_entries(value, header) {
-                    if !key.eq(name) {
-                        builder.push_raw(key, jentry, item);
-                    } else if !keypath.is_empty() {
-                        match jentry.type_code {
-                            CONTAINER_TAG => {
-                                let item_header = read_u32(item, 0)?;
-                                match item_header & CONTAINER_HEADER_TYPE_MASK {
-                                    ARRAY_CONTAINER_TAG => match delete_jsonb_array_by_keypath(
+        Some(KeyPath::QuotedName(name) | KeyPath::Name(name)) => {
+            let mut builder = ObjectBuilder::new();
+            for (key, jentry, item) in iterate_object_entries(value, header) {
+                if !key.eq(name) {
+                    builder.push_raw(key, jentry, item);
+                } else if !keypath.is_empty() {
+                    match jentry.type_code {
+                        CONTAINER_TAG => {
+                            let item_header = read_u32(item, 0)?;
+                            match item_header & CONTAINER_HEADER_TYPE_MASK {
+                                ARRAY_CONTAINER_TAG => {
+                                    match delete_jsonb_array_by_keypath(item, item_header, keypath)?
+                                    {
+                                        Some(item_builder) => builder.push_array(key, item_builder),
+                                        None => return Ok(None),
+                                    }
+                                }
+                                OBJECT_CONTAINER_TAG => {
+                                    match delete_jsonb_object_by_keypath(
                                         item,
                                         item_header,
                                         keypath,
                                     )? {
-                                        Some(item_builder) => builder.push_array(key, item_builder),
-                                        None => return Ok(None),
-                                    },
-                                    OBJECT_CONTAINER_TAG => {
-                                        match delete_jsonb_object_by_keypath(
-                                            item,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => {
-                                                builder.push_object(key, item_builder)
-                                            }
-                                            None => return Ok(None),
+                                        Some(item_builder) => {
+                                            builder.push_object(key, item_builder)
                                         }
+                                        None => return Ok(None),
                                     }
-                                    _ => unreachable!(),
                                 }
+                                _ => unreachable!(),
                             }
-                            _ => return Ok(None),
                         }
+                        _ => return Ok(None),
                     }
                 }
-                Ok(Some(builder))
             }
-            _ => Ok(None),
-        },
-        None => Ok(None),
+            Ok(Some(builder))
+        }
+        _ => Ok(None),
     }
 }
 
