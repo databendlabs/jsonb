@@ -22,7 +22,7 @@ keywords = ["json", "jsonb", "jsonpath"]
 license = "Apache-2.0"
 name = "jsonb"
 repository = "https://github.com/datafuselabs/jsonb"
-version = "0.4.2"
+version = "0.4.3"
 rust-version = "1.77"
 
 [dependencies]
