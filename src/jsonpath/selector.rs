@@ -556,7 +556,7 @@ impl<'a> Selector<'a> {
                             TRUE_TAG => PathValue::Boolean(true),
                             FALSE_TAG => PathValue::Boolean(false),
                             NUMBER_TAG => {
-                                let n = Number::decode(&root[offset..offset + length]);
+                                let n = Number::decode(&root[offset..offset + length])?;
                                 PathValue::Number(n)
                             }
                             STRING_TAG => {

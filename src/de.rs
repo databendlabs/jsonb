@@ -117,7 +117,7 @@ impl<'a> Decoder<'a> {
             }
             NUMBER_TAG => {
                 let offset = jentry.length as usize;
-                let n = Number::decode(&self.buf[..offset]);
+                let n = Number::decode(&self.buf[..offset])?;
                 self.buf = &self.buf[offset..];
                 Ok(Value::Number(n))
             }
