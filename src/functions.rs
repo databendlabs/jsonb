@@ -1003,9 +1003,9 @@ fn compare_scalar(
         }
         (NUMBER_TAG, NUMBER_TAG) => {
             let left_offset = left_jentry.length as usize;
-            let left_num = Number::decode(&left[..left_offset]);
+            let left_num = Number::decode(&left[..left_offset])?;
             let right_offset = right_jentry.length as usize;
-            let right_num = Number::decode(&right[..right_offset]);
+            let right_num = Number::decode(&right[..right_offset])?;
             Ok(left_num.cmp(&right_num))
         }
         (TRUE_TAG, TRUE_TAG) => Ok(Ordering::Equal),
@@ -1047,7 +1047,7 @@ fn compare_array(
     let mut jentry_offset = 0;
     let mut left_val_offset = 4 * left_length;
     let mut right_val_offset = 4 * right_length;
-    let length = if left_length < right_length {
+    let length = if left_length <= right_length {
         left_length
     } else {
         right_length
@@ -1088,34 +1088,39 @@ fn compare_object(
     let left_length = (left_header & CONTAINER_HEADER_LEN_MASK) as usize;
     let right_length = (right_header & CONTAINER_HEADER_LEN_MASK) as usize;
 
-    let mut jentry_offset = 0;
+    let mut left_jentry_offset = 0;
     let mut left_val_offset = 8 * left_length;
+    let mut right_jentry_offset = 0;
     let mut right_val_offset = 8 * right_length;
 
-    let length = if left_length < right_length {
+    // read all left key jentries and right key jentries first.
+    // Note: since the values are stored after the keys,
+    // we must first read all the key jentries to get the correct value offset.
+    let mut left_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(left_length);
+    let mut right_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(right_length);
+    for _ in 0..left_length {
+        let left_encoded = read_u32(left, left_jentry_offset)?;
+        let left_key_jentry = JEntry::decode_jentry(left_encoded);
+
+        left_jentry_offset += 4;
+        left_val_offset += left_key_jentry.length as usize;
+        left_key_jentries.push_back(left_key_jentry);
+    }
+    for _ in 0..right_length {
+        let right_encoded = read_u32(right, right_jentry_offset)?;
+        let right_key_jentry = JEntry::decode_jentry(right_encoded);
+
+        right_jentry_offset += 4;
+        right_val_offset += right_key_jentry.length as usize;
+        right_key_jentries.push_back(right_key_jentry);
+    }
+
+    let length = if left_length <= right_length {
         left_length
     } else {
         right_length
     };
-    // read all key jentries first
-    let mut left_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-    let mut right_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-    for _ in 0..length {
-        let left_encoded = read_u32(left, jentry_offset)?;
-        let left_key_jentry = JEntry::decode_jentry(left_encoded);
-        let right_encoded = read_u32(right, jentry_offset)?;
-        let right_key_jentry = JEntry::decode_jentry(right_encoded);
 
-        jentry_offset += 4;
-        left_val_offset += left_key_jentry.length as usize;
-        right_val_offset += right_key_jentry.length as usize;
-
-        left_key_jentries.push_back(left_key_jentry);
-        right_key_jentries.push_back(right_key_jentry);
-    }
-
-    let mut left_jentry_offset = 4 * left_length;
-    let mut right_jentry_offset = 4 * right_length;
     let mut left_key_offset = 8 * left_length;
     let mut right_key_offset = 8 * right_length;
     for _ in 0..length {
@@ -1247,8 +1252,7 @@ pub fn as_number(value: &[u8]) -> Option<Number> {
             match jentry.type_code {
                 NUMBER_TAG => {
                     let length = jentry.length as usize;
-                    let num = Number::decode(&value[8..8 + length]);
-                    Some(num)
+                    Number::decode(&value[8..8 + length]).ok()
                 }
                 _ => None,
             }
@@ -1523,7 +1527,7 @@ fn scalar_to_serde_json(jentry: JEntry, value: &[u8]) -> Result<serde_json::Valu
         FALSE_TAG => serde_json::Value::Bool(false),
         NUMBER_TAG => {
             let len = jentry.length as usize;
-            let n = Number::decode(&value[..len]);
+            let n = Number::decode(&value[..len])?;
             match n {
                 Number::Int64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
                 Number::UInt64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
@@ -1733,7 +1737,7 @@ fn scalar_to_string(
         TRUE_TAG => json.push_str("true"),
         FALSE_TAG => json.push_str("false"),
         NUMBER_TAG => {
-            let num = Number::decode(&value[*value_offset..*value_offset + length]);
+            let num = Number::decode(&value[*value_offset..*value_offset + length])?;
             json.push_str(&num.to_string());
         }
         STRING_TAG => {
@@ -1860,15 +1864,16 @@ fn scalar_convert_to_comparable(depth: u8, jentry: &JEntry, value: &[u8], buf: &
                 }
                 NUMBER_TAG => {
                     let length = jentry.length as usize;
-                    let num = Number::decode(&value[..length]);
-                    let n = num.as_f64().unwrap();
-                    // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
-                    let s = n.to_bits() as i64;
-                    let v = s ^ (((s >> 63) as u64) >> 1) as i64;
-                    let mut b = v.to_be_bytes();
-                    // Toggle top "sign" bit to ensure consistent sort order
-                    b[0] ^= 0x80;
-                    buf.extend_from_slice(&b);
+                    if let Ok(num) = Number::decode(&value[..length]) {
+                        let n = num.as_f64().unwrap();
+                        // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
+                        let s = n.to_bits() as i64;
+                        let v = s ^ (((s >> 63) as u64) >> 1) as i64;
+                        let mut b = v.to_be_bytes();
+                        // Toggle top "sign" bit to ensure consistent sort order
+                        b[0] ^= 0x80;
+                        buf.extend_from_slice(&b);
+                    }
                 }
                 _ => {}
             }

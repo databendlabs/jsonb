@@ -79,6 +79,7 @@ pub enum Error {
     InvalidJsonb,
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
+    InvalidJsonbNumber,
 
     InvalidJsonPath,
     InvalidJsonPathPredicate,

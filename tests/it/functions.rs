@@ -584,6 +584,8 @@ fn test_compare() {
             r#"{"k1":"a1","k2":"v2"}"#,
             Ordering::Greater,
         ),
+        (r#"{"k1":123}"#, r#"{"k1":123,"k2":111}"#, Ordering::Less),
+        (r#"{"k1":123,"k2":111}"#, r#"{"k1":123}"#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#"{"a":1}"#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#"{}"#, Ordering::Greater),
         (r#"{"k1":"v1","k2":"v2"}"#, r#""ab""#, Ordering::Greater),
