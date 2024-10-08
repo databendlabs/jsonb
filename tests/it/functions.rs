@@ -17,12 +17,13 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use jsonb::{
-    array_length, array_values, as_bool, as_null, as_number, as_str, build_array, build_object,
-    compare, concat, contains, convert_to_comparable, delete_by_index, delete_by_keypath,
-    delete_by_name, exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath,
-    get_by_name, get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths,
-    object_each, object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64,
-    to_i64, to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
+    array_distinct, array_except, array_insert, array_intersection, array_length, array_overlap,
+    array_values, as_bool, as_null, as_number, as_str, build_array, build_object, compare, concat,
+    contains, convert_to_comparable, delete_by_index, delete_by_keypath, delete_by_name,
+    exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
+    get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths, object_each,
+    object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64,
+    to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
     traverse_check_string, type_of, Error, Number, Object, Value,
 };
 
@@ -1533,6 +1534,205 @@ fn test_delete_by_keypath() {
             let actual = from_slice(&buf).unwrap();
             let expected = parse_value(result.as_bytes()).unwrap();
 
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_array_insert() {
+    let sources = vec![
+        (r#"[0,1,2,3]"#, 2, r#""hello""#, r#"[0,1,"hello",2,3]"#),
+        (r#"[0,1,2,3]"#, 10, r#"100"#, r#"[0,1,2,3,100]"#),
+        (r#"[0,1,2,3]"#, 0, r#"true"#, r#"[true,0,1,2,3]"#),
+        (r#"[0,1,2,3]"#, -1, r#"{"k":"v"}"#, r#"[0,1,2,{"k":"v"},3]"#),
+        (r#"1"#, 1, r#"{"k":"v"}"#, r#"[1,{"k":"v"}]"#),
+        (r#"{"k":"v"}"#, 2, r#"true"#, r#"[{"k":"v"},true]"#),
+    ];
+    for (val, pos, new_val, result) in sources {
+        {
+            let val = val.as_bytes();
+            let new_val = new_val.as_bytes();
+            let mut buf = Vec::new();
+            array_insert(val, pos, new_val, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let val = parse_value(val.as_bytes()).unwrap().to_vec();
+            let new_val = parse_value(new_val.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            array_insert(&val, pos, &new_val, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_array_distinct() {
+    let sources = vec![
+        (r#"[0,1,1,2,2,2,3,4]"#, r#"[0,1,2,3,4]"#),
+        (r#"["A","A","B","C","A","C"]"#, r#"["A","B","C"]"#),
+        (
+            r#"["A","A",10,false,null,false,null,10]"#,
+            r#"["A",10,false,null]"#,
+        ),
+        (r#"[[1,2,2],3,4,[1,2,2]]"#, r#"[[1,2,2],3,4]"#),
+        (
+            r#"[{"k":"v"},"A","A","B",{"k":"v"}]"#,
+            r#"[{"k":"v"},"A","B"]"#,
+        ),
+        (r#"1"#, r#"[1]"#),
+        (r#"{"k":"v"}"#, r#"[{"k":"v"}]"#),
+    ];
+    for (val, result) in sources {
+        {
+            let val = val.as_bytes();
+            let mut buf = Vec::new();
+            array_distinct(val, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let val = parse_value(val.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            array_distinct(&val, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_array_intersection() {
+    let sources = vec![
+        (r#"["A","B","C"]"#, r#"["B","C"]"#, r#"["B","C"]"#),
+        (r#"["A","B","B","B","C"]"#, r#"["B","B"]"#, r#"["B","B"]"#),
+        (r#"[1,2]"#, r#"[3,4]"#, r#"[]"#),
+        (r#"[null,102,null]"#, r#"[null,null,103]"#, r#"[null,null]"#),
+        (
+            r#"[{"a":1,"b":2},1,2]"#,
+            r#"[{"a":1,"b":2},3,4]"#,
+            r#"[{"a":1,"b":2}]"#,
+        ),
+        (r#"[{"a":1,"b":2},1,2]"#, r#"[{"a":2,"c":3},3,4]"#, r#"[]"#),
+        (
+            r#"[{"a":1,"b":2,"c":3}]"#,
+            r#"[{"c":3,"b":2,"a":1},3,4]"#,
+            r#"[{"a":1,"b":2,"c":3}]"#,
+        ),
+        (r#"1"#, r#"1"#, r#"[1]"#),
+        (r#"1"#, r#"2"#, r#"[]"#),
+        (r#"{"k":"v"}"#, r#"{"k":"v"}"#, r#"[{"k":"v"}]"#),
+    ];
+    for (val1, val2, result) in sources {
+        {
+            let val1 = val1.as_bytes();
+            let val2 = val2.as_bytes();
+            let mut buf = Vec::new();
+            array_intersection(val1, val2, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
+            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            array_intersection(&val1, &val2, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_array_except() {
+    let sources = vec![
+        (r#"["A","B","C"]"#, r#"["B","C"]"#, r#"["A"]"#),
+        (
+            r#"["A","B","B","B","C"]"#,
+            r#"["B","B"]"#,
+            r#"["A","B","C"]"#,
+        ),
+        (r#"[1,2]"#, r#"[3,4]"#, r#"[1,2]"#),
+        (r#"[null,102,null]"#, r#"[null,null,103]"#, r#"[102]"#),
+        (
+            r#"[{"a":1,"b":2},1,2]"#,
+            r#"[{"a":1,"b":2},3,4]"#,
+            r#"[1,2]"#,
+        ),
+        (
+            r#"[{"a":1,"b":2},1,2]"#,
+            r#"[{"a":2,"c":3},3,4]"#,
+            r#"[{"a":1,"b":2},1,2]"#,
+        ),
+        (
+            r#"[{"a":1,"b":2,"c":3}]"#,
+            r#"[{"c":3,"b":2,"a":1},3,4]"#,
+            r#"[]"#,
+        ),
+        (r#"1"#, r#"1"#, r#"[]"#),
+        (r#"1"#, r#"2"#, r#"[1]"#),
+        (r#"{"k":"v"}"#, r#"{"k":"v"}"#, r#"[]"#),
+    ];
+    for (val1, val2, result) in sources {
+        {
+            let val1 = val1.as_bytes();
+            let val2 = val2.as_bytes();
+            let mut buf = Vec::new();
+            array_except(val1, val2, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
+            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            array_except(&val1, &val2, &mut buf).unwrap();
+            let actual = from_slice(&buf).unwrap();
+            let expected = parse_value(result.as_bytes()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_array_overlap() {
+    let sources = vec![
+        (r#"["A","B","C"]"#, r#"["B","C"]"#, true),
+        (r#"["A","B","B","B","C"]"#, r#"["B","B"]"#, true),
+        (r#"[1,2]"#, r#"[3,4]"#, false),
+        (r#"[null,102,null]"#, r#"[null,null,103]"#, true),
+        (r#"[{"a":1,"b":2},1,2]"#, r#"[{"a":1,"b":2},3,4]"#, true),
+        (r#"[{"a":1,"b":2},1,2]"#, r#"[{"a":2,"c":3},3,4]"#, false),
+        (
+            r#"[{"a":1,"b":2,"c":3}]"#,
+            r#"[{"c":3,"b":2,"a":1},3,4]"#,
+            true,
+        ),
+        (r#"1"#, r#"1"#, true),
+        (r#"1"#, r#"2"#, false),
+        (r#"{"k":"v"}"#, r#"{"k":"v"}"#, true),
+    ];
+    for (val1, val2, expected) in sources {
+        {
+            let val1 = val1.as_bytes();
+            let val2 = val2.as_bytes();
+            let actual = array_overlap(val1, val2).unwrap();
+            assert_eq!(actual, expected);
+        }
+        {
+            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
+            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
+            let actual = array_overlap(&val1, &val2).unwrap();
             assert_eq!(actual, expected);
         }
     }
