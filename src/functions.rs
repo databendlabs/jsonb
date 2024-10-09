@@ -2619,7 +2619,7 @@ pub fn type_of(value: &[u8]) -> Result<&'static str, Error> {
 
 // Check whether the value is `JSONB` format,
 // for compatibility with previous `JSON` string.
-fn is_jsonb(value: &[u8]) -> bool {
+pub(crate) fn is_jsonb(value: &[u8]) -> bool {
     if let Some(v) = value.first() {
         if matches!(*v, ARRAY_PREFIX | OBJECT_PREFIX | SCALAR_PREFIX) {
             return true;
