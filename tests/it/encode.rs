@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use jsonb::{Number, Object, Value};
+use jsonb::{parse_lazy_value, Number, Object, Value};
 
 #[test]
 fn test_encode_null() {
@@ -133,9 +133,17 @@ fn test_encode_float64() {
 
 #[test]
 fn test_encode_array() {
+    let raw = b"\x80\0\0\x02\x30\0\0\0\x40\0\0\0";
     assert_eq!(
         &Value::Array(vec![Value::Bool(false), Value::Bool(true)]).to_vec(),
-        b"\x80\0\0\x02\x30\0\0\0\x40\0\0\0"
+        raw
+    );
+
+    let lazy_value = parse_lazy_value(raw).unwrap();
+    assert_eq!(lazy_value.array_length(), Some(2));
+    assert_eq!(
+        lazy_value.to_value().as_ref(),
+        &Value::Array(vec![Value::Bool(false), Value::Bool(true)])
     );
 }
 

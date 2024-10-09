@@ -14,6 +14,9 @@
 
 use std::borrow::Cow;
 
+use crate::is_jsonb;
+use crate::lazy_value::LazyValue;
+
 use super::constants::*;
 use super::error::Error;
 use super::error::ParseErrorCode;
@@ -28,6 +31,14 @@ use super::value::Value;
 pub fn parse_value(buf: &[u8]) -> Result<Value<'_>, Error> {
     let mut parser = Parser::new(buf);
     parser.parse()
+}
+
+pub fn parse_lazy_value(buf: &[u8]) -> Result<LazyValue<'_>, Error> {
+    if !is_jsonb(buf) {
+        parse_value(buf).map(LazyValue::Value)
+    } else {
+        Ok(LazyValue::Raw(Cow::Borrowed(buf)))
+    }
 }
 
 struct Parser<'a> {
