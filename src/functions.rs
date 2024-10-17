@@ -2840,6 +2840,90 @@ fn array_overlap_jsonb(value1: &[u8], value2: &[u8]) -> Result<bool, Error> {
     Ok(false)
 }
 
+/// Insert a new value into a JSONB array value by the specified position.
+pub fn object_insert(
+    value: &[u8],
+    new_key: &str,
+    new_value: &[u8],
+    update_flag: bool,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        if !is_jsonb(new_value) {
+            let new_value = parse_value(new_value)?;
+            let mut new_val_buf = Vec::new();
+            new_value.write_to_vec(&mut new_val_buf);
+            return object_insert_jsonb(&val_buf, new_key, &new_val_buf, update_flag, buf);
+        }
+        return object_insert_jsonb(&val_buf, new_key, new_value, update_flag, buf);
+    }
+    object_insert_jsonb(value, new_key, new_value, update_flag, buf)
+}
+
+fn object_insert_jsonb(
+    value: &[u8],
+    new_key: &str,
+    new_value: &[u8],
+    update_flag: bool,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut idx = 0;
+    let mut duplicate_key = false;
+    for (i, obj_key) in iteate_object_keys(value, header).enumerate() {
+        if new_key.eq(obj_key) {
+            if !update_flag {
+                return Err(Error::ObjectDuplicateKey);
+            }
+            idx = i;
+            duplicate_key = true;
+            break;
+        } else if new_key > obj_key {
+            idx = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut builder = ObjectBuilder::new();
+    let mut obj_iter = iterate_object_entries(value, header);
+    for _ in 0..idx {
+        if let Some((key, jentry, item)) = obj_iter.next() {
+            builder.push_raw(key, jentry, item);
+        }
+    }
+    // insert new key and value
+    let new_header = read_u32(new_value, 0)?;
+    match new_header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
+            let new_jentry = JEntry::make_container_jentry(new_value.len());
+            builder.push_raw(new_key, new_jentry, new_value);
+        }
+        _ => {
+            let encoded = read_u32(new_value, 4)?;
+            let new_jentry = JEntry::decode_jentry(encoded);
+            builder.push_raw(new_key, new_jentry, &new_value[8..]);
+        }
+    }
+    // if the key is duplicated, ignore the original key and value.
+    if duplicate_key {
+        let _ = obj_iter.next();
+    }
+    for (key, jentry, item) in obj_iter {
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
 /// Deletes all object fields that have null values from the given JSON value, recursively.
 /// Null values that are not object fields are untouched.
 pub fn strip_nulls(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {

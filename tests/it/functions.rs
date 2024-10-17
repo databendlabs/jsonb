@@ -22,8 +22,8 @@ use jsonb::{
     contains, convert_to_comparable, delete_by_index, delete_by_keypath, delete_by_name,
     exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
     get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths, object_each,
-    object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64, to_i64,
-    to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
+    object_insert, object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64,
+    to_i64, to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
     traverse_check_string, type_of, Error, Number, Object, Value,
 };
 
@@ -1734,6 +1734,86 @@ fn test_array_overlap() {
             let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
             let actual = array_overlap(&val1, &val2).unwrap();
             assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn test_object_insert() {
+    let sources = vec![
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            "a",
+            r#""hello""#,
+            false,
+            Some(r#"{"a":"hello","b":11,"d":22,"m":[1,2]}"#),
+        ),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            "e",
+            r#"{"k":"v"}"#,
+            false,
+            Some(r#"{"b":11,"d":22,"e":{"k":"v"},"m":[1,2]}"#),
+        ),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            "z",
+            r#"["z1","z2"]"#,
+            false,
+            Some(r#"{"b":11,"d":22,"m":[1,2],"z":["z1","z2"]}"#),
+        ),
+        (r#"{"b":11,"d":22,"m":[1,2]}"#, "d", r#"100"#, false, None),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            "d",
+            r#"100"#,
+            true,
+            Some(r#"{"b":11,"d":100,"m":[1,2]}"#),
+        ),
+        (r#"{"b":11,"d":22,"m":[1,2]}"#, "m", r#"true"#, false, None),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            "m",
+            r#"true"#,
+            true,
+            Some(r#"{"b":11,"d":22,"m":true}"#),
+        ),
+        (r#"1"#, "xx", r#"{"k":"v"}"#, true, None),
+    ];
+    for (val, new_key, new_val, update_flag, result) in sources {
+        {
+            let val = val.as_bytes();
+            let new_val = new_val.as_bytes();
+            let mut buf = Vec::new();
+            let ret = object_insert(val, new_key, new_val, update_flag, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
+        }
+        {
+            let val = parse_value(val.as_bytes()).unwrap().to_vec();
+            let new_val = parse_value(new_val.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            let ret = object_insert(&val, new_key, &new_val, update_flag, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
         }
     }
 }
