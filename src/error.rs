@@ -86,6 +86,8 @@ pub enum Error {
     InvalidKeyPath,
 
     InvalidJsonType,
+    InvalidObject,
+    ObjectDuplicateKey,
 
     Syntax(ParseErrorCode, usize),
 }
