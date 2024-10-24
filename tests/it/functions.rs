@@ -15,16 +15,17 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use jsonb::{
     array_distinct, array_except, array_insert, array_intersection, array_length, array_overlap,
     array_values, as_bool, as_null, as_number, as_str, build_array, build_object, compare, concat,
     contains, convert_to_comparable, delete_by_index, delete_by_keypath, delete_by_name,
     exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
-    get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths, object_each,
-    object_insert, object_keys, parse_value, path_exists, path_match, strip_nulls, to_bool, to_f64,
-    to_i64, to_pretty_string, to_serde_json, to_serde_json_object, to_str, to_string, to_u64,
-    traverse_check_string, type_of, Error, Number, Object, Value,
+    get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths, object_delete,
+    object_each, object_insert, object_keys, object_pick, parse_value, path_exists, path_match,
+    strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_serde_json, to_serde_json_object,
+    to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number, Object, Value,
 };
 
 use jsonb::jsonpath::parse_json_path;
@@ -1803,6 +1804,120 @@ fn test_object_insert() {
             let new_val = parse_value(new_val.as_bytes()).unwrap().to_vec();
             let mut buf = Vec::new();
             let ret = object_insert(&val, new_key, &new_val, update_flag, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_object_pick() {
+    let sources = vec![
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            vec!["a", "b", "c"],
+            Some(r#"{"b":11}"#),
+        ),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            vec!["a", "x", "y"],
+            Some(r#"{}"#),
+        ),
+        (
+            r#"{"k1":"v1","k2":{"x":"y"}}"#,
+            vec!["k1"],
+            Some(r#"{"k1":"v1"}"#),
+        ),
+        (r#"1"#, vec!["a", "b"], None),
+    ];
+    for (val, keys, result) in sources {
+        let keys = BTreeSet::from_iter(keys);
+        {
+            let val = val.as_bytes();
+            let mut buf = Vec::new();
+            let ret = object_pick(val, &keys, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
+        }
+        {
+            let val = parse_value(val.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            let ret = object_pick(&val, &keys, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_object_delete() {
+    let sources = vec![
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            vec!["a", "b", "c"],
+            Some(r#"{"d":22,"m":[1,2]}"#),
+        ),
+        (
+            r#"{"b":11,"d":22,"m":[1,2]}"#,
+            vec!["a", "x", "y"],
+            Some(r#"{"b":11,"d":22,"m":[1,2]}"#),
+        ),
+        (
+            r#"{"k1":"v1","k2":{"x":"y"}}"#,
+            vec!["k1"],
+            Some(r#"{"k2":{"x":"y"}}"#),
+        ),
+        (r#"1"#, vec!["a", "b"], None),
+    ];
+    for (val, keys, result) in sources {
+        let keys = BTreeSet::from_iter(keys);
+        {
+            let val = val.as_bytes();
+            let mut buf = Vec::new();
+            let ret = object_delete(val, &keys, &mut buf);
+            match result {
+                Some(result) => {
+                    assert!(ret.is_ok());
+                    let actual = from_slice(&buf).unwrap();
+                    let expected = parse_value(result.as_bytes()).unwrap();
+                    assert_eq!(actual, expected);
+                }
+                None => {
+                    assert!(ret.is_err());
+                }
+            }
+        }
+        {
+            let val = parse_value(val.as_bytes()).unwrap().to_vec();
+            let mut buf = Vec::new();
+            let ret = object_delete(&val, &keys, &mut buf);
             match result {
                 Some(result) => {
                     assert!(ret.is_ok());
