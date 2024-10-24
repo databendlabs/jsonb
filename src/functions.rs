@@ -2840,7 +2840,7 @@ fn array_overlap_jsonb(value1: &[u8], value2: &[u8]) -> Result<bool, Error> {
     Ok(false)
 }
 
-/// Insert a new value into a JSONB array value by the specified position.
+/// Insert a new value into a JSONB object value by the new key and new value.
 pub fn object_insert(
     value: &[u8],
     new_key: &str,
@@ -2917,6 +2917,68 @@ fn object_insert_jsonb(
         let _ = obj_iter.next();
     }
     for (key, jentry, item) in obj_iter {
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Delete keys and values from a JSONB object value by keys.
+pub fn object_delete(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        return object_delete_jsonb(&val_buf, keys, buf);
+    }
+    object_delete_jsonb(value, keys, buf)
+}
+
+fn object_delete_jsonb(
+    value: &[u8],
+    keys: &BTreeSet<&str>,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut builder = ObjectBuilder::new();
+    for (key, jentry, item) in iterate_object_entries(value, header) {
+        if keys.contains(key) {
+            continue;
+        }
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Pick keys and values from a JSONB object value by keys.
+pub fn object_pick(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        return object_pick_jsonb(&val_buf, keys, buf);
+    }
+    object_pick_jsonb(value, keys, buf)
+}
+
+fn object_pick_jsonb(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut builder = ObjectBuilder::new();
+    for (key, jentry, item) in iterate_object_entries(value, header) {
+        if !keys.contains(key) {
+            continue;
+        }
         builder.push_raw(key, jentry, item);
     }
     builder.build_into(buf);
