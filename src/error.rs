@@ -79,12 +79,15 @@ pub enum Error {
     InvalidJsonb,
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
+    InvalidJsonbNumber,
 
     InvalidJsonPath,
     InvalidJsonPathPredicate,
     InvalidKeyPath,
 
     InvalidJsonType,
+    InvalidObject,
+    ObjectDuplicateKey,
 
     Syntax(ParseErrorCode, usize),
 }

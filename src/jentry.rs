@@ -14,7 +14,7 @@
 
 use super::constants::*;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialOrd, PartialEq, Eq, Ord)]
 pub(crate) struct JEntry {
     pub(crate) type_code: u32,
     pub(crate) length: u32,

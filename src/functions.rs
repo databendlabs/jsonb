@@ -16,6 +16,7 @@ use core::convert::TryInto;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::str::from_utf8;
 use std::str::from_utf8_unchecked;
@@ -1003,9 +1004,9 @@ fn compare_scalar(
         }
         (NUMBER_TAG, NUMBER_TAG) => {
             let left_offset = left_jentry.length as usize;
-            let left_num = Number::decode(&left[..left_offset]);
+            let left_num = Number::decode(&left[..left_offset])?;
             let right_offset = right_jentry.length as usize;
-            let right_num = Number::decode(&right[..right_offset]);
+            let right_num = Number::decode(&right[..right_offset])?;
             Ok(left_num.cmp(&right_num))
         }
         (TRUE_TAG, TRUE_TAG) => Ok(Ordering::Equal),
@@ -1047,7 +1048,7 @@ fn compare_array(
     let mut jentry_offset = 0;
     let mut left_val_offset = 4 * left_length;
     let mut right_val_offset = 4 * right_length;
-    let length = if left_length < right_length {
+    let length = if left_length <= right_length {
         left_length
     } else {
         right_length
@@ -1088,34 +1089,39 @@ fn compare_object(
     let left_length = (left_header & CONTAINER_HEADER_LEN_MASK) as usize;
     let right_length = (right_header & CONTAINER_HEADER_LEN_MASK) as usize;
 
-    let mut jentry_offset = 0;
+    let mut left_jentry_offset = 0;
     let mut left_val_offset = 8 * left_length;
+    let mut right_jentry_offset = 0;
     let mut right_val_offset = 8 * right_length;
 
-    let length = if left_length < right_length {
+    // read all left key jentries and right key jentries first.
+    // Note: since the values are stored after the keys,
+    // we must first read all the key jentries to get the correct value offset.
+    let mut left_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(left_length);
+    let mut right_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(right_length);
+    for _ in 0..left_length {
+        let left_encoded = read_u32(left, left_jentry_offset)?;
+        let left_key_jentry = JEntry::decode_jentry(left_encoded);
+
+        left_jentry_offset += 4;
+        left_val_offset += left_key_jentry.length as usize;
+        left_key_jentries.push_back(left_key_jentry);
+    }
+    for _ in 0..right_length {
+        let right_encoded = read_u32(right, right_jentry_offset)?;
+        let right_key_jentry = JEntry::decode_jentry(right_encoded);
+
+        right_jentry_offset += 4;
+        right_val_offset += right_key_jentry.length as usize;
+        right_key_jentries.push_back(right_key_jentry);
+    }
+
+    let length = if left_length <= right_length {
         left_length
     } else {
         right_length
     };
-    // read all key jentries first
-    let mut left_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-    let mut right_key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-    for _ in 0..length {
-        let left_encoded = read_u32(left, jentry_offset)?;
-        let left_key_jentry = JEntry::decode_jentry(left_encoded);
-        let right_encoded = read_u32(right, jentry_offset)?;
-        let right_key_jentry = JEntry::decode_jentry(right_encoded);
 
-        jentry_offset += 4;
-        left_val_offset += left_key_jentry.length as usize;
-        right_val_offset += right_key_jentry.length as usize;
-
-        left_key_jentries.push_back(left_key_jentry);
-        right_key_jentries.push_back(right_key_jentry);
-    }
-
-    let mut left_jentry_offset = 4 * left_length;
-    let mut right_jentry_offset = 4 * right_length;
     let mut left_key_offset = 8 * left_length;
     let mut right_key_offset = 8 * right_length;
     for _ in 0..length {
@@ -1247,8 +1253,7 @@ pub fn as_number(value: &[u8]) -> Option<Number> {
             match jentry.type_code {
                 NUMBER_TAG => {
                     let length = jentry.length as usize;
-                    let num = Number::decode(&value[8..8 + length]);
-                    Some(num)
+                    Number::decode(&value[8..8 + length]).ok()
                 }
                 _ => None,
             }
@@ -1523,7 +1528,7 @@ fn scalar_to_serde_json(jentry: JEntry, value: &[u8]) -> Result<serde_json::Valu
         FALSE_TAG => serde_json::Value::Bool(false),
         NUMBER_TAG => {
             let len = jentry.length as usize;
-            let n = Number::decode(&value[..len]);
+            let n = Number::decode(&value[..len])?;
             match n {
                 Number::Int64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
                 Number::UInt64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
@@ -1733,7 +1738,7 @@ fn scalar_to_string(
         TRUE_TAG => json.push_str("true"),
         FALSE_TAG => json.push_str("false"),
         NUMBER_TAG => {
-            let num = Number::decode(&value[*value_offset..*value_offset + length]);
+            let num = Number::decode(&value[*value_offset..*value_offset + length])?;
             json.push_str(&num.to_string());
         }
         STRING_TAG => {
@@ -1860,15 +1865,16 @@ fn scalar_convert_to_comparable(depth: u8, jentry: &JEntry, value: &[u8], buf: &
                 }
                 NUMBER_TAG => {
                     let length = jentry.length as usize;
-                    let num = Number::decode(&value[..length]);
-                    let n = num.as_f64().unwrap();
-                    // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
-                    let s = n.to_bits() as i64;
-                    let v = s ^ (((s >> 63) as u64) >> 1) as i64;
-                    let mut b = v.to_be_bytes();
-                    // Toggle top "sign" bit to ensure consistent sort order
-                    b[0] ^= 0x80;
-                    buf.extend_from_slice(&b);
+                    if let Ok(num) = Number::decode(&value[..length]) {
+                        let n = num.as_f64().unwrap();
+                        // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
+                        let s = n.to_bits() as i64;
+                        let v = s ^ (((s >> 63) as u64) >> 1) as i64;
+                        let mut b = v.to_be_bytes();
+                        // Toggle top "sign" bit to ensure consistent sort order
+                        b[0] ^= 0x80;
+                        buf.extend_from_slice(&b);
+                    }
                 }
                 _ => {}
             }
@@ -2234,20 +2240,15 @@ fn delete_value_object_by_keypath<'a>(
     obj: &mut BTreeMap<String, Value<'_>>,
     keypath: &mut VecDeque<&'a KeyPath<'a>>,
 ) {
-    if let Some(path) = keypath.pop_front() {
-        match path {
-            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
-                if keypath.is_empty() {
-                    obj.remove(name.as_ref());
-                } else if let Some(val) = obj.get_mut(name.as_ref()) {
-                    match val {
-                        Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
-                        Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
-                        _ => {}
-                    }
-                }
+    if let Some(KeyPath::QuotedName(name) | KeyPath::Name(name)) = keypath.pop_front() {
+        if keypath.is_empty() {
+            obj.remove(name.as_ref());
+        } else if let Some(val) = obj.get_mut(name.as_ref()) {
+            match val {
+                Value::Array(ref mut arr) => delete_value_array_by_keypath(arr, keypath),
+                Value::Object(ref mut obj) => delete_value_object_by_keypath(obj, keypath),
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -2346,49 +2347,45 @@ fn delete_jsonb_object_by_keypath<'a, 'b>(
     keypath: &mut VecDeque<&'a KeyPath<'a>>,
 ) -> Result<Option<ObjectBuilder<'b>>, Error> {
     match keypath.pop_front() {
-        Some(path) => match path {
-            KeyPath::QuotedName(name) | KeyPath::Name(name) => {
-                let mut builder = ObjectBuilder::new();
-                for (key, jentry, item) in iterate_object_entries(value, header) {
-                    if !key.eq(name) {
-                        builder.push_raw(key, jentry, item);
-                    } else if !keypath.is_empty() {
-                        match jentry.type_code {
-                            CONTAINER_TAG => {
-                                let item_header = read_u32(item, 0)?;
-                                match item_header & CONTAINER_HEADER_TYPE_MASK {
-                                    ARRAY_CONTAINER_TAG => match delete_jsonb_array_by_keypath(
+        Some(KeyPath::QuotedName(name) | KeyPath::Name(name)) => {
+            let mut builder = ObjectBuilder::new();
+            for (key, jentry, item) in iterate_object_entries(value, header) {
+                if !key.eq(name) {
+                    builder.push_raw(key, jentry, item);
+                } else if !keypath.is_empty() {
+                    match jentry.type_code {
+                        CONTAINER_TAG => {
+                            let item_header = read_u32(item, 0)?;
+                            match item_header & CONTAINER_HEADER_TYPE_MASK {
+                                ARRAY_CONTAINER_TAG => {
+                                    match delete_jsonb_array_by_keypath(item, item_header, keypath)?
+                                    {
+                                        Some(item_builder) => builder.push_array(key, item_builder),
+                                        None => return Ok(None),
+                                    }
+                                }
+                                OBJECT_CONTAINER_TAG => {
+                                    match delete_jsonb_object_by_keypath(
                                         item,
                                         item_header,
                                         keypath,
                                     )? {
-                                        Some(item_builder) => builder.push_array(key, item_builder),
-                                        None => return Ok(None),
-                                    },
-                                    OBJECT_CONTAINER_TAG => {
-                                        match delete_jsonb_object_by_keypath(
-                                            item,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => {
-                                                builder.push_object(key, item_builder)
-                                            }
-                                            None => return Ok(None),
+                                        Some(item_builder) => {
+                                            builder.push_object(key, item_builder)
                                         }
+                                        None => return Ok(None),
                                     }
-                                    _ => unreachable!(),
                                 }
+                                _ => unreachable!(),
                             }
-                            _ => return Ok(None),
                         }
+                        _ => return Ok(None),
                     }
                 }
-                Ok(Some(builder))
             }
-            _ => Ok(None),
-        },
-        None => Ok(None),
+            Ok(Some(builder))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -2487,6 +2484,505 @@ fn delete_jsonb_by_index(value: &[u8], index: i32, buf: &mut Vec<u8>) -> Result<
         }
         _ => return Err(Error::InvalidJsonType),
     }
+    Ok(())
+}
+
+/// Insert a new value into a JSONB array value by the specified position.
+pub fn array_insert(
+    value: &[u8],
+    pos: i32,
+    new_value: &[u8],
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        if !is_jsonb(new_value) {
+            let new_value = parse_value(new_value)?;
+            let mut new_val_buf = Vec::new();
+            new_value.write_to_vec(&mut new_val_buf);
+            return array_insert_jsonb(&val_buf, pos, &new_val_buf, buf);
+        }
+        return array_insert_jsonb(&val_buf, pos, new_value, buf);
+    }
+    array_insert_jsonb(value, pos, new_value, buf)
+}
+
+fn array_insert_jsonb(
+    value: &[u8],
+    pos: i32,
+    new_value: &[u8],
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    let len = if header & CONTAINER_HEADER_TYPE_MASK == ARRAY_CONTAINER_TAG {
+        (header & CONTAINER_HEADER_LEN_MASK) as i32
+    } else {
+        1
+    };
+
+    let idx = if pos < 0 { len - pos.abs() } else { pos };
+    let idx = if idx < 0 {
+        0
+    } else if idx > len {
+        len
+    } else {
+        idx
+    } as usize;
+    let len = len as usize;
+
+    let mut items = VecDeque::with_capacity(len);
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry, item) in iterate_array(value, header) {
+                items.push_back((jentry, item));
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry = JEntry::make_container_jentry(value.len());
+            items.push_back((jentry, value));
+        }
+        _ => {
+            let encoded = read_u32(value, 4)?;
+            let jentry = JEntry::decode_jentry(encoded);
+            items.push_back((jentry, &value[8..]));
+        }
+    }
+
+    let mut builder = ArrayBuilder::new(len + 1);
+    if idx > 0 {
+        let mut i = 0;
+        while let Some((jentry, item)) = items.pop_front() {
+            builder.push_raw(jentry, item);
+            i += 1;
+            if i >= idx {
+                break;
+            }
+        }
+    }
+
+    let new_header = read_u32(new_value, 0)?;
+    match new_header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
+            let new_jentry = JEntry::make_container_jentry(new_value.len());
+            builder.push_raw(new_jentry, new_value);
+        }
+        _ => {
+            let encoded = read_u32(new_value, 4)?;
+            let new_jentry = JEntry::decode_jentry(encoded);
+            builder.push_raw(new_jentry, &new_value[8..]);
+        }
+    }
+
+    while let Some((jentry, item)) = items.pop_front() {
+        builder.push_raw(jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Return a JSONB Array that contains only the distinct elements from the input JSONB Array.
+pub fn array_distinct(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        return array_distinct_jsonb(&val_buf, buf);
+    }
+    array_distinct_jsonb(value, buf)
+}
+
+fn array_distinct_jsonb(value: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    let mut builder = ArrayBuilder::new(0);
+    match header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            let mut item_set = BTreeSet::new();
+            for (jentry, item) in iterate_array(value, header) {
+                if !item_set.contains(&(jentry.clone(), item)) {
+                    item_set.insert((jentry.clone(), item));
+                    builder.push_raw(jentry, item);
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry = JEntry::make_container_jentry(value.len());
+            builder.push_raw(jentry, value);
+        }
+        _ => {
+            let encoded = read_u32(value, 4)?;
+            let jentry = JEntry::decode_jentry(encoded);
+            builder.push_raw(jentry, &value[8..]);
+        }
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Return a JSONB Array that contains the matching elements in the two input JSONB Arrays.
+pub fn array_intersection(value1: &[u8], value2: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value1) {
+        let value1 = parse_value(value1)?;
+        let mut val_buf1 = Vec::new();
+        value1.write_to_vec(&mut val_buf1);
+        if !is_jsonb(value2) {
+            let value2 = parse_value(value2)?;
+            let mut val_buf2 = Vec::new();
+            value2.write_to_vec(&mut val_buf2);
+            return array_intersection_jsonb(&val_buf1, &val_buf2, buf);
+        }
+        return array_intersection_jsonb(&val_buf1, value2, buf);
+    }
+    array_intersection_jsonb(value1, value2, buf)
+}
+
+fn array_intersection_jsonb(value1: &[u8], value2: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header1 = read_u32(value1, 0)?;
+    let header2 = read_u32(value2, 0)?;
+
+    let mut item_map = BTreeMap::new();
+    match header2 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry2, item2) in iterate_array(value2, header2) {
+                if let Some(cnt) = item_map.get_mut(&(jentry2.clone(), item2)) {
+                    *cnt += 1;
+                } else {
+                    item_map.insert((jentry2, item2), 1);
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry2 = JEntry::make_container_jentry(value2.len());
+            item_map.insert((jentry2, value2), 1);
+        }
+        _ => {
+            let encoded = read_u32(value2, 4)?;
+            let jentry2 = JEntry::decode_jentry(encoded);
+            item_map.insert((jentry2, &value2[8..]), 1);
+        }
+    }
+
+    let mut builder = ArrayBuilder::new(0);
+    match header1 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry1, item1) in iterate_array(value1, header1) {
+                if let Some(cnt) = item_map.get_mut(&(jentry1.clone(), item1)) {
+                    if *cnt > 0 {
+                        *cnt -= 1;
+                        builder.push_raw(jentry1, item1);
+                    }
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry1 = JEntry::make_container_jentry(value1.len());
+            if item_map.contains_key(&(jentry1.clone(), value1)) {
+                builder.push_raw(jentry1, value1);
+            }
+        }
+        _ => {
+            let encoded = read_u32(value1, 4)?;
+            let jentry1 = JEntry::decode_jentry(encoded);
+            if item_map.contains_key(&(jentry1.clone(), &value1[8..])) {
+                builder.push_raw(jentry1, &value1[8..]);
+            }
+        }
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Return a JSONB Array that contains the elements from one input JSONB Array
+/// that are not in another input JSONB Array.
+pub fn array_except(value1: &[u8], value2: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value1) {
+        let value1 = parse_value(value1)?;
+        let mut val_buf1 = Vec::new();
+        value1.write_to_vec(&mut val_buf1);
+        if !is_jsonb(value2) {
+            let value2 = parse_value(value2)?;
+            let mut val_buf2 = Vec::new();
+            value2.write_to_vec(&mut val_buf2);
+            return array_except_jsonb(&val_buf1, &val_buf2, buf);
+        }
+        return array_except_jsonb(&val_buf1, value2, buf);
+    }
+    array_except_jsonb(value1, value2, buf)
+}
+
+fn array_except_jsonb(value1: &[u8], value2: &[u8], buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header1 = read_u32(value1, 0)?;
+    let header2 = read_u32(value2, 0)?;
+
+    let mut item_map = BTreeMap::new();
+    match header2 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry2, item2) in iterate_array(value2, header2) {
+                if let Some(cnt) = item_map.get_mut(&(jentry2.clone(), item2)) {
+                    *cnt += 1;
+                } else {
+                    item_map.insert((jentry2, item2), 1);
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry2 = JEntry::make_container_jentry(value2.len());
+            item_map.insert((jentry2, value2), 1);
+        }
+        _ => {
+            let encoded = read_u32(value2, 4)?;
+            let jentry2 = JEntry::decode_jentry(encoded);
+            item_map.insert((jentry2, &value2[8..]), 1);
+        }
+    }
+
+    let mut builder = ArrayBuilder::new(0);
+    match header1 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry1, item1) in iterate_array(value1, header1) {
+                if let Some(cnt) = item_map.get_mut(&(jentry1.clone(), item1)) {
+                    if *cnt > 0 {
+                        *cnt -= 1;
+                        continue;
+                    }
+                }
+                builder.push_raw(jentry1, item1);
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry1 = JEntry::make_container_jentry(value1.len());
+            if !item_map.contains_key(&(jentry1.clone(), value1)) {
+                builder.push_raw(jentry1, value1);
+            }
+        }
+        _ => {
+            let encoded = read_u32(value1, 4)?;
+            let jentry1 = JEntry::decode_jentry(encoded);
+            if !item_map.contains_key(&(jentry1.clone(), &value1[8..])) {
+                builder.push_raw(jentry1, &value1[8..]);
+            }
+        }
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Compares whether two JSONB Arrays have at least one element in common.
+/// Return TRUE if there is at least one element in common; otherwise return FALSE.
+pub fn array_overlap(value1: &[u8], value2: &[u8]) -> Result<bool, Error> {
+    if !is_jsonb(value1) {
+        let value1 = parse_value(value1)?;
+        let mut val_buf1 = Vec::new();
+        value1.write_to_vec(&mut val_buf1);
+        if !is_jsonb(value2) {
+            let value2 = parse_value(value2)?;
+            let mut val_buf2 = Vec::new();
+            value2.write_to_vec(&mut val_buf2);
+            return array_overlap_jsonb(&val_buf1, &val_buf2);
+        }
+        return array_overlap_jsonb(&val_buf1, value2);
+    }
+    array_overlap_jsonb(value1, value2)
+}
+
+fn array_overlap_jsonb(value1: &[u8], value2: &[u8]) -> Result<bool, Error> {
+    let header1 = read_u32(value1, 0)?;
+    let header2 = read_u32(value2, 0)?;
+
+    let mut item_set = BTreeSet::new();
+    match header2 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry2, item2) in iterate_array(value2, header2) {
+                if !item_set.contains(&(jentry2.clone(), item2)) {
+                    item_set.insert((jentry2, item2));
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry2 = JEntry::make_container_jentry(value2.len());
+            item_set.insert((jentry2, value2));
+        }
+        _ => {
+            let encoded = read_u32(value2, 4)?;
+            let jentry2 = JEntry::decode_jentry(encoded);
+            item_set.insert((jentry2, &value2[8..]));
+        }
+    }
+
+    match header1 & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG => {
+            for (jentry1, item1) in iterate_array(value1, header1) {
+                if item_set.contains(&(jentry1, item1)) {
+                    return Ok(true);
+                }
+            }
+        }
+        OBJECT_CONTAINER_TAG => {
+            let jentry1 = JEntry::make_container_jentry(value1.len());
+            if item_set.contains(&(jentry1, value1)) {
+                return Ok(true);
+            }
+        }
+        _ => {
+            let encoded = read_u32(value1, 4)?;
+            let jentry1 = JEntry::decode_jentry(encoded);
+            if item_set.contains(&(jentry1, &value1[8..])) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Insert a new value into a JSONB object value by the new key and new value.
+pub fn object_insert(
+    value: &[u8],
+    new_key: &str,
+    new_value: &[u8],
+    update_flag: bool,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        if !is_jsonb(new_value) {
+            let new_value = parse_value(new_value)?;
+            let mut new_val_buf = Vec::new();
+            new_value.write_to_vec(&mut new_val_buf);
+            return object_insert_jsonb(&val_buf, new_key, &new_val_buf, update_flag, buf);
+        }
+        return object_insert_jsonb(&val_buf, new_key, new_value, update_flag, buf);
+    }
+    object_insert_jsonb(value, new_key, new_value, update_flag, buf)
+}
+
+fn object_insert_jsonb(
+    value: &[u8],
+    new_key: &str,
+    new_value: &[u8],
+    update_flag: bool,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut idx = 0;
+    let mut duplicate_key = false;
+    for (i, obj_key) in iteate_object_keys(value, header).enumerate() {
+        if new_key.eq(obj_key) {
+            if !update_flag {
+                return Err(Error::ObjectDuplicateKey);
+            }
+            idx = i;
+            duplicate_key = true;
+            break;
+        } else if new_key > obj_key {
+            idx = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut builder = ObjectBuilder::new();
+    let mut obj_iter = iterate_object_entries(value, header);
+    for _ in 0..idx {
+        if let Some((key, jentry, item)) = obj_iter.next() {
+            builder.push_raw(key, jentry, item);
+        }
+    }
+    // insert new key and value
+    let new_header = read_u32(new_value, 0)?;
+    match new_header & CONTAINER_HEADER_TYPE_MASK {
+        ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
+            let new_jentry = JEntry::make_container_jentry(new_value.len());
+            builder.push_raw(new_key, new_jentry, new_value);
+        }
+        _ => {
+            let encoded = read_u32(new_value, 4)?;
+            let new_jentry = JEntry::decode_jentry(encoded);
+            builder.push_raw(new_key, new_jentry, &new_value[8..]);
+        }
+    }
+    // if the key is duplicated, ignore the original key and value.
+    if duplicate_key {
+        let _ = obj_iter.next();
+    }
+    for (key, jentry, item) in obj_iter {
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Delete keys and values from a JSONB object value by keys.
+pub fn object_delete(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        return object_delete_jsonb(&val_buf, keys, buf);
+    }
+    object_delete_jsonb(value, keys, buf)
+}
+
+fn object_delete_jsonb(
+    value: &[u8],
+    keys: &BTreeSet<&str>,
+    buf: &mut Vec<u8>,
+) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut builder = ObjectBuilder::new();
+    for (key, jentry, item) in iterate_object_entries(value, header) {
+        if keys.contains(key) {
+            continue;
+        }
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
+    Ok(())
+}
+
+/// Pick keys and values from a JSONB object value by keys.
+pub fn object_pick(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    if !is_jsonb(value) {
+        let value = parse_value(value)?;
+        let mut val_buf = Vec::new();
+        value.write_to_vec(&mut val_buf);
+        return object_pick_jsonb(&val_buf, keys, buf);
+    }
+    object_pick_jsonb(value, keys, buf)
+}
+
+fn object_pick_jsonb(value: &[u8], keys: &BTreeSet<&str>, buf: &mut Vec<u8>) -> Result<(), Error> {
+    let header = read_u32(value, 0)?;
+    if header & CONTAINER_HEADER_TYPE_MASK != OBJECT_CONTAINER_TAG {
+        return Err(Error::InvalidObject);
+    }
+
+    let mut builder = ObjectBuilder::new();
+    for (key, jentry, item) in iterate_object_entries(value, header) {
+        if !keys.contains(key) {
+            continue;
+        }
+        builder.push_raw(key, jentry, item);
+    }
+    builder.build_into(buf);
+
     Ok(())
 }
 
@@ -2623,7 +3119,7 @@ pub fn type_of(value: &[u8]) -> Result<&'static str, Error> {
 
 // Check whether the value is `JSONB` format,
 // for compatibility with previous `JSON` string.
-fn is_jsonb(value: &[u8]) -> bool {
+pub(crate) fn is_jsonb(value: &[u8]) -> bool {
     if let Some(v) = value.first() {
         if matches!(*v, ARRAY_PREFIX | OBJECT_PREFIX | SCALAR_PREFIX) {
             return true;

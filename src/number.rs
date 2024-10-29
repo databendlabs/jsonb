@@ -94,13 +94,13 @@ impl Number {
     }
 
     #[inline]
-    pub fn decode(bytes: &[u8]) -> Number {
+    pub fn decode(bytes: &[u8]) -> Result<Number, Error> {
         let mut len = bytes.len();
         assert!(len > 0);
         len -= 1;
 
         let ty = bytes[0];
-        match ty {
+        let num = match ty {
             NUMBER_ZERO => Number::UInt64(0),
             NUMBER_NAN => Number::Float64(f64::NAN),
             NUMBER_INF => Number::Float64(f64::INFINITY),
@@ -110,18 +110,25 @@ impl Number {
                 2 => Number::Int64(i16::from_be_bytes(bytes[1..].try_into().unwrap()) as i64),
                 4 => Number::Int64(i32::from_be_bytes(bytes[1..].try_into().unwrap()) as i64),
                 8 => Number::Int64(i64::from_be_bytes(bytes[1..].try_into().unwrap())),
-                _ => unreachable!(),
+                _ => {
+                    return Err(Error::InvalidJsonbNumber);
+                }
             },
             NUMBER_UINT => match len {
                 1 => Number::UInt64(u8::from_be_bytes(bytes[1..].try_into().unwrap()) as u64),
                 2 => Number::UInt64(u16::from_be_bytes(bytes[1..].try_into().unwrap()) as u64),
                 4 => Number::UInt64(u32::from_be_bytes(bytes[1..].try_into().unwrap()) as u64),
                 8 => Number::UInt64(u64::from_be_bytes(bytes[1..].try_into().unwrap())),
-                _ => unreachable!(),
+                _ => {
+                    return Err(Error::InvalidJsonbNumber);
+                }
             },
             NUMBER_FLOAT => Number::Float64(f64::from_be_bytes(bytes[1..].try_into().unwrap())),
-            _ => unreachable!(),
-        }
+            _ => {
+                return Err(Error::InvalidJsonbNumber);
+            }
+        };
+        Ok(num)
     }
 
     pub fn as_i64(&self) -> Option<i64> {
