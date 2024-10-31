@@ -116,13 +116,15 @@ impl<'a> Decoder<'a> {
             FALSE_TAG => Ok(Value::Bool(false)),
             STRING_TAG => {
                 let offset = jentry.length as usize;
-                let s = unsafe { std::str::from_utf8_unchecked(&self.buf[..offset]) };
+                let string = &self.buf.get(..offset).ok_or(Error::InvalidUtf8)?;
+                let s = unsafe { std::str::from_utf8_unchecked(string) };
                 self.buf = &self.buf[offset..];
                 Ok(Value::String(Cow::Borrowed(s)))
             }
             NUMBER_TAG => {
                 let offset = jentry.length as usize;
-                let n = Number::decode(&self.buf[..offset])?;
+                let number = &self.buf.get(..offset).ok_or(Error::InvalidJsonbNumber)?;
+                let n = Number::decode(number)?;
                 self.buf = &self.buf[offset..];
                 Ok(Value::Number(n))
             }
