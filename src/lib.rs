@@ -80,7 +80,7 @@ mod ser;
 mod util;
 mod value;
 
-pub use de::from_slice;
+pub use de::{from_slice, parse_jsonb};
 pub use error::Error;
 #[allow(unused_imports)]
 pub use from::*;

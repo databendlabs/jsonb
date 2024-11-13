@@ -62,6 +62,11 @@ pub fn from_slice(buf: &[u8]) -> Result<Value<'_>, Error> {
     }
 }
 
+pub fn parse_jsonb(buf: &[u8]) -> Result<Value<'_>, Error> {
+    let mut decoder = Decoder::new(buf);
+    decoder.decode()
+}
+
 #[repr(transparent)]
 pub struct Decoder<'a> {
     buf: &'a [u8],
