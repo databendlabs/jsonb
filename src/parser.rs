@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        match fast_float::parse(s) {
+        match fast_float2::parse(s) {
             Ok(v) => Ok(Value::Number(Number::Float64(v))),
             Err(_) => Err(self.error(ParseErrorCode::InvalidNumberValue)),
         }
