@@ -319,6 +319,23 @@ fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
     ))(input)
 }
 
+fn unary_arith_op(input: &[u8]) -> IResult<&[u8], UnaryArithmeticOperator> {
+    alt((
+        value(UnaryArithmeticOperator::Add, char('+')),
+        value(UnaryArithmeticOperator::Subtract, char('-')),
+    ))(input)
+}
+
+fn binary_arith_op(input: &[u8]) -> IResult<&[u8], BinaryArithmeticOperator> {
+    alt((
+        value(BinaryArithmeticOperator::Add, char('+')),
+        value(BinaryArithmeticOperator::Subtract, char('-')),
+        value(BinaryArithmeticOperator::Multiply, char('*')),
+        value(BinaryArithmeticOperator::Divide, char('/')),
+        value(BinaryArithmeticOperator::Modulus, char('%')),
+    ))(input)
+}
+
 fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
     alt((
         value(PathValue::Null, tag("null")),
@@ -339,8 +356,29 @@ fn inner_expr(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
 }
 
 fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
-    // TODO, support arithmetic expressions.
     alt((
+        map(
+            tuple((
+                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                binary_arith_op,
+                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+            )),
+            |(left, op, right)| Expr::ArithmeticFunc(ArithmeticFunc::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            }),
+        ),
+        map(
+            tuple((
+                unary_arith_op,
+                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+            )),
+            |(op, operand)| Expr::ArithmeticFunc(ArithmeticFunc::Unary {
+                op,
+                operand: Box::new(operand),
+            }),
+        ),
         map(
             tuple((
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
