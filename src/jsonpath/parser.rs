@@ -363,21 +363,25 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
                 binary_arith_op,
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
             )),
-            |(left, op, right)| Expr::ArithmeticFunc(ArithmeticFunc::Binary {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            }),
+            |(left, op, right)| {
+                Expr::ArithmeticFunc(ArithmeticFunc::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            },
         ),
         map(
             tuple((
                 unary_arith_op,
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
             )),
-            |(op, operand)| Expr::ArithmeticFunc(ArithmeticFunc::Unary {
-                op,
-                operand: Box::new(operand),
-            }),
+            |(op, operand)| {
+                Expr::ArithmeticFunc(ArithmeticFunc::Unary {
+                    op,
+                    operand: Box::new(operand),
+                })
+            },
         ),
         map(
             tuple((
