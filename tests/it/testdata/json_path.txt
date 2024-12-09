@@ -37,6 +37,166 @@ JsonPath {
 
 
 ---------- Input ----------
+5 + 5
+---------- Output ---------
+5 + 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Add,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+10 - 5
+---------- Output ---------
+10 - 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Subtract,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                10,
+                            ),
+                        ),
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+10 * 5
+---------- Output ---------
+10 * 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Multiply,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                10,
+                            ),
+                        ),
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+10 / 5
+---------- Output ---------
+10 / 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Divide,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                10,
+                            ),
+                        ),
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+10 % 5
+---------- Output ---------
+10 % 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Modulus,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                10,
+                            ),
+                        ),
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
 $.store.book[*].*
 ---------- Output ---------
 $.store.book[*].*
@@ -81,6 +241,136 @@ JsonPath {
         ),
         DotField(
             "price",
+        ),
+    ],
+}
+
+
+---------- Input ----------
++$.store.book[0].price
+---------- Output ---------
++$.store.book[0].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Unary {
+                    op: Add,
+                    operand: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "store",
+                            ),
+                            DotField(
+                                "book",
+                            ),
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            DotField(
+                                "price",
+                            ),
+                        ],
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+-$.store.book[0].price
+---------- Output ---------
+-$.store.book[0].price
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Unary {
+                    op: Subtract,
+                    operand: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "store",
+                            ),
+                            DotField(
+                                "book",
+                            ),
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            DotField(
+                                "price",
+                            ),
+                        ],
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.store.book[0].price + 5
+---------- Output ---------
+$.store.book[0].price + 5
+---------- AST ------------
+JsonPath {
+    paths: [
+        Predicate(
+            ArithmeticFunc(
+                Binary {
+                    op: Add,
+                    left: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "store",
+                            ),
+                            DotField(
+                                "book",
+                            ),
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            DotField(
+                                "price",
+                            ),
+                        ],
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                5,
+                            ),
+                        ),
+                    ),
+                },
+            ),
         ),
     ],
 }
