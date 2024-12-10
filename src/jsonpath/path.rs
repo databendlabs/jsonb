@@ -62,6 +62,8 @@ pub enum Path<'a> {
     /// There can be more than one index, e.g. `$[0, last-1 to last, 5]` represents the first,
     /// the last two, and the sixth element in an Array.
     ArrayIndices(Vec<ArrayIndex>),
+    /// `<expression>` standalone unary or binary arithmetic expression, like '-$.a[*]' or '$.a + 3'
+    ArithmeticExpr(Box<Expr<'a>>),
     /// `?(<expression>)` represents selecting all elements in an object or array that match the filter expression, like `$.book[?(@.price < 10)]`.
     FilterExpr(Box<Expr<'a>>),
     /// `<expression>` standalone filter expression, like `$.book[*].price > 10`.
@@ -120,6 +122,41 @@ pub enum BinaryOperator {
     Gte,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnaryArithmeticOperator {
+    /// `Add` represents unary arithmetic + operation.
+    Add,
+    /// `Subtract` represents unary arithmetic - operation.
+    Subtract,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinaryArithmeticOperator {
+    /// `Add` represents binary arithmetic + operation.
+    Add,
+    /// `Subtract` represents binary arithmetic - operation.
+    Subtract,
+    /// `Multiply` represents binary arithmetic * operation.
+    Multiply,
+    /// `Divide` represents binary arithmetic / operation.
+    Divide,
+    /// `Modulus` represents binary arithmetic % operation.
+    Modulus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArithmeticFunc<'a> {
+    Unary {
+        op: UnaryArithmeticOperator,
+        operand: Box<Expr<'a>>,
+    },
+    Binary {
+        op: BinaryArithmeticOperator,
+        left: Box<Expr<'a>>,
+        right: Box<Expr<'a>>,
+    },
+}
+
 /// Represents a filter expression used to filter Array or Object.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr<'a> {
@@ -133,6 +170,8 @@ pub enum Expr<'a> {
         left: Box<Expr<'a>>,
         right: Box<Expr<'a>>,
     },
+    /// Arithmetic expression that performs an arithmetic operation, returns a number value.
+    ArithmeticFunc(ArithmeticFunc<'a>),
     /// Filter function, returns a boolean value.
     FilterFunc(FilterFunc<'a>),
 }
@@ -223,6 +262,9 @@ impl<'a> Display for Path<'a> {
                 }
                 write!(f, "]")?;
             }
+            Path::ArithmeticExpr(expr) => {
+                write!(f, "?({expr})")?;
+            }
             Path::FilterExpr(expr) => {
                 write!(f, "?({expr})")?;
             }
@@ -288,6 +330,29 @@ impl Display for BinaryOperator {
     }
 }
 
+impl Display for UnaryArithmeticOperator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            UnaryArithmeticOperator::Add => "+",
+            UnaryArithmeticOperator::Subtract => "-",
+        };
+        write!(f, "{}", symbol)
+    }
+}
+
+impl Display for BinaryArithmeticOperator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            BinaryArithmeticOperator::Add => "+",
+            BinaryArithmeticOperator::Subtract => "-",
+            BinaryArithmeticOperator::Multiply => "*",
+            BinaryArithmeticOperator::Divide => "/",
+            BinaryArithmeticOperator::Modulus => "%",
+        };
+        write!(f, "{}", symbol)
+    }
+}
+
 impl<'a> Display for Expr<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -320,6 +385,14 @@ impl<'a> Display for Expr<'a> {
                     write!(f, "{right}")?;
                 }
             }
+            Expr::ArithmeticFunc(expr) => match expr {
+                ArithmeticFunc::Unary { op, operand } => {
+                    write!(f, "{}{}", op, operand)?;
+                }
+                ArithmeticFunc::Binary { op, left, right } => {
+                    write!(f, "{} {} {}", left, op, right)?;
+                }
+            },
             Expr::FilterFunc(func) => match func {
                 FilterFunc::Exists(paths) => {
                     f.write_str("exists(")?;
