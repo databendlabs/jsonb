@@ -180,6 +180,7 @@ pub enum Expr<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterFunc<'a> {
     Exists(Vec<Path<'a>>),
+    StartsWith(Cow<'a, str>),
 }
 
 impl<'a> Display for JsonPath<'a> {
@@ -400,6 +401,10 @@ impl<'a> Display for Expr<'a> {
                         write!(f, "{path}")?;
                     }
                     f.write_str(")")?;
+                }
+                FilterFunc::StartsWith(paths) => {
+                    f.write_str("starts with ")?;
+                    write!(f, "{paths}")?;
                 }
             },
         }
