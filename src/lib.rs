@@ -73,17 +73,20 @@ mod iterator;
 mod jentry;
 pub mod jsonpath;
 pub mod keypath;
+mod lazy_value;
 mod number;
 mod parser;
 mod ser;
 mod util;
 mod value;
 
-pub use de::from_slice;
+pub use de::{from_slice, parse_jsonb};
 pub use error::Error;
 #[allow(unused_imports)]
 pub use from::*;
 pub use functions::*;
+pub use lazy_value::*;
 pub use number::Number;
+pub use parser::parse_lazy_value;
 pub use parser::parse_value;
 pub use value::*;

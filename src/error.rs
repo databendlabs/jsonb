@@ -79,12 +79,15 @@ pub enum Error {
     InvalidJsonb,
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
+    InvalidJsonbNumber,
 
     InvalidJsonPath,
     InvalidJsonPathPredicate,
     InvalidKeyPath,
 
     InvalidJsonType,
+    InvalidObject,
+    ObjectDuplicateKey,
 
     Syntax(ParseErrorCode, usize),
 }
@@ -107,5 +110,11 @@ impl From<std::io::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(_error: std::str::Utf8Error) -> Self {
         Error::InvalidUtf8
+    }
+}
+
+impl From<nom::Err<nom::error::Error<&[u8]>>> for Error {
+    fn from(_error: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+        Error::InvalidJsonb
     }
 }

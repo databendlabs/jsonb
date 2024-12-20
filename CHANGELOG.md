@@ -1,38 +1,71 @@
+## [v0.4.4] - 2024-11-16
+
+### Fixed
+
+- Fix: panic when facing corrupted jsonb (#67)
+
+### Added
+
+- Bump fast-float2 v0.2.3  (#69)
+- Feat: add a function to parse jsonb only (#66)
+- Feat: support `object_delete` and `object_pick` function (#65)
+- Feat: support `object_insert` function (#64)
+- Feat: Support json array functions (#62)
+- Feat: add lazy value (#61)
+
+## [v0.4.3] - 2024-09-30
+
+### Fixed
+
+- Fix: Fix compare object value with different length panic (#59)
+
+## [v0.4.2] - 2024-09-19
+
+### Added
+
+- Feat: make `preserve_order` a default feature (#56)
+
+## [v0.4.1] - 2024-07-18
+
+### Fixed
+
+- Fix: Fix jsonpath selector unwrap panic. (#53)
+
 ## [v0.4.0] - 2024-05-17
 
 ### Fixed
 
-Fix: Fix get by keypath with null value. (#47)
-Fix: Handle invalid jsonb value to avoid panic in functions. (#46)
-Fix: Fix builder & concat container jentry len. (#43) 
+- Fix: Fix get by keypath with null value. (#47)
+- Fix: Handle invalid jsonb value to avoid panic in functions. (#46)
+- Fix: Fix builder & concat container jentry len. (#43)
 
 ### Added
 
-Feat: Support convert jsonb value to `serde_json` value. (#49) 
-Feat: Add `exists` filter expression. (48)` 
-Feat: Add `delete_by_keypath`. (#45)
-Feat: Add `delete_by_index` & `delete_by_name`. (#44)
-Feat: Add `concat` & improve `strip_nulls`. (#42)
-Feat: Add jsonpath predicate support. (#41) 
-Feat: Add `contains` api. (#40) 
-Feat: Add `exists_any_keys` & `exists_all_keys`. (#38) 
-Feat: Support parse key paths. (#37)
-Feat: Add `get_by_keypath`. (#36)
+- Feat: Support convert jsonb value to `serde_json` value. (#49)
+- Feat: Add `exists` filter expression. (48)`
+- Feat: Add `delete_by_keypath`. (#45)
+- Feat: Add `delete_by_index` & `delete_by_name`. (#44)
+- Feat: Add `concat` & improve `strip_nulls`. (#42)
+- Feat: Add jsonpath predicate support. (#41)
+- Feat: Add `contains` api. (#40)
+- Feat: Add `exists_any_keys` & `exists_all_keys`. (#38)
+- Feat: Support parse key paths. (#37)
+- Feat: Add `get_by_keypath`. (#36)
 
 ## [v0.3.0] - 2023-10-13
 
 ### Added
 
-Docs: Add more jsonb encoding format descriptions. (#34)
-Feat: Support `object_each` api. (#33)
-Feat: Support `path_exists` api. (#32)
-Feat: Support `type_of` api. (#31)
-Feat: Support `strip_nulls` api. (#30)
-Perf: Add benches for parser and `get_path`. (#29)
-Chore: Add check fmt and clippy. (#27)
-Feat: Support `to_pretty_string` api. (#26)
-Feat: Support `traverse_check_string` function. (#25)
-Feat: Improve json path selector using less memory. (#24)
+- Docs: Add more jsonb encoding format descriptions. (#34)
+- Feat: Support `object_each` api. (#33)
+- Feat: Support `path_exists` api. (#32)
+- Feat: Support `type_of` api. (#31)
+- Feat: Support `strip_nulls` api. (#30)
+- Perf: Add benches for parser and `get_path`. (#29)
+- Chore: Add check fmt and clippy. (#27)
+- Feat: Support `to_pretty_string` api. (#26)
+- Feat: Support `traverse_check_string` function. (#25)
+- Feat: Improve json path selector using less memory. (#24)
 
 ## [v0.2.3] - 2023-07-10
 
@@ -81,8 +114,14 @@ Feat: Improve json path selector using less memory. (#24)
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
-
-[v0.2.2]: https://github.com/datafuselabs/jsonb/compare/v0.2.1...v0.2.2
-[v0.2.1]: https://github.com/datafuselabs/jsonb/compare/v0.2.0...v0.2.1
-[v0.2.0]: https://github.com/datafuselabs/jsonb/compare/v0.1.1...v0.2.0
-[v0.1.1]: https://github.com/datafuselabs/jsonb/compare/v0.1.0...v0.1.1
+[v0.4.4]: https://github.com/databendlabs/jsonb/compare/v0.4.3...v0.4.4
+[v0.4.3]: https://github.com/databendlabs/jsonb/compare/v0.4.2...v0.4.3
+[v0.4.2]: https://github.com/databendlabs/jsonb/compare/v0.4.1...v0.4.2
+[v0.4.1]: https://github.com/databendlabs/jsonb/compare/v0.4.0...v0.4.1
+[v0.4.0]: https://github.com/databendlabs/jsonb/compare/v0.3.0...v0.4.0
+[v0.3.0]: https://github.com/databendlabs/jsonb/compare/v0.2.3...v0.3.0
+[v0.2.3]: https://github.com/databendlabs/jsonb/compare/v0.2.2...v0.2.3
+[v0.2.2]: https://github.com/databendlabs/jsonb/compare/v0.2.1...v0.2.2
+[v0.2.1]: https://github.com/databendlabs/jsonb/compare/v0.2.0...v0.2.1
+[v0.2.0]: https://github.com/databendlabs/jsonb/compare/v0.1.1...v0.2.0
+[v0.1.1]: https://github.com/databendlabs/jsonb/compare/v0.1.0...v0.1.1

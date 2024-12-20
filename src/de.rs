@@ -40,19 +40,19 @@ use super::value::Value;
 /// `Number`, `String` and `Container`. They have three different decode methods.
 /// 1. `Null`, `True` and `False` can be obtained by `JEntry`, no extra work required.
 /// 2. `Number` and `String` has related `RawData`, `JEntry` store the length
-/// or offset of this data, the `Value` can be read out and then decoded.
+///    or offset of this data, the `Value` can be read out and then decoded.
 /// 3. `Container` is actually a nested `Array` or `Object` with the same structure,
-/// `JEntry` store the length or offset of the lower-level `Header`,
-/// from where the same decode process can begin.
-
-/// `RawData` is the encoded `Value`.
-/// `Number` is a variable-length `Decimal`, store both int and float value.
-/// `String` is the original string, can be borrowed directly without extra decode.
-/// `Array` and `Object` is a lower-level encoded `JSONB` value.
-/// The upper-level doesn't care about the specific content.
-/// Decode can be executed recursively.
-
-/// Decode `JSONB` Value from binary bytes.
+///    `JEntry` store the length or offset of the lower-level `Header`,
+///    from where the same decode process can begin.
+///
+///    `RawData` is the encoded `Value`.
+///    `Number` is a variable-length `Decimal`, store both int and float value.
+///    `String` is the original string, can be borrowed directly without extra decode.
+///    `Array` and `Object` is a lower-level encoded `JSONB` value.
+///    The upper-level doesn't care about the specific content.
+///    Decode can be executed recursively.
+///
+///    Decode `JSONB` Value from binary bytes.
 pub fn from_slice(buf: &[u8]) -> Result<Value<'_>, Error> {
     let mut decoder = Decoder::new(buf);
     match decoder.decode() {
@@ -60,6 +60,11 @@ pub fn from_slice(buf: &[u8]) -> Result<Value<'_>, Error> {
         // for compatible with the first version of `JSON` text, parse it again
         Err(_) => parse_value(buf),
     }
+}
+
+pub fn parse_jsonb(buf: &[u8]) -> Result<Value<'_>, Error> {
+    let mut decoder = Decoder::new(buf);
+    decoder.decode()
 }
 
 #[repr(transparent)]
@@ -111,13 +116,15 @@ impl<'a> Decoder<'a> {
             FALSE_TAG => Ok(Value::Bool(false)),
             STRING_TAG => {
                 let offset = jentry.length as usize;
-                let s = unsafe { std::str::from_utf8_unchecked(&self.buf[..offset]) };
+                let string = &self.buf.get(..offset).ok_or(Error::InvalidUtf8)?;
+                let s = unsafe { std::str::from_utf8_unchecked(string) };
                 self.buf = &self.buf[offset..];
                 Ok(Value::String(Cow::Borrowed(s)))
             }
             NUMBER_TAG => {
                 let offset = jentry.length as usize;
-                let n = Number::decode(&self.buf[..offset]);
+                let number = &self.buf.get(..offset).ok_or(Error::InvalidJsonbNumber)?;
+                let n = Number::decode(number)?;
                 self.buf = &self.buf[offset..];
                 Ok(Value::Number(n))
             }
