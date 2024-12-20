@@ -30,6 +30,8 @@ use crate::jsonpath::Path;
 use crate::jsonpath::PathValue;
 use crate::number::Number;
 use crate::Error;
+use crate::OwnedJsonb;
+use crate::RawJsonb;
 
 use nom::{
     bytes::complete::take, combinator::map, multi::count, number::complete::be_u32, IResult,
@@ -65,47 +67,42 @@ pub enum Mode {
 }
 
 pub struct Selector<'a> {
-    json_path: JsonPath<'a>,
+    json_path: &'a JsonPath<'a>,
     mode: Mode,
 }
 
 impl<'a> Selector<'a> {
-    pub fn new(json_path: JsonPath<'a>, mode: Mode) -> Self {
+    pub fn new(json_path: &'a JsonPath<'a>, mode: Mode) -> Self {
         Self { json_path, mode }
     }
 
-    pub fn select(
-        &'a self,
-        root: &'a [u8],
-        data: &mut Vec<u8>,
-        offsets: &mut Vec<u64>,
-    ) -> Result<(), Error> {
+    pub fn select(&'a self, root: &'a RawJsonb) -> Result<Vec<OwnedJsonb>, Error> {
         let mut poses = self.find_positions(root, None, &self.json_path.paths)?;
 
         if self.json_path.is_predicate() {
-            Self::build_predicate_result(&mut poses, data)?;
-            return Ok(());
+            let owned_jsonbs = Self::build_predicate_result(&mut poses)?;
+            return Ok(owned_jsonbs);
         }
 
-        match self.mode {
-            Mode::All => Self::build_values(root, &mut poses, data, offsets)?,
+        let owned_jsonbs = match self.mode {
+            Mode::All => Self::build_values(root, &mut poses)?,
             Mode::First => {
                 poses.truncate(1);
-                Self::build_values(root, &mut poses, data, offsets)?
+                Self::build_values(root, &mut poses)?
             }
-            Mode::Array => Self::build_scalar_array(root, &mut poses, data, offsets)?,
+            Mode::Array => Self::build_scalar_array(root, &mut poses)?,
             Mode::Mixed => {
                 if poses.len() > 1 {
-                    Self::build_scalar_array(root, &mut poses, data, offsets)?
+                    Self::build_scalar_array(root, &mut poses)?
                 } else {
-                    Self::build_values(root, &mut poses, data, offsets)?
+                    Self::build_values(root, &mut poses)?
                 }
             }
-        }
-        Ok(())
+        };
+        Ok(owned_jsonbs)
     }
 
-    pub fn exists(&'a self, root: &'a [u8]) -> Result<bool, Error> {
+    pub fn exists(&'a self, root: &'a RawJsonb) -> Result<bool, Error> {
         if self.json_path.is_predicate() {
             return Ok(true);
         }
@@ -113,7 +110,7 @@ impl<'a> Selector<'a> {
         Ok(!poses.is_empty())
     }
 
-    pub fn predicate_match(&'a self, root: &'a [u8]) -> Result<bool, Error> {
+    pub fn predicate_match(&'a self, root: &'a RawJsonb) -> Result<bool, Error> {
         if !self.json_path.is_predicate() {
             return Err(Error::InvalidJsonPathPredicate);
         }
@@ -123,7 +120,7 @@ impl<'a> Selector<'a> {
 
     fn find_positions(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         current: Option<&Position>,
         paths: &[Path<'a>],
     ) -> Result<VecDeque<Position>, Error> {
@@ -175,7 +172,7 @@ impl<'a> Selector<'a> {
 
     fn select_path(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         offset: usize,
         length: usize,
         path: &Path<'a>,
@@ -202,11 +199,11 @@ impl<'a> Selector<'a> {
     // select all values in an Object.
     fn select_object_values(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         root_offset: usize,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -231,12 +228,12 @@ impl<'a> Selector<'a> {
     // select all values in an Array.
     fn select_array_values(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         root_offset: usize,
         root_length: usize,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG {
             // In lax mode, bracket wildcard allow Scalar value.
             poses.push_back(Position::Container((root_offset, root_length)));
@@ -259,12 +256,12 @@ impl<'a> Selector<'a> {
     // select value in an Object by key name.
     fn select_by_name(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         root_offset: usize,
         name: &str,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -278,7 +275,7 @@ impl<'a> Selector<'a> {
                 offset += jlength;
                 continue;
             }
-            let (_, key) = decode_string(&root[offset..], *jlength)?;
+            let (_, key) = decode_string(&root.0[offset..], *jlength)?;
             if name == unsafe { std::str::from_utf8_unchecked(key) } {
                 found = true;
                 idx = i;
@@ -307,12 +304,12 @@ impl<'a> Selector<'a> {
     // select values in an Array by indices.
     fn select_by_indices(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         root_offset: usize,
         indices: &Vec<ArrayIndex>,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -354,50 +351,47 @@ impl<'a> Selector<'a> {
         Ok(())
     }
 
-    fn build_predicate_result(
-        poses: &mut VecDeque<Position>,
-        data: &mut Vec<u8>,
-    ) -> Result<(), Error> {
+    fn build_predicate_result(poses: &mut VecDeque<Position>) -> Result<Vec<OwnedJsonb>, Error> {
         let jentry = match poses.pop_front() {
             Some(_) => TRUE_TAG,
             None => FALSE_TAG,
         };
+        let mut data = Vec::with_capacity(8);
         data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
         data.write_u32::<BigEndian>(jentry)?;
-        Ok(())
+        Ok(vec![OwnedJsonb::new(data)])
     }
 
     fn build_values(
-        root: &'a [u8],
+        root: &'a RawJsonb,
         poses: &mut VecDeque<Position>,
-        data: &mut Vec<u8>,
-        offsets: &mut Vec<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OwnedJsonb>, Error> {
+        let mut owned_jsonbs = Vec::with_capacity(poses.len());
         while let Some(pos) = poses.pop_front() {
+            let mut data = Vec::new();
             match pos {
                 Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root[offset..offset + length]);
+                    data.extend_from_slice(&root.0[offset..offset + length]);
                 }
                 Position::Scalar((ty, offset, length)) => {
                     data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
                     let jentry = ty | length as u32;
                     data.write_u32::<BigEndian>(jentry)?;
                     if length > 0 {
-                        data.extend_from_slice(&root[offset..offset + length]);
+                        data.extend_from_slice(&root.0[offset..offset + length]);
                     }
                 }
             }
-            offsets.push(data.len() as u64);
+            owned_jsonbs.push(OwnedJsonb::new(data));
         }
-        Ok(())
+        Ok(owned_jsonbs)
     }
 
     fn build_scalar_array(
-        root: &'a [u8],
+        root: &'a RawJsonb,
         poses: &mut VecDeque<Position>,
-        data: &mut Vec<u8>,
-        offsets: &mut Vec<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<OwnedJsonb>, Error> {
+        let mut data = Vec::new();
         let len = poses.len();
         let header = ARRAY_CONTAINER_TAG | len as u32;
         // write header.
@@ -408,12 +402,12 @@ impl<'a> Selector<'a> {
         while let Some(pos) = poses.pop_front() {
             let jentry = match pos {
                 Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root[offset..offset + length]);
+                    data.extend_from_slice(&root.0[offset..offset + length]);
                     CONTAINER_TAG | length as u32
                 }
                 Position::Scalar((ty, offset, length)) => {
                     if length > 0 {
-                        data.extend_from_slice(&root[offset..offset + length]);
+                        data.extend_from_slice(&root.0[offset..offset + length]);
                     }
                     ty | length as u32
                 }
@@ -423,8 +417,7 @@ impl<'a> Selector<'a> {
             }
             jentry_offset += 4;
         }
-        offsets.push(data.len() as u64);
-        Ok(())
+        Ok(vec![OwnedJsonb::new(data)])
     }
 
     // check and convert index to Array index.
@@ -465,7 +458,7 @@ impl<'a> Selector<'a> {
 
     fn filter_expr(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         pos: &Position,
         expr: &Expr<'a>,
     ) -> Result<bool, Error> {
@@ -498,7 +491,7 @@ impl<'a> Selector<'a> {
 
     fn eval_exists(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         pos: &Position,
         paths: &[Path<'a>],
     ) -> Result<bool, Error> {
@@ -509,7 +502,7 @@ impl<'a> Selector<'a> {
 
     fn eval_starts_with(
         &'a self,
-        _root: &'a [u8],
+        _root: &'a RawJsonb,
         _pos: &Position,
         _prefix: &str,
     ) -> Result<bool, Error> {
@@ -519,7 +512,7 @@ impl<'a> Selector<'a> {
 
     fn convert_expr_val(
         &'a self,
-        root: &'a [u8],
+        root: &'a RawJsonb,
         pos: &Position,
         expr: Expr<'a>,
     ) -> Result<ExprValue<'a>, Error> {
@@ -567,11 +560,11 @@ impl<'a> Selector<'a> {
                             TRUE_TAG => PathValue::Boolean(true),
                             FALSE_TAG => PathValue::Boolean(false),
                             NUMBER_TAG => {
-                                let n = Number::decode(&root[offset..offset + length])?;
+                                let n = Number::decode(&root.0[offset..offset + length])?;
                                 PathValue::Number(n)
                             }
                             STRING_TAG => {
-                                let v = &root[offset..offset + length];
+                                let v = &root.0[offset..offset + length];
                                 PathValue::String(Cow::Owned(unsafe {
                                     String::from_utf8_unchecked(v.to_vec())
                                 }))

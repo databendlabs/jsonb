@@ -23,13 +23,15 @@ fn jsonb_get(data: &[u8], paths: &[&str], expected: &str) {
         .map(|p| jsonb::jsonpath::Path::DotField(std::borrow::Cow::Borrowed(p)))
         .collect::<Vec<_>>();
     let json_path = jsonb::jsonpath::JsonPath { paths };
+    let mode = jsonb::jsonpath::Mode::Mixed;
 
-    let mut result_data = vec![];
-    let mut result_offsets = vec![];
+    let raw_jsonb = jsonb::RawJsonb::new(data);
+    let result_jsonb = raw_jsonb.get_by_path_opt(&json_path, mode).unwrap();
+    assert!(result_jsonb.is_some());
+    let result_jsonb = result_jsonb.unwrap();
+    let result_raw_jsonb = result_jsonb.as_raw();
 
-    jsonb::get_by_path(data, json_path, &mut result_data, &mut result_offsets).unwrap();
-
-    let s = jsonb::as_str(&result_data).unwrap();
+    let s = result_raw_jsonb.as_str().unwrap().unwrap();
     assert_eq!(s, expected);
 }
 
