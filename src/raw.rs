@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawJsonb<'a>(pub &'a [u8]);
 
 impl<'a> RawJsonb<'a> {
@@ -31,7 +31,7 @@ impl<'a> From<&'a [u8]> for RawJsonb<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for RawJsonb<'a> {
+impl AsRef<[u8]> for RawJsonb<'_> {
     fn as_ref(&self) -> &[u8] {
         self.0
     }

@@ -25,7 +25,7 @@ pub struct JsonPath<'a> {
     pub paths: Vec<Path<'a>>,
 }
 
-impl<'a> JsonPath<'a> {
+impl JsonPath<'_> {
     pub fn is_predicate(&self) -> bool {
         self.paths.len() == 1 && matches!(self.paths[0], Path::Predicate(_))
     }
@@ -183,7 +183,7 @@ pub enum FilterFunc<'a> {
     StartsWith(Cow<'a, str>),
 }
 
-impl<'a> Display for JsonPath<'a> {
+impl Display for JsonPath<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         for path in &self.paths {
             write!(f, "{path}")?;
@@ -229,7 +229,7 @@ impl Display for ArrayIndex {
     }
 }
 
-impl<'a> Display for Path<'a> {
+impl Display for Path<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Path::Root => {
@@ -277,7 +277,7 @@ impl<'a> Display for Path<'a> {
     }
 }
 
-impl<'a> Display for PathValue<'a> {
+impl Display for PathValue<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             PathValue::Null => {
@@ -354,7 +354,7 @@ impl Display for BinaryArithmeticOperator {
     }
 }
 
-impl<'a> Display for Expr<'a> {
+impl Display for Expr<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Paths(paths) => {

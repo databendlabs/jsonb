@@ -2588,7 +2588,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn path_exists<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool, Error> {
         let selector = Selector::new(json_path, Mode::Mixed);
-        selector.exists(self)
+        selector.exists(*self)
     }
 
     /// Checks if a JSON path matches the JSONB value using a predicate.
@@ -2630,7 +2630,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool, Error> {
         let selector = Selector::new(json_path, Mode::First);
-        selector.predicate_match(self)
+        selector.predicate_match(*self)
     }
 
     /// Extracts values from a JSONB structure using a JSONPath expression. Handles multiple matches as a Vec<OwnedJsonb>.
@@ -2692,7 +2692,7 @@ impl RawJsonb<'_> {
         mode: Mode,
     ) -> Result<Vec<OwnedJsonb>, Error> {
         let selector = Selector::new(json_path, mode);
-        selector.select(self)
+        selector.select(*self)
     }
 
     /// Extracts a value from a JSONB structure using a JSONPath expression. Handles single or first match.
@@ -2753,7 +2753,7 @@ impl RawJsonb<'_> {
         } else {
             Selector::new(json_path, mode)
         };
-        let mut owned_jsonbs = selector.select(self)?;
+        let mut owned_jsonbs = selector.select(*self)?;
         if owned_jsonbs.is_empty() {
             Ok(None)
         } else {

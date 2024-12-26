@@ -40,7 +40,7 @@ pub enum Value<'a> {
     Object(Object<'a>),
 }
 
-impl<'a> Debug for Value<'a> {
+impl Debug for Value<'_> {
     fn fmt(&self, formatter: &mut Formatter) -> std::fmt::Result {
         match *self {
             Value::Null => formatter.debug_tuple("Null").finish(),
@@ -61,7 +61,7 @@ impl<'a> Debug for Value<'a> {
     }
 }
 
-impl<'a> Display for Value<'a> {
+impl Display for Value<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Null => write!(f, "null"),

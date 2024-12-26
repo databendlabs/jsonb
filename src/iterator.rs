@@ -157,7 +157,7 @@ impl<'a> Iterator for ObjectEntryIterator<'a> {
     }
 }
 
-impl<'a> ObjectEntryIterator<'a> {
+impl ObjectEntryIterator<'_> {
     fn fill_keys(&mut self) {
         let mut keys: VecDeque<JEntry> = VecDeque::with_capacity(self.length);
         for _ in 0..self.length {

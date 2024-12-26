@@ -76,7 +76,7 @@ impl<'a> Selector<'a> {
         Self { json_path, mode }
     }
 
-    pub fn select(&'a self, root: &'a RawJsonb) -> Result<Vec<OwnedJsonb>, Error> {
+    pub fn select(&'a self, root: RawJsonb) -> Result<Vec<OwnedJsonb>, Error> {
         let mut poses = self.find_positions(root, None, &self.json_path.paths)?;
 
         if self.json_path.is_predicate() {
@@ -102,7 +102,7 @@ impl<'a> Selector<'a> {
         Ok(owned_jsonbs)
     }
 
-    pub fn exists(&'a self, root: &'a RawJsonb) -> Result<bool, Error> {
+    pub fn exists(&'a self, root: RawJsonb) -> Result<bool, Error> {
         if self.json_path.is_predicate() {
             return Ok(true);
         }
@@ -110,7 +110,7 @@ impl<'a> Selector<'a> {
         Ok(!poses.is_empty())
     }
 
-    pub fn predicate_match(&'a self, root: &'a RawJsonb) -> Result<bool, Error> {
+    pub fn predicate_match(&'a self, root: RawJsonb) -> Result<bool, Error> {
         if !self.json_path.is_predicate() {
             return Err(Error::InvalidJsonPathPredicate);
         }
@@ -120,7 +120,7 @@ impl<'a> Selector<'a> {
 
     fn find_positions(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         current: Option<&Position>,
         paths: &[Path<'a>],
     ) -> Result<VecDeque<Position>, Error> {
@@ -172,7 +172,7 @@ impl<'a> Selector<'a> {
 
     fn select_path(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         offset: usize,
         length: usize,
         path: &Path<'a>,
@@ -199,7 +199,7 @@ impl<'a> Selector<'a> {
     // select all values in an Object.
     fn select_object_values(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         root_offset: usize,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
@@ -228,7 +228,7 @@ impl<'a> Selector<'a> {
     // select all values in an Array.
     fn select_array_values(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         root_offset: usize,
         root_length: usize,
         poses: &mut VecDeque<Position>,
@@ -256,7 +256,7 @@ impl<'a> Selector<'a> {
     // select value in an Object by key name.
     fn select_by_name(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         root_offset: usize,
         name: &str,
         poses: &mut VecDeque<Position>,
@@ -304,7 +304,7 @@ impl<'a> Selector<'a> {
     // select values in an Array by indices.
     fn select_by_indices(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         root_offset: usize,
         indices: &Vec<ArrayIndex>,
         poses: &mut VecDeque<Position>,
@@ -363,7 +363,7 @@ impl<'a> Selector<'a> {
     }
 
     fn build_values(
-        root: &'a RawJsonb,
+        root: RawJsonb,
         poses: &mut VecDeque<Position>,
     ) -> Result<Vec<OwnedJsonb>, Error> {
         let mut owned_jsonbs = Vec::with_capacity(poses.len());
@@ -388,7 +388,7 @@ impl<'a> Selector<'a> {
     }
 
     fn build_scalar_array(
-        root: &'a RawJsonb,
+        root: RawJsonb,
         poses: &mut VecDeque<Position>,
     ) -> Result<Vec<OwnedJsonb>, Error> {
         let mut data = Vec::new();
@@ -458,7 +458,7 @@ impl<'a> Selector<'a> {
 
     fn filter_expr(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         pos: &Position,
         expr: &Expr<'a>,
     ) -> Result<bool, Error> {
@@ -491,7 +491,7 @@ impl<'a> Selector<'a> {
 
     fn eval_exists(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         pos: &Position,
         paths: &[Path<'a>],
     ) -> Result<bool, Error> {
@@ -502,7 +502,7 @@ impl<'a> Selector<'a> {
 
     fn eval_starts_with(
         &'a self,
-        _root: &'a RawJsonb,
+        _root: RawJsonb,
         _pos: &Position,
         _prefix: &str,
     ) -> Result<bool, Error> {
@@ -512,7 +512,7 @@ impl<'a> Selector<'a> {
 
     fn convert_expr_val(
         &'a self,
-        root: &'a RawJsonb,
+        root: RawJsonb,
         pos: &Position,
         expr: Expr<'a>,
     ) -> Result<ExprValue<'a>, Error> {

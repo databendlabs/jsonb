@@ -62,7 +62,7 @@ impl<'a> LazyValue<'a> {
         }
     }
 
-    pub fn to_value(&'a self) -> Cow<Value<'a>> {
+    pub fn to_value(&'a self) -> Cow<'a, Value<'a>> {
         match self {
             LazyValue::Value(v) => Cow::Borrowed(v),
             LazyValue::Raw(v) => Cow::Owned(crate::from_slice(v.as_ref()).unwrap()),
