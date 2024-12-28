@@ -54,7 +54,7 @@ fn test_build_array() {
     expect_value.write_to_vec(&mut expect_buf);
 
     let owned_arr = OwnedJsonb::build_array(owned_jsonbs.iter().map(|v| v.as_raw())).unwrap();
-    assert_eq!(owned_arr.0, expect_buf);
+    assert_eq!(owned_arr.as_ref(), &expect_buf);
 
     let value = from_slice(owned_arr.as_ref()).unwrap();
     assert!(value.is_array());
@@ -97,7 +97,7 @@ fn test_build_object() {
 
     let owned_obj =
         OwnedJsonb::build_object(owned_jsonbs.iter().map(|(k, v)| (k, v.as_raw()))).unwrap();
-    assert_eq!(owned_obj.0, expect_buf);
+    assert_eq!(owned_obj.as_ref(), &expect_buf);
 
     let value = from_slice(owned_obj.as_ref()).unwrap();
     assert!(value.is_object());
@@ -214,7 +214,7 @@ fn test_path_exists_expr() {
         let owned_jsonb = owned_jsonb_opt.unwrap();
         let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
 
-        assert_eq!(owned_jsonb.0, expected_buf);
+        assert_eq!(owned_jsonb.to_vec(), expected_buf);
     }
 }
 
@@ -285,9 +285,9 @@ fn test_get_by_path() {
         assert!(res.is_ok());
         let owned_jsonbs = res.unwrap();
         assert_eq!(owned_jsonbs.len(), expects.len());
-        for (owned_jsonb, expect) in owned_jsonbs.iter().zip(expects.iter()) {
+        for (owned_jsonb, expect) in owned_jsonbs.into_iter().zip(expects.iter()) {
             let expected_buf = parse_value(expect.as_bytes()).unwrap().to_vec();
-            assert_eq!(owned_jsonb.0, expected_buf);
+            assert_eq!(owned_jsonb.to_vec(), expected_buf);
         }
     }
 }
@@ -312,7 +312,7 @@ fn test_get_by_index() {
                 assert!(owned_jsonb_opt.is_some());
                 let owned_jsonb = owned_jsonb_opt.unwrap();
                 let expected_buf = expect.to_vec();
-                assert_eq!(owned_jsonb.0, expected_buf);
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
             None => assert_eq!(owned_jsonb_opt, None),
         }
@@ -348,7 +348,7 @@ fn test_get_by_name() {
                 assert!(owned_jsonb_opt.is_some());
                 let owned_jsonb = owned_jsonb_opt.unwrap();
                 let expected_buf = expect.to_vec();
-                assert_eq!(owned_jsonb.0, expected_buf);
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
             None => assert_eq!(owned_jsonb_opt, None),
         }
@@ -384,7 +384,7 @@ fn test_get_by_name_ignore_case() {
                 assert!(owned_jsonb_opt.is_some());
                 let owned_jsonb = owned_jsonb_opt.unwrap();
                 let expected_buf = expect.to_vec();
-                assert_eq!(owned_jsonb.0, expected_buf);
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
             None => assert_eq!(owned_jsonb_opt, None),
         }
@@ -422,7 +422,7 @@ fn test_object_keys() {
                 assert!(owned_jsonb_opt.is_some());
                 let owned_jsonb = owned_jsonb_opt.unwrap();
                 let expected_buf = expect.to_vec();
-                assert_eq!(owned_jsonb.0, expected_buf);
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
             None => assert_eq!(owned_jsonb_opt, None),
         }
@@ -458,11 +458,9 @@ fn test_array_values() {
                 assert!(owned_jsonb_opt.is_some());
                 let owned_jsonbs = owned_jsonb_opt.unwrap();
                 assert_eq!(owned_jsonbs.len(), expects.len());
-                for (owned_jsonb, expect) in owned_jsonbs.iter().zip(expects.iter()) {
-                    println!("owned={:?}", owned_jsonb.to_string());
-                    println!("expected={:?}", expect);
+                for (owned_jsonb, expect) in owned_jsonbs.into_iter().zip(expects.iter()) {
                     let expected_buf = expect.to_vec();
-                    assert_eq!(owned_jsonb.0, expected_buf);
+                    assert_eq!(owned_jsonb.to_vec(), expected_buf);
                 }
             }
             None => assert_eq!(owned_jsonb_opt, None),
@@ -960,10 +958,10 @@ fn test_object_each() {
             Some(expected) => {
                 assert!(owned_jsonbs_opt.is_some());
                 let owned_jsonbs = owned_jsonbs_opt.unwrap();
-                for (v, e) in owned_jsonbs.iter().zip(expected.iter()) {
+                for (v, e) in owned_jsonbs.into_iter().zip(expected.iter()) {
                     assert_eq!(v.0, e.0.to_string());
                     let expected_buf = e.1.to_vec();
-                    assert_eq!(v.1 .0, expected_buf);
+                    assert_eq!(v.1.to_vec(), expected_buf);
                 }
             }
             None => assert_eq!(owned_jsonbs_opt, None),
@@ -1014,7 +1012,7 @@ fn test_get_by_keypath() {
                 assert!(res.is_some());
                 let owned_jsonb = res.unwrap();
                 let expected_buf = e.to_vec();
-                assert_eq!(owned_jsonb.0, expected_buf);
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
             None => assert_eq!(res, None),
         }
@@ -1183,7 +1181,7 @@ fn test_concat() {
         let res_owned_jsonb = res.unwrap();
 
         let expected_owned_jsonb = expected.parse::<OwnedJsonb>().unwrap();
-        assert_eq!(res_owned_jsonb.0, expected_owned_jsonb.0);
+        assert_eq!(res_owned_jsonb.to_vec(), expected_owned_jsonb.to_vec());
     }
 }
 

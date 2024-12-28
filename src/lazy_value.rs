@@ -55,7 +55,7 @@ impl<'a> LazyValue<'a> {
         match self {
             LazyValue::Value(Value::Array(arr)) => Some(arr.len()),
             LazyValue::Raw(cow) => {
-                let raw_jsonb = RawJsonb(cow.as_ref());
+                let raw_jsonb = RawJsonb::new(cow.as_ref());
                 raw_jsonb.array_length().ok()?
             }
             _ => None,

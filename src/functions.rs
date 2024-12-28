@@ -90,16 +90,16 @@ impl OwnedJsonb {
         let mut jentries = Vec::new();
         let mut data = Vec::new();
         for value in items.into_iter() {
-            let header = read_u32(value.0, 0)?;
+            let header = read_u32(value.data, 0)?;
             let encoded_jentry = match header & CONTAINER_HEADER_TYPE_MASK {
                 SCALAR_CONTAINER_TAG => {
-                    let jentry = &value.0[4..8];
-                    data.extend_from_slice(&value.0[8..]);
+                    let jentry = &value.data[4..8];
+                    data.extend_from_slice(&value.data[8..]);
                     jentry.try_into().unwrap()
                 }
                 ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                    data.extend_from_slice(value.0);
-                    (CONTAINER_TAG | value.0.len() as u32).to_be_bytes()
+                    data.extend_from_slice(value.data);
+                    (CONTAINER_TAG | value.data.len() as u32).to_be_bytes()
                 }
                 _ => return Err(Error::InvalidJsonbHeader),
             };
@@ -116,7 +116,7 @@ impl OwnedJsonb {
             buf.extend_from_slice(&jentry);
         }
         buf.extend_from_slice(&data);
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Builds a JSONB object from a collection of key-value pairs.
@@ -176,16 +176,16 @@ impl OwnedJsonb {
             key_data.extend_from_slice(key.as_bytes());
 
             // build value jentry and write value data
-            let header = read_u32(value.0, 0)?;
+            let header = read_u32(value.data, 0)?;
             let encoded_val_jentry = match header & CONTAINER_HEADER_TYPE_MASK {
                 SCALAR_CONTAINER_TAG => {
-                    let jentry = &value.0[4..8];
-                    val_data.extend_from_slice(&value.0[8..]);
+                    let jentry = &value.data[4..8];
+                    val_data.extend_from_slice(&value.data[8..]);
                     jentry.try_into().unwrap()
                 }
                 ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                    val_data.extend_from_slice(value.0);
-                    (CONTAINER_TAG | value.0.len() as u32).to_be_bytes()
+                    val_data.extend_from_slice(value.data);
+                    (CONTAINER_TAG | value.data.len() as u32).to_be_bytes()
                 }
                 _ => return Err(Error::InvalidJsonbHeader),
             };
@@ -236,7 +236,7 @@ impl RawJsonb<'_> {
     /// assert_eq!(len, None);
     /// ```
     pub fn array_length(&self) -> Result<Option<usize>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         let len = match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => {
                 let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
@@ -292,8 +292,8 @@ impl RawJsonb<'_> {
     /// assert!(left_raw.contains(&right_raw).unwrap());
     /// ```
     pub fn contains(&self, other: &RawJsonb) -> Result<bool, Error> {
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
         Self::containter_contains(left, right)
     }
 
@@ -426,7 +426,7 @@ impl RawJsonb<'_> {
     /// assert!(keys_result.unwrap().is_none());
     /// ```
     pub fn object_keys(&self) -> Result<Option<OwnedJsonb>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             OBJECT_CONTAINER_TAG => {
                 let mut buf: Vec<u8> = Vec::new();
@@ -438,7 +438,7 @@ impl RawJsonb<'_> {
                 let mut key_offset = 8 * length + 4;
                 let mut key_offsets = Vec::with_capacity(length);
                 for _ in 0..length {
-                    let key_encoded = read_u32(self.0, jentry_offset)?;
+                    let key_encoded = read_u32(self.data, jentry_offset)?;
                     let key_jentry = JEntry::decode_jentry(key_encoded);
                     buf.extend_from_slice(&key_encoded.to_be_bytes());
 
@@ -449,11 +449,11 @@ impl RawJsonb<'_> {
                 let mut prev_key_offset = 8 * length + 4;
                 for key_offset in key_offsets {
                     if key_offset > prev_key_offset {
-                        buf.extend_from_slice(&self.0[prev_key_offset..key_offset]);
+                        buf.extend_from_slice(&self.data[prev_key_offset..key_offset]);
                     }
                     prev_key_offset = key_offset;
                 }
-                Ok(Some(OwnedJsonb(buf)))
+                Ok(Some(OwnedJsonb::new(buf)))
             }
             ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => Ok(None),
             _ => Err(Error::InvalidJsonb),
@@ -509,7 +509,7 @@ impl RawJsonb<'_> {
     /// assert!(items_result.unwrap().is_none());
     /// ```
     pub fn object_each(&self) -> Result<Option<Vec<(String, OwnedJsonb)>>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
 
         match header & CONTAINER_HEADER_TYPE_MASK {
             OBJECT_CONTAINER_TAG => {
@@ -519,7 +519,7 @@ impl RawJsonb<'_> {
                 let mut offset = 4;
 
                 for _ in 0..length * 2 {
-                    let encoded = read_u32(self.0, offset)?;
+                    let encoded = read_u32(self.data, offset)?;
                     offset += 4;
                     jentries.push_back((JEntry::decode_jentry(encoded), encoded));
                 }
@@ -528,7 +528,7 @@ impl RawJsonb<'_> {
                 for _ in 0..length {
                     let (jentry, _) = jentries.pop_front().unwrap();
                     let key_len = jentry.length as usize;
-                    let key_data = self.0[offset..offset + key_len].to_vec();
+                    let key_data = self.data[offset..offset + key_len].to_vec();
                     let key = String::from_utf8(key_data).map_err(|_| Error::InvalidJsonb)?;
                     keys.push_back(key);
                     offset += key_len;
@@ -538,8 +538,8 @@ impl RawJsonb<'_> {
                     let (jentry, encoded) = jentries.pop_front().unwrap();
                     let key = keys.pop_front().unwrap();
                     let val_length = jentry.length as usize;
-                    let val_data = extract_by_jentry(&jentry, encoded, offset, self.0);
-                    let val = OwnedJsonb(val_data);
+                    let val_data = extract_by_jentry(&jentry, encoded, offset, self.data);
+                    let val = OwnedJsonb::new(val_data);
                     offset += val_length;
                     items.push((key, val));
                 }
@@ -598,7 +598,7 @@ impl RawJsonb<'_> {
     /// assert!(values_result.unwrap().is_none());
     /// ```
     pub fn array_values(&self) -> Result<Option<Vec<OwnedJsonb>>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => {
                 let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
@@ -606,11 +606,11 @@ impl RawJsonb<'_> {
                 let mut val_offset = 4 * length + 4;
                 let mut items = Vec::with_capacity(length);
                 for _ in 0..length {
-                    let encoded = read_u32(self.0, jentry_offset)?;
+                    let encoded = read_u32(self.data, jentry_offset)?;
                     let jentry = JEntry::decode_jentry(encoded);
                     let val_length = jentry.length as usize;
-                    let item_data = extract_by_jentry(&jentry, encoded, val_offset, self.0);
-                    let item = OwnedJsonb(item_data);
+                    let item_data = extract_by_jentry(&jentry, encoded, val_offset, self.data);
+                    let item = OwnedJsonb::new(item_data);
                     items.push(item);
 
                     jentry_offset += 4;
@@ -670,7 +670,7 @@ impl RawJsonb<'_> {
     /// assert_eq!(raw_jsonb.type_of().unwrap(), "null");
     /// ```
     pub fn type_of(&self) -> Result<&'static str, Error> {
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -772,10 +772,10 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_null(&self) -> Result<Option<()>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.0, 4)?;
+                let jentry_encoded = read_u32(self.data, 4)?;
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 match jentry.type_code {
                     NULL_TAG => Ok(Some(())),
@@ -896,10 +896,10 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_bool(&self) -> Result<Option<bool>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.0, 4)?;
+                let jentry_encoded = read_u32(self.data, 4)?;
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 match jentry.type_code {
                     FALSE_TAG => Ok(Some(false)),
@@ -1115,15 +1115,15 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err()); //Decodes should return Err
     /// ```
     pub fn as_number(&self) -> Result<Option<Number>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.0, 4)?;
+                let jentry_encoded = read_u32(self.data, 4)?;
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 match jentry.type_code {
                     NUMBER_TAG => {
                         let length = jentry.length as usize;
-                        let num = Number::decode(&self.0[8..8 + length])?;
+                        let num = Number::decode(&self.data[8..8 + length])?;
                         Ok(Some(num))
                     }
                     NULL_TAG | STRING_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
@@ -1851,15 +1851,15 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_str(&self) -> Result<Option<Cow<'_, str>>, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.0, 4)?;
+                let jentry_encoded = read_u32(self.data, 4)?;
                 let jentry = JEntry::decode_jentry(jentry_encoded);
                 match jentry.type_code {
                     STRING_TAG => {
                         let length = jentry.length as usize;
-                        let s = unsafe { std::str::from_utf8_unchecked(&self.0[8..8 + length]) };
+                        let s = unsafe { std::str::from_utf8_unchecked(&self.data[8..8 + length]) };
                         Ok(Some(Cow::Borrowed(s)))
                     }
                     NULL_TAG | NUMBER_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
@@ -1991,7 +1991,7 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn is_array(&self) -> Result<bool, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => Ok(true),
             SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(false),
@@ -2051,7 +2051,7 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn is_object(&self) -> Result<bool, Error> {
-        let header = read_u32(self.0, 0)?;
+        let header = read_u32(self.data, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             OBJECT_CONTAINER_TAG => Ok(true),
             SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(false),
@@ -2103,7 +2103,7 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_serde_json(&self) -> Result<serde_json::Value, Error> {
-        let value = self.0;
+        let value = self.data;
         Self::containter_to_serde_json(value)
     }
 
@@ -2152,7 +2152,7 @@ impl RawJsonb<'_> {
     pub fn to_serde_json_object(
         &self,
     ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
-        let value = self.0;
+        let value = self.data;
         Self::containter_to_serde_json_object(value)
     }
 
@@ -2293,7 +2293,7 @@ impl RawJsonb<'_> {
     /// ```
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
-        let value = self.0;
+        let value = self.data;
         let mut json = String::with_capacity(value.len());
         if Self::container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(false)).is_err() {
             json.clear();
@@ -2348,7 +2348,7 @@ impl RawJsonb<'_> {
     /// assert_eq!(invalid_raw_jsonb.to_pretty_string(), "null"); // Fails and returns "null"
     /// ```
     pub fn to_pretty_string(&self) -> String {
-        let value = self.0;
+        let value = self.data;
         let mut json = String::with_capacity(value.len());
         if Self::container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(true)).is_err() {
             json.clear();
@@ -2803,7 +2803,7 @@ impl RawJsonb<'_> {
     /// assert!(element.is_none()); // Not an array
     /// ```
     pub fn get_by_index(&self, index: usize) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => {
@@ -2811,7 +2811,7 @@ impl RawJsonb<'_> {
                     .map(|(jentry, encoded, val_offset)| {
                         extract_by_jentry(&jentry, encoded, val_offset, value)
                     })
-                    .map(OwnedJsonb);
+                    .map(|v| OwnedJsonb::new(v));
                 Ok(val)
             }
             SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(None),
@@ -2868,7 +2868,7 @@ impl RawJsonb<'_> {
     /// assert!(value.is_none()); // Not an object
     /// ```
     pub fn get_by_name(&self, name: &str, ignore_case: bool) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             OBJECT_CONTAINER_TAG => {
@@ -2876,7 +2876,7 @@ impl RawJsonb<'_> {
                     .map(|(jentry, encoded, val_offset)| {
                         extract_by_jentry(&jentry, encoded, val_offset, value)
                     })
-                    .map(OwnedJsonb);
+                    .map(|v| OwnedJsonb::new(v));
                 Ok(val)
             }
             SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
@@ -2952,7 +2952,7 @@ impl RawJsonb<'_> {
         &self,
         keypaths: I,
     ) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.0;
+        let value = self.data;
 
         let mut curr_val_offset = 0;
         let mut curr_jentry_encoded = 0;
@@ -3001,11 +3001,11 @@ impl RawJsonb<'_> {
         }
         // If the key paths is empty, return original value.
         if curr_val_offset == 0 {
-            return Ok(Some(OwnedJsonb(value.to_vec())));
+            return Ok(Some(OwnedJsonb::new(value.to_vec())));
         }
         let val = curr_jentry.map(|jentry| {
             let val_data = extract_by_jentry(&jentry, curr_jentry_encoded, curr_val_offset, value);
-            OwnedJsonb(val_data)
+            OwnedJsonb::new(val_data)
         });
         Ok(val)
     }
@@ -3057,7 +3057,7 @@ impl RawJsonb<'_> {
     /// assert!(contains_rust);
     /// ```
     pub fn traverse_check_string(&self, func: impl Fn(&[u8]) -> bool) -> Result<bool, Error> {
-        let value = self.0;
+        let value = self.data;
         let mut offsets = VecDeque::new();
         offsets.push_back(0);
 
@@ -3145,7 +3145,7 @@ impl RawJsonb<'_> {
         &self,
         keys: I,
     ) -> Result<bool, Error> {
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         for key in keys {
@@ -3208,7 +3208,7 @@ impl RawJsonb<'_> {
         &self,
         keys: I,
     ) -> Result<bool, Error> {
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         for key in keys {
@@ -3314,8 +3314,8 @@ impl RawJsonb<'_> {
     /// ```
     pub fn concat(&self, other: &RawJsonb) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
 
         let left_header = read_u32(left, 0)?;
         let right_header = read_u32(right, 0)?;
@@ -3409,7 +3409,7 @@ impl RawJsonb<'_> {
                 return Err(Error::InvalidJsonb);
             }
         }
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Recursively reomves all object key-value pairs that have null values from a JSONB object.
@@ -3448,7 +3448,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn strip_nulls(&self) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -3465,7 +3465,7 @@ impl RawJsonb<'_> {
                 return Err(Error::InvalidJsonb);
             }
         }
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     fn strip_nulls_array(header: u32, value: &[u8]) -> Result<ArrayBuilder<'_>, Error> {
@@ -3581,7 +3581,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn delete_by_name(&self, name: &str) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -3613,7 +3613,7 @@ impl RawJsonb<'_> {
             SCALAR_CONTAINER_TAG => return Err(Error::InvalidJsonType),
             _ => return Err(Error::InvalidJsonb),
         }
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Deletes the element at the specified index from a JSONB array.
@@ -3668,7 +3668,7 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err()); // Error because input is not an array
     pub fn delete_by_index(&self, index: i32) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
 
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -3692,7 +3692,7 @@ impl RawJsonb<'_> {
             SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => return Err(Error::InvalidJsonType),
             _ => return Err(Error::InvalidJsonb),
         }
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Inserts a new element into a JSONB array at the specified position.
@@ -3757,8 +3757,8 @@ impl RawJsonb<'_> {
     /// ```
     pub fn array_insert(&self, pos: i32, new_val: RawJsonb) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
-        let new_value = new_val.0;
+        let value = self.data;
+        let new_value = new_val.data;
         let header = read_u32(value, 0)?;
         let len = match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => (header & CONTAINER_HEADER_LEN_MASK) as i32,
@@ -3826,7 +3826,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Returns a JSONB array with duplicate elements removed.
@@ -3881,7 +3881,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn array_distinct(&self) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
         let mut builder = ArrayBuilder::new(0);
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -3909,7 +3909,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Computes the intersection of two JSONB arrays or the containment check for objects and scalars.
@@ -3970,8 +3970,8 @@ impl RawJsonb<'_> {
     /// ```
     pub fn array_intersection(&self, other: RawJsonb) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
 
         let left_header = read_u32(left, 0)?;
         let right_header = read_u32(right, 0)?;
@@ -4032,7 +4032,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Computes the set difference between two JSONB arrays or checks for non-containment of objects and scalars.
@@ -4092,8 +4092,8 @@ impl RawJsonb<'_> {
     /// ```
     pub fn array_except(&self, other: RawJsonb) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
 
         let left_header = read_u32(left, 0)?;
         let right_header = read_u32(right, 0)?;
@@ -4155,7 +4155,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Checks if two JSONB arrays or a JSONB array and an object/scalar have any elements in common.
@@ -4221,8 +4221,8 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err()); // Returns an error
     /// ```
     pub fn array_overlap(&self, other: RawJsonb) -> Result<bool, Error> {
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
 
         let left_header = read_u32(left, 0)?;
         let right_header = read_u32(right, 0)?;
@@ -4342,8 +4342,8 @@ impl RawJsonb<'_> {
         update_flag: bool,
     ) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
-        let new_value = new_val.0;
+        let value = self.data;
+        let new_value = new_val.data;
 
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -4405,7 +4405,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Deletes key-value pairs from a JSONB object based on a set of keys.
@@ -4456,7 +4456,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn object_delete(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             OBJECT_CONTAINER_TAG => {}
@@ -4477,7 +4477,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Creates a new JSONB object containing only the specified keys from the original object.
@@ -4528,7 +4528,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn object_pick(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
-        let value = self.0;
+        let value = self.data;
 
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
@@ -4550,7 +4550,7 @@ impl RawJsonb<'_> {
         }
         builder.build_into(&mut buf);
 
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Deletes a value from a JSONB array or object based on a key path.
@@ -4618,7 +4618,7 @@ impl RawJsonb<'_> {
     ) -> Result<OwnedJsonb, Error> {
         let mut buf = Vec::new();
         let mut keypath: VecDeque<_> = keypath.collect();
-        let value = self.0;
+        let value = self.data;
         let header = read_u32(value, 0)?;
         match header & CONTAINER_HEADER_TYPE_MASK {
             ARRAY_CONTAINER_TAG => {
@@ -4643,7 +4643,7 @@ impl RawJsonb<'_> {
             }
             _ => return Err(Error::InvalidJsonType),
         }
-        Ok(OwnedJsonb(buf))
+        Ok(OwnedJsonb::new(buf))
     }
 
     fn delete_array_by_keypath<'a, 'b>(
@@ -4761,7 +4761,7 @@ impl RawJsonb<'_> {
     /// The compare rules are the same as the `compare` function.
     /// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
     pub fn convert_to_comparable(&self) -> Vec<u8> {
-        let value = self.0;
+        let value = self.data;
         let mut buf = Vec::new();
         let depth = 0;
         let header = read_u32(value, 0).unwrap_or_default();
@@ -4985,8 +4985,8 @@ impl Eq for RawJsonb<'_> {}
 #[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for RawJsonb<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let left = self.0;
-        let right = other.0;
+        let left = self.data;
+        let right = other.data;
         let left_header = read_u32(left, 0).ok()?;
         let right_header = read_u32(right, 0).ok()?;
         match (

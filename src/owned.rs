@@ -19,27 +19,35 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct OwnedJsonb(pub Vec<u8>);
+pub struct OwnedJsonb {
+    pub(crate) data: Vec<u8>,
+}
 
 impl OwnedJsonb {
     pub fn new(data: Vec<u8>) -> OwnedJsonb {
-        Self(data)
+        Self { data }
     }
 
     pub fn as_raw(&self) -> RawJsonb<'_> {
-        RawJsonb(self.0.as_slice())
+        RawJsonb::new(self.data.as_slice())
+    }
+
+    pub fn to_vec(self) -> Vec<u8> {
+        self.data
     }
 }
 
 impl From<&[u8]> for OwnedJsonb {
     fn from(data: &[u8]) -> Self {
-        Self(data.to_vec())
+        Self {
+            data: data.to_vec(),
+        }
     }
 }
 
 impl From<Vec<u8>> for OwnedJsonb {
     fn from(data: Vec<u8>) -> Self {
-        Self(data)
+        Self { data }
     }
 }
 
@@ -50,13 +58,13 @@ impl FromStr for OwnedJsonb {
         let value = parse_value(s.as_bytes())?;
         let mut data = Vec::new();
         value.write_to_vec(&mut data);
-        Ok(Self(data))
+        Ok(Self { data })
     }
 }
 
 impl AsRef<[u8]> for OwnedJsonb {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
+        self.data.as_ref()
     }
 }
 

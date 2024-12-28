@@ -203,7 +203,7 @@ impl<'a> Selector<'a> {
         root_offset: usize,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -233,7 +233,7 @@ impl<'a> Selector<'a> {
         root_length: usize,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG {
             // In lax mode, bracket wildcard allow Scalar value.
             poses.push_back(Position::Container((root_offset, root_length)));
@@ -261,7 +261,7 @@ impl<'a> Selector<'a> {
         name: &str,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
         if ty != OBJECT_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -275,7 +275,7 @@ impl<'a> Selector<'a> {
                 offset += jlength;
                 continue;
             }
-            let (_, key) = decode_string(&root.0[offset..], *jlength)?;
+            let (_, key) = decode_string(&root.data[offset..], *jlength)?;
             if name == unsafe { std::str::from_utf8_unchecked(key) } {
                 found = true;
                 idx = i;
@@ -309,7 +309,7 @@ impl<'a> Selector<'a> {
         indices: &Vec<ArrayIndex>,
         poses: &mut VecDeque<Position>,
     ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.0[root_offset..])?;
+        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
         if ty != ARRAY_CONTAINER_TAG || length == 0 {
             return Ok(());
         }
@@ -371,14 +371,14 @@ impl<'a> Selector<'a> {
             let mut data = Vec::new();
             match pos {
                 Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root.0[offset..offset + length]);
+                    data.extend_from_slice(&root.data[offset..offset + length]);
                 }
                 Position::Scalar((ty, offset, length)) => {
                     data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
                     let jentry = ty | length as u32;
                     data.write_u32::<BigEndian>(jentry)?;
                     if length > 0 {
-                        data.extend_from_slice(&root.0[offset..offset + length]);
+                        data.extend_from_slice(&root.data[offset..offset + length]);
                     }
                 }
             }
@@ -402,12 +402,12 @@ impl<'a> Selector<'a> {
         while let Some(pos) = poses.pop_front() {
             let jentry = match pos {
                 Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root.0[offset..offset + length]);
+                    data.extend_from_slice(&root.data[offset..offset + length]);
                     CONTAINER_TAG | length as u32
                 }
                 Position::Scalar((ty, offset, length)) => {
                     if length > 0 {
-                        data.extend_from_slice(&root.0[offset..offset + length]);
+                        data.extend_from_slice(&root.data[offset..offset + length]);
                     }
                     ty | length as u32
                 }
@@ -560,11 +560,11 @@ impl<'a> Selector<'a> {
                             TRUE_TAG => PathValue::Boolean(true),
                             FALSE_TAG => PathValue::Boolean(false),
                             NUMBER_TAG => {
-                                let n = Number::decode(&root.0[offset..offset + length])?;
+                                let n = Number::decode(&root.data[offset..offset + length])?;
                                 PathValue::Number(n)
                             }
                             STRING_TAG => {
-                                let v = &root.0[offset..offset + length];
+                                let v = &root.data[offset..offset + length];
                                 PathValue::String(Cow::Owned(unsafe {
                                     String::from_utf8_unchecked(v.to_vec())
                                 }))

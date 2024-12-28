@@ -13,26 +13,28 @@
 // limitations under the License.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RawJsonb<'a>(pub &'a [u8]);
+pub struct RawJsonb<'a> {
+    pub(crate) data: &'a [u8],
+}
 
 impl<'a> RawJsonb<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Self(data)
+        Self { data }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.0.as_ref().len()
+    pub fn len(&self) -> usize {
+        self.data.as_ref().len()
     }
 }
 
 impl<'a> From<&'a [u8]> for RawJsonb<'a> {
     fn from(data: &'a [u8]) -> Self {
-        Self(data)
+        Self { data }
     }
 }
 
 impl AsRef<[u8]> for RawJsonb<'_> {
     fn as_ref(&self) -> &[u8] {
-        self.0
+        self.data
     }
 }
