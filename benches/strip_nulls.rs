@@ -52,7 +52,7 @@ fn strip_value_nulls(val: &mut Value<'_>) {
 fn strip_nulls_fast(data: &[u8]) {
     let raw_jsonb = jsonb::RawJsonb::new(data);
     let result_jsonb = raw_jsonb.strip_nulls().unwrap();
-    assert!(!result_jsonb.0.is_empty());
+    assert!(!result_jsonb.is_empty());
 }
 
 fn add_benchmark(c: &mut Criterion) {

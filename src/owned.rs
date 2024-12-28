@@ -35,6 +35,14 @@ impl OwnedJsonb {
     pub fn to_vec(self) -> Vec<u8> {
         self.data
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
 }
 
 impl From<&[u8]> for OwnedJsonb {

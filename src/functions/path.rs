@@ -85,7 +85,7 @@ impl RawJsonb<'_> {
                     .map(|(jentry, encoded, val_offset)| {
                         extract_by_jentry(&jentry, encoded, val_offset, value)
                     })
-                    .map(|v| OwnedJsonb::new(v));
+                    .map(OwnedJsonb::new);
                 Ok(val)
             }
             SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(None),
@@ -150,7 +150,7 @@ impl RawJsonb<'_> {
                     .map(|(jentry, encoded, val_offset)| {
                         extract_by_jentry(&jentry, encoded, val_offset, value)
                     })
-                    .map(|v| OwnedJsonb::new(v));
+                    .map(OwnedJsonb::new);
                 Ok(val)
             }
             SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
@@ -242,7 +242,7 @@ impl RawJsonb<'_> {
             let length = (header & CONTAINER_HEADER_LEN_MASK) as i32;
             match (path, header & CONTAINER_HEADER_TYPE_MASK) {
                 (KeyPath::QuotedName(name) | KeyPath::Name(name), OBJECT_CONTAINER_TAG) => {
-                    match get_jentry_by_name(value, curr_val_offset, header, &name, false) {
+                    match get_jentry_by_name(value, curr_val_offset, header, name, false) {
                         Some((jentry, encoded, value_offset)) => {
                             curr_jentry_encoded = encoded;
                             curr_jentry = Some(jentry);

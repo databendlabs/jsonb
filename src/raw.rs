@@ -22,6 +22,10 @@ impl<'a> RawJsonb<'a> {
         Self { data }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.data.as_ref().len()
     }
