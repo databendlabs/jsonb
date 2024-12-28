@@ -51,7 +51,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// // Type checking
     /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
@@ -125,7 +125,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// // Example 1: Array containment
     /// let left_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
@@ -258,7 +258,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// let jsonb_value = r#"{"a": "hello", "b": [1, "world", {"c": "rust"}]}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = jsonb_value.as_raw();
@@ -351,7 +351,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// // Object + Object
     /// let obj1 = r#"{"a": 1, "b": 2}"#.parse::<OwnedJsonb>().unwrap();
@@ -495,7 +495,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// // Object with nulls
     /// let obj_with_nulls = r#"{"a": 1, "b": null, "c": 3}"#.parse::<OwnedJsonb>().unwrap();
@@ -600,9 +600,56 @@ impl RawJsonb<'_> {
         Ok(builder)
     }
 
-    /// Convert `JSONB` value to comparable vector.
-    /// The compare rules are the same as the `compare` function.
+    /// Converts a RawJsonb value into a comparable binary representation.
+    ///
+    /// This function transforms the JSONB value into a new binary format designed for efficient comparison.
+    /// The resulting binary data can be directly compared using byte-wise operations to determine the relative order of two JSONB values.
+    /// The original JSONB data structure is flattened into a linear representation, and different data types are encoded in a way that enables direct comparison.
+    /// The compare rules are the same as the `PartialOrd` trait.
     /// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
+    ///
+    /// **Important:** The resulting byte array is *not* a valid JSONB format; it's specifically designed for comparison purposes and should not be interpreted as standard JSONB data.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The RawJsonb value to convert.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<u8>` representing the comparable binary form of the JSONB data.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    ///
+    /// let json1 = r#"{"a":1,"b":"hello"}"#.parse::<OwnedJsonb>().unwrap();
+    /// let json2 = r#"{"a":1,"b":"world"}"#.parse::<OwnedJsonb>().unwrap();
+    /// let json3 = r#"{"a":2,"b":"hello"}"#.parse::<OwnedJsonb>().unwrap();
+    /// let json4 = r#"{"a":1,"b":[1,2,3]}"#.parse::<OwnedJsonb>().unwrap();
+    /// let json5 = r#"{"a":1,"b":[1,2]}"#.parse::<OwnedJsonb>().unwrap();
+    /// let json6 = "[1,2,3]".parse::<OwnedJsonb>().unwrap();
+    /// let json7 = "[1,2]".parse::<OwnedJsonb>().unwrap();
+    /// let json8 = "1".parse::<OwnedJsonb>().unwrap();
+    /// let json9 = "2".parse::<OwnedJsonb>().unwrap();
+    ///
+    /// let comparable1 = json1.as_raw().convert_to_comparable();
+    /// let comparable2 = json2.as_raw().convert_to_comparable();
+    /// let comparable3 = json3.as_raw().convert_to_comparable();
+    /// let comparable4 = json4.as_raw().convert_to_comparable();
+    /// let comparable5 = json5.as_raw().convert_to_comparable();
+    /// let comparable6 = json6.as_raw().convert_to_comparable();
+    /// let comparable7 = json7.as_raw().convert_to_comparable();
+    /// let comparable8 = json8.as_raw().convert_to_comparable();
+    /// let comparable9 = json9.as_raw().convert_to_comparable();
+    ///
+    /// assert!(comparable1 < comparable2);
+    /// assert!(comparable1 < comparable3);
+    /// assert!(comparable1 < comparable4);
+    /// assert!(comparable4 > comparable5);
+    /// assert!(comparable6 > comparable7);
+    /// assert!(comparable8 < comparable9);
+    /// ```
     pub fn convert_to_comparable(&self) -> Vec<u8> {
         let value = self.data;
         let mut buf = Vec::new();

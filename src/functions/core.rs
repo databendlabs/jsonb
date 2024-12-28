@@ -45,7 +45,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     /// use serde_json::json;
     ///
     /// // Convert a JSONB object
@@ -94,7 +94,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     /// use serde_json::json;
     /// use serde_json::Map;
     ///
@@ -232,7 +232,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = arr_jsonb.as_raw();
@@ -294,7 +294,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{OwnedJsonb, RawJsonb};
+    /// use jsonb::OwnedJsonb;
     ///
     /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = arr_jsonb.as_raw();
@@ -524,10 +524,18 @@ impl RawJsonb<'_> {
 
 impl Eq for RawJsonb<'_> {}
 
-/// `JSONB` values supports partial decode for comparison,
-/// if the values are found to be unequal, the result will be returned immediately.
-/// In first level header, values compare as the following order:
-/// Scalar Null > Array > Object > Other Scalars(String > Number > Boolean).
+/// Implements `PartialOrd` for `RawJsonb`, allowing comparison of two `RawJsonb` values.
+///
+/// The comparison logic handles different JSONB types (scalar, array, object) and considers null values.
+/// The ordering is defined as follows:
+///
+/// 1. Null is considered greater than any other type.
+/// 2. Scalars are compared based on their type and value (String > Number > Boolean).
+/// 3. Arrays are compared element by element.
+/// 4. Objects are compared based on their keys and values.
+/// 5. Arrays are greater than objects and scalars.
+/// 6. Objects are greater than scalars.
+/// 7. If the types are incompatible, None is returned.
 #[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for RawJsonb<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -575,6 +583,8 @@ impl PartialOrd for RawJsonb<'_> {
     }
 }
 
+/// Implements `Ord` for `RawJsonb`, allowing comparison of two `RawJsonb` values using the total ordering.
+/// This implementation leverages the `PartialOrd` implementation, returning `Ordering::Equal` for incomparable values.
 impl Ord for RawJsonb<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.partial_cmp(other) {
