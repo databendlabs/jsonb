@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::RawJsonb;
 use std::borrow::Cow;
 use std::fmt::Debug;
 
-use crate::array_length;
 use crate::ser::Encoder;
 use crate::Value;
 
@@ -54,12 +54,15 @@ impl<'a> LazyValue<'a> {
     pub fn array_length(&self) -> Option<usize> {
         match self {
             LazyValue::Value(Value::Array(arr)) => Some(arr.len()),
-            LazyValue::Raw(cow) => array_length(cow.as_ref()),
+            LazyValue::Raw(cow) => {
+                let raw_jsonb = RawJsonb::new(cow.as_ref());
+                raw_jsonb.array_length().ok()?
+            }
             _ => None,
         }
     }
 
-    pub fn to_value(&'a self) -> Cow<Value<'a>> {
+    pub fn to_value(&'a self) -> Cow<'a, Value<'a>> {
         match self {
             LazyValue::Value(v) => Cow::Borrowed(v),
             LazyValue::Raw(v) => Cow::Owned(crate::from_slice(v.as_ref()).unwrap()),

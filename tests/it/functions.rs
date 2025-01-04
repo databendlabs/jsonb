@@ -17,18 +17,16 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use jsonb::{
-    array_distinct, array_except, array_insert, array_intersection, array_length, array_overlap,
-    array_values, as_bool, as_null, as_number, as_str, build_array, build_object, compare, concat,
-    contains, convert_to_comparable, delete_by_index, delete_by_keypath, delete_by_name,
-    exists_all_keys, exists_any_keys, from_slice, get_by_index, get_by_keypath, get_by_name,
-    get_by_path, get_by_path_array, is_array, is_object, keypath::parse_key_paths, object_delete,
-    object_each, object_insert, object_keys, object_pick, parse_value, path_exists, path_match,
-    strip_nulls, to_bool, to_f64, to_i64, to_pretty_string, to_serde_json, to_serde_json_object,
-    to_str, to_string, to_u64, traverse_check_string, type_of, Error, Number, Object, Value,
-};
-
+use jsonb::from_slice;
 use jsonb::jsonpath::parse_json_path;
+use jsonb::jsonpath::Mode;
+use jsonb::keypath::parse_key_paths;
+use jsonb::parse_value;
+use jsonb::Error;
+use jsonb::Number;
+use jsonb::Object;
+use jsonb::OwnedJsonb;
+use jsonb::Value;
 use nom::AsBytes;
 
 #[test]
@@ -41,30 +39,24 @@ fn test_build_array() {
         r#"{"k":"v"}"#,
     ];
     let mut expect_array = Vec::with_capacity(sources.len());
-    let mut offsets = Vec::with_capacity(sources.len());
-    let mut buf: Vec<u8> = Vec::new();
+    let mut owned_jsonbs = Vec::with_capacity(sources.len());
     for s in sources {
         let value = parse_value(s.as_bytes()).unwrap();
         expect_array.push(value.clone());
+        let mut buf: Vec<u8> = Vec::new();
         value.write_to_vec(&mut buf);
-        offsets.push(buf.len());
-    }
-    let mut values = Vec::with_capacity(offsets.len());
-    let mut last_offset = 0;
-    for offset in offsets {
-        values.push(&buf[last_offset..offset]);
-        last_offset = offset;
+        let owned_jsonb = OwnedJsonb::new(buf);
+        owned_jsonbs.push(owned_jsonb);
     }
 
     let expect_value = Value::Array(expect_array);
     let mut expect_buf: Vec<u8> = Vec::new();
     expect_value.write_to_vec(&mut expect_buf);
 
-    let mut arr_buf = Vec::new();
-    build_array(values, &mut arr_buf).unwrap();
-    assert_eq!(arr_buf, expect_buf);
+    let owned_arr = OwnedJsonb::build_array(owned_jsonbs.iter().map(|v| v.as_raw())).unwrap();
+    assert_eq!(owned_arr.as_ref(), &expect_buf);
 
-    let value = from_slice(&arr_buf).unwrap();
+    let value = from_slice(owned_arr.as_ref()).unwrap();
     assert!(value.is_array());
     let array = value.as_array().unwrap();
     assert_eq!(array.len(), 5);
@@ -87,33 +79,27 @@ fn test_build_object() {
         "k5".to_string(),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
-    let mut offsets = Vec::with_capacity(sources.len());
     let mut expect_object = Object::new();
+    let mut owned_jsonbs = Vec::with_capacity(sources.len());
     for (key, s) in keys.iter().zip(sources.iter()) {
         let value = parse_value(s.as_bytes()).unwrap();
         expect_object.insert(key.clone(), value.clone());
 
+        let mut buf: Vec<u8> = Vec::new();
         value.write_to_vec(&mut buf);
-        offsets.push(buf.len());
-    }
-
-    let mut values = Vec::with_capacity(offsets.len());
-    let mut last_offset = 0;
-    for (key, offset) in keys.iter().zip(offsets.iter()) {
-        values.push((key.as_str(), &buf[last_offset..*offset]));
-        last_offset = *offset;
+        let owned_jsonb = OwnedJsonb::new(buf);
+        owned_jsonbs.push((key.clone(), owned_jsonb));
     }
 
     let expect_value = Value::Object(expect_object);
     let mut expect_buf: Vec<u8> = Vec::new();
     expect_value.write_to_vec(&mut expect_buf);
 
-    let mut obj_buf = Vec::new();
-    build_object(values, &mut obj_buf).unwrap();
-    assert_eq!(obj_buf, expect_buf);
+    let owned_obj =
+        OwnedJsonb::build_object(owned_jsonbs.iter().map(|(k, v)| (k, v.as_raw()))).unwrap();
+    assert_eq!(owned_obj.as_ref(), &expect_buf);
 
-    let value = from_slice(&obj_buf).unwrap();
+    let value = from_slice(owned_obj.as_ref()).unwrap();
     assert!(value.is_object());
     let array = value.as_object().unwrap();
     assert_eq!(array.len(), 5);
@@ -130,15 +116,11 @@ fn test_array_length() {
         (r#"{"k":"v"}"#, None),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let res = array_length(s.as_bytes());
-        assert_eq!(res, expect);
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = array_length(&buf);
-        assert_eq!(res, expect);
-        buf.clear();
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.array_length();
+        assert_eq!(res, Ok(expect));
     }
 }
 
@@ -161,19 +143,11 @@ fn test_path_exists() {
         (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] > 1"#, true),
     ];
     for (json, path, expect) in sources {
-        // Check from JSONB
-        {
-            let value = parse_value(json.as_bytes()).unwrap().to_vec();
-            let json_path = parse_json_path(path.as_bytes()).unwrap();
-            let res = path_exists(value.as_slice(), json_path);
-            assert_eq!(res, Ok(expect));
-        }
-        // Check from String JSON
-        {
-            let json_path = parse_json_path(path.as_bytes()).unwrap();
-            let res = path_exists(json.as_bytes(), json_path);
-            assert_eq!(res, Ok(expect));
-        }
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let json_path = parse_json_path(path.as_bytes()).unwrap();
+        let res = raw_jsonb.path_exists(&json_path);
+        assert_eq!(res, Ok(expect));
     }
 }
 
@@ -229,20 +203,18 @@ fn test_path_exists_expr() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
-    let value = parse_value(source.as_bytes()).unwrap();
-    value.write_to_vec(&mut buf);
-
+    let owned_jsonb = source.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = owned_jsonb.as_raw();
     for (path, expected) in paths {
-        let mut out_buf: Vec<u8> = Vec::new();
-        let mut out_offsets: Vec<u64> = Vec::new();
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-
-        let res = get_by_path_array(&buf, json_path, &mut out_buf, &mut out_offsets);
+        let res = raw_jsonb.get_by_path_opt(&json_path, Mode::Array);
         assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
+        assert!(owned_jsonb_opt.is_some());
+        let owned_jsonb = owned_jsonb_opt.unwrap();
         let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
 
-        assert_eq!(out_buf, expected_buf);
+        assert_eq!(owned_jsonb.to_vec(), expected_buf);
     }
 }
 
@@ -305,41 +277,17 @@ fn test_get_by_path() {
         (r#"$.name == "Fred" && $.car_no == 123"#, vec!["true"]),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
-    let mut out_buf: Vec<u8> = Vec::new();
-    let mut out_offsets: Vec<u64> = Vec::new();
-    let value = parse_value(source.as_bytes()).unwrap();
-    value.write_to_vec(&mut buf);
+    let owned_jsonb = source.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = owned_jsonb.as_raw();
     for (path, expects) in paths {
-        out_buf.clear();
-        out_offsets.clear();
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = get_by_path(&buf, json_path, &mut out_buf, &mut out_offsets);
+        let res = raw_jsonb.get_by_path(&json_path, Mode::All);
         assert!(res.is_ok());
-        if expects.is_empty() {
-            assert_eq!(out_offsets.len(), expects.len());
-        } else if expects.len() == 1 {
-            let mut val_buf: Vec<u8> = Vec::new();
-            let val_expect = parse_value(expects[0].as_bytes()).unwrap();
-            val_expect.write_to_vec(&mut val_buf);
-            assert_eq!(out_buf, val_buf);
-        } else {
-            let mut offsets = Vec::with_capacity(expects.len());
-            let mut val_buf: Vec<u8> = Vec::new();
-            for expect in expects.iter() {
-                let val_expect = parse_value(expect.as_bytes()).unwrap();
-                val_expect.write_to_vec(&mut val_buf);
-                offsets.push(val_buf.len());
-            }
-            let mut values = Vec::with_capacity(offsets.len());
-            let mut last_offset = 0;
-            for offset in offsets {
-                values.push(&val_buf[last_offset..offset]);
-                last_offset = offset;
-            }
-            let mut arr_buf = Vec::new();
-            build_array(values, &mut arr_buf).unwrap();
-            assert_eq!(out_buf, arr_buf);
+        let owned_jsonbs = res.unwrap();
+        assert_eq!(owned_jsonbs.len(), expects.len());
+        for (owned_jsonb, expect) in owned_jsonbs.into_iter().zip(expects.iter()) {
+            let expected_buf = parse_value(expect.as_bytes()).unwrap().to_vec();
+            assert_eq!(owned_jsonb.to_vec(), expected_buf);
         }
     }
 }
@@ -353,21 +301,21 @@ fn test_get_by_index() {
         (r#"["a","b","c"]"#, 0, Some(Value::String(Cow::from("a")))),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, idx, expect) in sources {
-        let res = get_by_index(s.as_bytes(), idx);
-        match expect.clone() {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = get_by_index(&buf, idx);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.get_by_index(idx);
+        assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
         match expect {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
+            Some(expect) => {
+                assert!(owned_jsonb_opt.is_some());
+                let owned_jsonb = owned_jsonb_opt.unwrap();
+                let expected_buf = expect.to_vec();
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
+            }
+            None => assert_eq!(owned_jsonb_opt, None),
         }
-        buf.clear();
     }
 }
 
@@ -389,21 +337,21 @@ fn test_get_by_name() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, name, expect) in sources {
-        let res = get_by_name(s.as_bytes(), &name, false);
-        match expect.clone() {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = get_by_name(&buf, &name, false);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.get_by_name(&name, false);
+        assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
         match expect {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
+            Some(expect) => {
+                assert!(owned_jsonb_opt.is_some());
+                let owned_jsonb = owned_jsonb_opt.unwrap();
+                let expected_buf = expect.to_vec();
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
+            }
+            None => assert_eq!(owned_jsonb_opt, None),
         }
-        buf.clear();
     }
 }
 
@@ -425,21 +373,21 @@ fn test_get_by_name_ignore_case() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, name, expect) in sources {
-        let res = get_by_name(s.as_bytes(), &name, true);
-        match expect.clone() {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = get_by_name(&buf, &name, true);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.get_by_name(&name, true);
+        assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
         match expect {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
+            Some(expect) => {
+                assert!(owned_jsonb_opt.is_some());
+                let owned_jsonb = owned_jsonb_opt.unwrap();
+                let expected_buf = expect.to_vec();
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
+            }
+            None => assert_eq!(owned_jsonb_opt, None),
         }
-        buf.clear();
     }
 }
 
@@ -463,21 +411,21 @@ fn test_object_keys() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let res = object_keys(s.as_bytes());
-        match expect.clone() {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = object_keys(&buf);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.object_keys();
+        assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
         match expect {
-            Some(expect) => assert_eq!(from_slice(&res.unwrap()).unwrap(), expect),
-            None => assert_eq!(res, None),
+            Some(expect) => {
+                assert!(owned_jsonb_opt.is_some());
+                let owned_jsonb = owned_jsonb_opt.unwrap();
+                let expected_buf = expect.to_vec();
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
+            }
+            None => assert_eq!(owned_jsonb_opt, None),
         }
-        buf.clear();
     }
 }
 
@@ -489,43 +437,34 @@ fn test_array_values() {
         (
             r#"[1,"a",[1,2]]"#,
             Some(vec![
-                Value::Number(Number::Int64(1)),
+                Value::Number(Number::UInt64(1)),
                 Value::String(Cow::from("a")),
                 Value::Array(vec![
-                    Value::Number(Number::Int64(1)),
-                    Value::Number(Number::Int64(2)),
+                    Value::Number(Number::UInt64(1)),
+                    Value::Number(Number::UInt64(2)),
                 ]),
             ]),
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let res = array_values(s.as_bytes());
-        match expect.clone() {
-            Some(expect) => {
-                let arr = res.unwrap();
-                assert_eq!(arr.len(), expect.len());
-                for (v, e) in arr.iter().zip(expect.iter()) {
-                    assert_eq!(&from_slice(v).unwrap(), e);
-                }
-            }
-            None => assert_eq!(res, None),
-        }
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = array_values(&buf);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.array_values();
+        assert!(res.is_ok());
+        let owned_jsonb_opt = res.unwrap();
         match expect {
-            Some(expect) => {
-                let arr = res.unwrap();
-                assert_eq!(arr.len(), expect.len());
-                for (v, e) in arr.iter().zip(expect.iter()) {
-                    assert_eq!(&from_slice(v).unwrap(), e);
+            Some(expects) => {
+                assert!(owned_jsonb_opt.is_some());
+                let owned_jsonbs = owned_jsonb_opt.unwrap();
+                assert_eq!(owned_jsonbs.len(), expects.len());
+                for (owned_jsonb, expect) in owned_jsonbs.into_iter().zip(expects.iter()) {
+                    let expected_buf = expect.to_vec();
+                    assert_eq!(owned_jsonb.to_vec(), expected_buf);
                 }
             }
-            None => assert_eq!(res, None),
+            None => assert_eq!(owned_jsonb_opt, None),
         }
-        buf.clear();
     }
 }
 
@@ -597,46 +536,14 @@ fn test_compare() {
         (r#"{"k1":"v1","k2":"v2"}"#, r#"false"#, Ordering::Greater),
     ];
 
-    let mut lbuf: Vec<u8> = Vec::new();
-    let mut lbuf2: Vec<u8> = Vec::new();
-    let mut rbuf: Vec<u8> = Vec::new();
-    let mut rbuf2: Vec<u8> = Vec::new();
-    for (l, r, expect) in sources {
-        let res = compare(l.as_bytes(), r.as_bytes()).unwrap();
-        assert_eq!(res, expect);
+    for (left, right, expected) in sources {
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
 
-        let lvalue = parse_value(l.as_bytes()).unwrap();
-        lvalue.write_to_vec(&mut lbuf);
-        let rvalue = parse_value(r.as_bytes()).unwrap();
-        rvalue.write_to_vec(&mut rbuf);
-
-        let res = compare(&lbuf, &rbuf).unwrap();
-        assert_eq!(res, expect);
-
-        convert_to_comparable(&lbuf, &mut lbuf2);
-        convert_to_comparable(&rbuf, &mut rbuf2);
-
-        let mut res = Ordering::Equal;
-        for (lval, rval) in lbuf2.iter().zip(rbuf2.iter()) {
-            res = lval.cmp(rval);
-            match res {
-                Ordering::Equal => {
-                    continue;
-                }
-                _ => {
-                    break;
-                }
-            }
-        }
-        if res == Ordering::Equal {
-            res = lbuf2.len().cmp(&rbuf2.len());
-        }
-        assert_eq!(res, expect);
-
-        lbuf.clear();
-        lbuf2.clear();
-        rbuf.clear();
-        rbuf2.clear();
+        let res = left_raw_jsonb.cmp(&right_raw_jsonb);
+        assert_eq!(res, expected);
     }
 }
 
@@ -677,63 +584,48 @@ fn test_as_type() {
         (r#"{"k":"v"}"#, None, None, None, None, false, true),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect_null, expect_bool, expect_number, expect_str, expect_array, expect_object) in
         sources
     {
-        let res = as_null(s.as_bytes());
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.as_null();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         match expect_null {
             Some(_) => assert!(res.is_some()),
             None => assert_eq!(res, None),
         }
-        let res = as_bool(s.as_bytes());
+        let res = raw_jsonb.as_bool();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         match expect_bool {
             Some(expect) => assert_eq!(res.unwrap(), expect),
             None => assert_eq!(res, None),
         }
-        let res = as_number(s.as_bytes());
+        let res = raw_jsonb.as_number();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         match expect_number.clone() {
             Some(expect) => assert_eq!(res.unwrap(), expect),
             None => assert_eq!(res, None),
         }
-        let res = as_str(s.as_bytes());
+        let res = raw_jsonb.as_str();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         match expect_str.clone() {
             Some(expect) => assert_eq!(res.unwrap(), expect),
             None => assert_eq!(res, None),
         }
-        let res = is_array(s.as_bytes());
+        let res = raw_jsonb.is_array();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         assert_eq!(res, expect_array);
-        let res = is_object(s.as_bytes());
+        let res = raw_jsonb.is_object();
+        assert!(res.is_ok());
+        let res = res.unwrap();
         assert_eq!(res, expect_object);
-
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = as_null(&buf);
-        match expect_null {
-            Some(_) => assert!(res.is_some()),
-            None => assert_eq!(res, None),
-        }
-        let res = as_bool(&buf);
-        match expect_bool {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let res = as_number(&buf);
-        match expect_number.clone() {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let res = as_str(&buf);
-        match expect_str.clone() {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert_eq!(res, None),
-        }
-        let res = is_array(&buf);
-        assert_eq!(res, expect_array);
-        let res = is_object(&buf);
-        assert_eq!(res, expect_object);
-
-        buf.clear();
     }
 }
 
@@ -807,63 +699,50 @@ fn test_to_type() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect_bool, expect_i64, expect_u64, expect_f64, expect_str) in sources {
-        let res = to_bool(s.as_bytes());
-        match expect_bool {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert!(res.is_err()),
-        }
-        let res = to_i64(s.as_bytes());
-        match expect_i64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert!(res.is_err()),
-        }
-        let res = to_u64(s.as_bytes());
-        match expect_u64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert!(res.is_err()),
-        }
-        let res = to_f64(s.as_bytes());
-        match expect_f64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
-            None => assert!(res.is_err()),
-        }
-        let res = to_str(s.as_bytes());
-        match expect_str {
-            Some(ref expect) => assert_eq!(&res.unwrap(), expect),
-            None => assert!(res.is_err()),
-        }
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
 
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = to_bool(&buf);
+        let res = raw_jsonb.to_bool();
         match expect_bool {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
+            Some(expect) => {
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap(), expect);
+            }
             None => assert!(res.is_err()),
         }
-        let res = to_i64(&buf);
+        let res = raw_jsonb.to_i64();
         match expect_i64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
+            Some(expect) => {
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap(), expect);
+            }
             None => assert!(res.is_err()),
         }
-        let res = to_u64(&buf);
+        let res = raw_jsonb.to_u64();
         match expect_u64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
+            Some(expect) => {
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap(), expect);
+            }
             None => assert!(res.is_err()),
         }
-        let res = to_f64(&buf);
+        let res = raw_jsonb.to_f64();
         match expect_f64 {
-            Some(expect) => assert_eq!(res.unwrap(), expect),
+            Some(expect) => {
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap(), expect);
+            }
             None => assert!(res.is_err()),
         }
-        let res = to_str(&buf);
+        let res = raw_jsonb.to_str();
         match expect_str {
-            Some(ref expect) => assert_eq!(&res.unwrap(), expect),
+            Some(expect) => {
+                assert!(res.is_ok());
+                assert_eq!(res.unwrap(), expect);
+            }
             None => assert!(res.is_err()),
         }
-
-        buf.clear();
     }
 }
 
@@ -890,13 +769,11 @@ fn test_to_string() {
             r#"{"k1":"v1","k2":[1,2,3],"k3":{"a":"b"}}"#,
         ),
     ];
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = to_string(&buf);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.to_string();
         assert_eq!(res, expect);
-        buf.clear();
     }
 }
 
@@ -956,13 +833,11 @@ fn test_to_pretty_string() {
         ),
     ];
 
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = to_pretty_string(&buf);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.to_pretty_string();
         assert_eq!(res, expect);
-        buf.clear();
     }
 }
 
@@ -989,16 +864,14 @@ fn test_traverse_check_string() {
             false,
         ),
     ];
-    let mut buf: Vec<u8> = Vec::new();
     for (s, expect) in sources {
-        let value = parse_value(s.as_bytes()).unwrap();
-        value.write_to_vec(&mut buf);
-        let res = traverse_check_string(&buf, |v| {
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let res = raw_jsonb.traverse_check_string(|v| {
             let s = unsafe { std::str::from_utf8_unchecked(v) };
             s == "c"
         });
-        assert_eq!(res, expect);
-        buf.clear();
+        assert_eq!(res, Ok(expect));
     }
 }
 
@@ -1015,25 +888,12 @@ fn test_strip_nulls() {
     ];
 
     for (s, expect) in sources {
-        // Check from JSONB
-        {
-            let value = parse_value(s.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            strip_nulls(&value, &mut buf).unwrap();
-            assert_eq!(
-                parse_value(expect.as_bytes()).unwrap(),
-                from_slice(&buf).unwrap()
-            );
-        }
-        // Check from String JSON
-        {
-            let mut buf = Vec::new();
-            strip_nulls(s.as_bytes(), &mut buf).unwrap();
-            assert_eq!(
-                parse_value(expect.as_bytes()).unwrap(),
-                from_slice(&buf).unwrap()
-            );
-        }
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.strip_nulls();
+        let expect_jsonb = expect.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res, Ok(expect_jsonb));
     }
 }
 
@@ -1049,15 +909,11 @@ fn test_type_of() {
     ];
 
     for (s, expect) in sources {
-        // Check from JSONB
-        {
-            let value = parse_value(s.as_bytes()).unwrap().to_vec();
-            assert_eq!(expect, type_of(&value).unwrap());
-        }
-        // Check from String JSON
-        {
-            assert_eq!(expect, type_of(s.as_bytes()).unwrap());
-        }
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.type_of();
+        assert_eq!(res, Ok(expect));
     }
 }
 
@@ -1069,7 +925,7 @@ fn test_object_each() {
         (
             r#"{"a":1,"b":false}"#,
             Some(vec![
-                ("a", Value::Number(Number::Int64(1))),
+                ("a", Value::Number(Number::UInt64(1))),
                 ("b", Value::Bool(false)),
             ]),
         ),
@@ -1079,45 +935,36 @@ fn test_object_each() {
                 (
                     "a",
                     Value::Array(vec![
-                        Value::Number(Number::Int64(1)),
-                        Value::Number(Number::Int64(2)),
-                        Value::Number(Number::Int64(3)),
+                        Value::Number(Number::UInt64(1)),
+                        Value::Number(Number::UInt64(2)),
+                        Value::Number(Number::UInt64(3)),
                     ]),
                 ),
                 (
                     "b",
-                    init_object(vec![("k", Value::Number(Number::Int64(1)))]),
+                    init_object(vec![("k", Value::Number(Number::UInt64(1)))]),
                 ),
             ]),
         ),
     ];
     for (src, expected) in sources {
-        {
-            let res = object_each(src.as_bytes());
-            match expected.clone() {
-                Some(expected) => {
-                    let arr = res.unwrap();
-                    for (v, e) in arr.iter().zip(expected.iter()) {
-                        assert_eq!(v.0, e.0.as_bytes().to_vec());
-                        assert_eq!(from_slice(&v.1).unwrap(), e.1);
-                    }
+        let owned_jsonb = src.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.object_each();
+        assert!(res.is_ok());
+        let owned_jsonbs_opt = res.unwrap();
+        match expected {
+            Some(expected) => {
+                assert!(owned_jsonbs_opt.is_some());
+                let owned_jsonbs = owned_jsonbs_opt.unwrap();
+                for (v, e) in owned_jsonbs.into_iter().zip(expected.iter()) {
+                    assert_eq!(v.0, e.0.to_string());
+                    let expected_buf = e.1.to_vec();
+                    assert_eq!(v.1.to_vec(), expected_buf);
                 }
-                None => assert_eq!(res, None),
             }
-        }
-        {
-            let jsonb = parse_value(src.as_bytes()).unwrap().to_vec();
-            let res = object_each(&jsonb);
-            match expected {
-                Some(expected) => {
-                    let arr = res.unwrap();
-                    for (v, e) in arr.iter().zip(expected.iter()) {
-                        assert_eq!(v.0, e.0.as_bytes().to_vec());
-                        assert_eq!(from_slice(&v.1).unwrap(), e.1);
-                    }
-                }
-                None => assert_eq!(res, None),
-            }
+            None => assert_eq!(owned_jsonbs_opt, None),
         }
     }
 }
@@ -1153,22 +1000,21 @@ fn test_get_by_keypath() {
         ),
     ];
     for (json_str, path_str, expected) in sources {
+        let owned_jsonb = json_str.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
         let key_paths = parse_key_paths(path_str.as_bytes()).unwrap();
-        {
-            let json = parse_value(json_str.as_bytes()).unwrap().to_vec();
-            let result = get_by_keypath(&json, key_paths.paths.iter());
-            match expected.clone() {
-                Some(e) => assert_eq!(e, from_slice(&result.unwrap()).unwrap()),
-                None => assert_eq!(result, None),
+
+        let res = raw_jsonb.get_by_keypath(key_paths.paths.iter());
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        match expected {
+            Some(e) => {
+                assert!(res.is_some());
+                let owned_jsonb = res.unwrap();
+                let expected_buf = e.to_vec();
+                assert_eq!(owned_jsonb.to_vec(), expected_buf);
             }
-        }
-        {
-            let json = json_str.as_bytes();
-            let result = get_by_keypath(json, key_paths.paths.iter());
-            match expected {
-                Some(e) => assert_eq!(e, from_slice(&result.unwrap()).unwrap()),
-                None => assert_eq!(result, None),
-            }
+            None => assert_eq!(res, None),
         }
     }
 }
@@ -1188,17 +1034,13 @@ fn test_exists_all_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "f", "a"], false),
     ];
     for (json, keys, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
         let keys = keys.iter().map(|k| k.as_bytes());
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let result = exists_all_keys(&json, keys.clone());
-            assert_eq!(result, expected);
-        }
-        {
-            let json = json.as_bytes();
-            let result = exists_all_keys(json, keys.clone());
-            assert_eq!(result, expected);
-        }
+        let res = raw_jsonb.exists_all_keys(keys);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), expected);
     }
 }
 
@@ -1217,17 +1059,13 @@ fn test_exists_any_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["z", "f", "x"], false),
     ];
     for (json, keys, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
         let keys = keys.iter().map(|k| k.as_bytes());
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let result = exists_any_keys(&json, keys.clone());
-            assert_eq!(result, expected);
-        }
-        {
-            let json = json.as_bytes();
-            let result = exists_any_keys(json, keys.clone());
-            assert_eq!(result, expected);
-        }
+        let res = raw_jsonb.exists_any_keys(keys);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), expected);
     }
 }
 
@@ -1256,16 +1094,14 @@ fn test_contains() {
         (r#"{"a":{"c":100,"d":200},"b":2}"#, r#"{"a":{}}"#, true),
     ];
     for (left, right, expected) in sources {
-        {
-            let left = parse_value(left.as_bytes()).unwrap().to_vec();
-            let right = parse_value(right.as_bytes()).unwrap().to_vec();
-            let result = contains(&left, &right);
-            assert_eq!(result, expected);
-        }
-        {
-            let result = contains(left.as_bytes(), right.as_bytes());
-            assert_eq!(result, expected);
-        }
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
+
+        let res = left_raw_jsonb.contains(&right_raw_jsonb);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), expected);
     }
 }
 
@@ -1287,16 +1123,11 @@ fn test_path_match() {
         ),
     ];
     for (json, predicate, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
         let json_path = parse_json_path(predicate.as_bytes()).unwrap();
-        {
-            let result = path_match(json.as_bytes(), json_path.clone()).unwrap();
-            assert_eq!(result, expected);
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let result = path_match(&json, json_path).unwrap();
-            assert_eq!(result, expected);
-        }
+        let res = raw_jsonb.path_match(&json_path);
+        assert_eq!(res, Ok(expected));
     }
 }
 
@@ -1339,31 +1170,18 @@ fn test_concat() {
             r#"{"a":3,"b":4,"d":10}"#,
         ),
     ];
-    for (left, right, result) in sources {
-        {
-            let mut buf = Vec::new();
+    for (left, right, expected) in sources {
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
 
-            concat(left.as_bytes(), right.as_bytes(), &mut buf).unwrap();
+        let res = left_raw_jsonb.concat(&right_raw_jsonb);
+        assert!(res.is_ok());
+        let res_owned_jsonb = res.unwrap();
 
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-            assert_eq!(to_string(&buf), result);
-        }
-        {
-            let mut buf = Vec::new();
-            let left_json = parse_value(left.as_bytes()).unwrap().to_vec();
-            let right_json = parse_value(right.as_bytes()).unwrap().to_vec();
-
-            concat(&left_json, &right_json, &mut buf).unwrap();
-
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-            assert_eq!(to_string(&buf), result);
-        }
+        let expected_owned_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_owned_jsonb.to_vec(), expected_owned_jsonb.to_vec());
     }
 }
 
@@ -1382,27 +1200,15 @@ fn test_delete_by_name() {
         (r#"{"a":1,"b":2}"#, "a", r#"{"b":2}"#),
         (r#"{"b":2}"#, "b", "{}"),
     ];
-    for (json, name, result) in sources {
-        {
-            let mut buf = Vec::new();
-            delete_by_name(json.as_bytes(), name, &mut buf).unwrap();
+    for (json, name, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
 
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-
-            delete_by_name(&json, name, &mut buf).unwrap();
-
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
+        let res = raw_jsonb.delete_by_name(name);
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1410,22 +1216,12 @@ fn test_delete_by_name() {
 fn test_delete_by_name_errors() {
     let sources = vec![(r#""asd""#, "asd"), ("true", "true"), ("1", "1")];
     for (json, name) in sources {
-        {
-            let mut buf = Vec::new();
-            let result = delete_by_name(json.as_bytes(), name, &mut buf);
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
 
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-
-            let result = delete_by_name(&json, name, &mut buf);
-
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
-        }
+        let res = raw_jsonb.delete_by_name(name);
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), Error::InvalidJsonType));
     }
 }
 
@@ -1441,27 +1237,15 @@ fn test_delete_by_index() {
         ("[1,2,3]", -4, "[1,2,3]"),
         (r#"[1,2,{"a":[1,2,3],"b":[40,50,60]}]"#, 2, "[1,2]"),
     ];
-    for (json, index, result) in sources {
-        {
-            let mut buf = Vec::new();
-            delete_by_index(json.as_bytes(), index, &mut buf).unwrap();
+    for (json, index, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
 
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-
-            delete_by_index(&json, index, &mut buf).unwrap();
-
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
+        let res = raw_jsonb.delete_by_index(index);
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1474,22 +1258,12 @@ fn test_delete_by_index_errors() {
         (r#"{"a":1,"b":2}"#, 20),
     ];
     for (json, index) in sources {
-        {
-            let mut buf = Vec::new();
-            let result = delete_by_index(json.as_bytes(), index, &mut buf);
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
 
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-
-            let result = delete_by_index(&json, index, &mut buf);
-
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), Error::InvalidJsonType));
-        }
+        let res = raw_jsonb.delete_by_index(index);
+        assert!(res.is_err());
+        assert!(matches!(res.unwrap_err(), Error::InvalidJsonType));
     }
 }
 
@@ -1512,31 +1286,16 @@ fn test_delete_by_keypath() {
             r#"{"a":1,"b":[1,2,3]}"#,
         ),
     ];
-    for (json, keypath, result) in sources {
-        {
-            let json = json.as_bytes();
-            let keypath = parse_key_paths(keypath.as_bytes()).unwrap();
-            let mut buf = Vec::new();
+    for (json, keypath, expected) in sources {
+        let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let keypath = parse_key_paths(keypath.as_bytes()).unwrap();
 
-            delete_by_keypath(json, keypath.paths.iter(), &mut buf).unwrap();
-
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
-        {
-            let json = parse_value(json.as_bytes()).unwrap().to_vec();
-            let keypath = parse_key_paths(keypath.as_bytes()).unwrap();
-            let mut buf = Vec::new();
-
-            delete_by_keypath(&json, keypath.paths.iter(), &mut buf).unwrap();
-
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-
-            assert_eq!(actual, expected);
-        }
+        let res = raw_jsonb.delete_by_keypath(keypath.paths.iter());
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1550,25 +1309,17 @@ fn test_array_insert() {
         (r#"1"#, 1, r#"{"k":"v"}"#, r#"[1,{"k":"v"}]"#),
         (r#"{"k":"v"}"#, 2, r#"true"#, r#"[{"k":"v"},true]"#),
     ];
-    for (val, pos, new_val, result) in sources {
-        {
-            let val = val.as_bytes();
-            let new_val = new_val.as_bytes();
-            let mut buf = Vec::new();
-            array_insert(val, pos, new_val, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
-        {
-            let val = parse_value(val.as_bytes()).unwrap().to_vec();
-            let new_val = parse_value(new_val.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            array_insert(&val, pos, &new_val, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
+    for (val, pos, new_val, expected) in sources {
+        let owned_jsonb = val.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let new_owned_jsonb = new_val.parse::<OwnedJsonb>().unwrap();
+        let new_raw_jsonb = new_owned_jsonb.as_raw();
+
+        let res = raw_jsonb.array_insert(pos, new_raw_jsonb);
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1589,23 +1340,15 @@ fn test_array_distinct() {
         (r#"1"#, r#"[1]"#),
         (r#"{"k":"v"}"#, r#"[{"k":"v"}]"#),
     ];
-    for (val, result) in sources {
-        {
-            let val = val.as_bytes();
-            let mut buf = Vec::new();
-            array_distinct(val, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
-        {
-            let val = parse_value(val.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            array_distinct(&val, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
+    for (val, expected) in sources {
+        let owned_jsonb = val.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.array_distinct();
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1631,25 +1374,17 @@ fn test_array_intersection() {
         (r#"1"#, r#"2"#, r#"[]"#),
         (r#"{"k":"v"}"#, r#"{"k":"v"}"#, r#"[{"k":"v"}]"#),
     ];
-    for (val1, val2, result) in sources {
-        {
-            let val1 = val1.as_bytes();
-            let val2 = val2.as_bytes();
-            let mut buf = Vec::new();
-            array_intersection(val1, val2, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
-        {
-            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
-            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            array_intersection(&val1, &val2, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
+    for (left, right, expected) in sources {
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
+
+        let res = left_raw_jsonb.array_intersection(right_raw_jsonb);
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1683,25 +1418,17 @@ fn test_array_except() {
         (r#"1"#, r#"2"#, r#"[1]"#),
         (r#"{"k":"v"}"#, r#"{"k":"v"}"#, r#"[]"#),
     ];
-    for (val1, val2, result) in sources {
-        {
-            let val1 = val1.as_bytes();
-            let val2 = val2.as_bytes();
-            let mut buf = Vec::new();
-            array_except(val1, val2, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
-        {
-            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
-            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            array_except(&val1, &val2, &mut buf).unwrap();
-            let actual = from_slice(&buf).unwrap();
-            let expected = parse_value(result.as_bytes()).unwrap();
-            assert_eq!(actual, expected);
-        }
+    for (left, right, expected) in sources {
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
+
+        let res = left_raw_jsonb.array_except(right_raw_jsonb);
+        assert!(res.is_ok());
+        let res_jsonb = res.unwrap();
+        let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+        assert_eq!(res_jsonb, expected_jsonb);
     }
 }
 
@@ -1723,19 +1450,16 @@ fn test_array_overlap() {
         (r#"1"#, r#"2"#, false),
         (r#"{"k":"v"}"#, r#"{"k":"v"}"#, true),
     ];
-    for (val1, val2, expected) in sources {
-        {
-            let val1 = val1.as_bytes();
-            let val2 = val2.as_bytes();
-            let actual = array_overlap(val1, val2).unwrap();
-            assert_eq!(actual, expected);
-        }
-        {
-            let val1 = parse_value(val1.as_bytes()).unwrap().to_vec();
-            let val2 = parse_value(val2.as_bytes()).unwrap().to_vec();
-            let actual = array_overlap(&val1, &val2).unwrap();
-            assert_eq!(actual, expected);
-        }
+    for (left, right, expected) in sources {
+        let left_owned_jsonb = left.parse::<OwnedJsonb>().unwrap();
+        let left_raw_jsonb = left_owned_jsonb.as_raw();
+        let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
+        let right_raw_jsonb = right_owned_jsonb.as_raw();
+
+        let res = left_raw_jsonb.array_overlap(right_raw_jsonb);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res, expected);
     }
 }
 
@@ -1781,40 +1505,21 @@ fn test_object_insert() {
         ),
         (r#"1"#, "xx", r#"{"k":"v"}"#, true, None),
     ];
-    for (val, new_key, new_val, update_flag, result) in sources {
-        {
-            let val = val.as_bytes();
-            let new_val = new_val.as_bytes();
-            let mut buf = Vec::new();
-            let ret = object_insert(val, new_key, new_val, update_flag, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
+    for (val, new_key, new_val, update_flag, expected) in sources {
+        let owned_jsonb = val.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let new_owned_jsonb = new_val.parse::<OwnedJsonb>().unwrap();
+        let new_raw_jsonb = new_owned_jsonb.as_raw();
+
+        let res = raw_jsonb.object_insert(new_key, new_raw_jsonb, update_flag);
+        match expected {
+            Some(expected) => {
+                assert!(res.is_ok());
+                let res_jsonb = res.unwrap();
+                let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+                assert_eq!(res_jsonb, expected_jsonb);
             }
-        }
-        {
-            let val = parse_value(val.as_bytes()).unwrap().to_vec();
-            let new_val = parse_value(new_val.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            let ret = object_insert(&val, new_key, &new_val, update_flag, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
-            }
+            None => assert!(res.is_err()),
         }
     }
 }
@@ -1839,39 +1544,20 @@ fn test_object_pick() {
         ),
         (r#"1"#, vec!["a", "b"], None),
     ];
-    for (val, keys, result) in sources {
+    for (val, keys, expected) in sources {
+        let owned_jsonb = val.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
         let keys = BTreeSet::from_iter(keys);
-        {
-            let val = val.as_bytes();
-            let mut buf = Vec::new();
-            let ret = object_pick(val, &keys, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
+
+        let res = raw_jsonb.object_pick(&keys);
+        match expected {
+            Some(expected) => {
+                assert!(res.is_ok());
+                let res_jsonb = res.unwrap();
+                let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+                assert_eq!(res_jsonb, expected_jsonb);
             }
-        }
-        {
-            let val = parse_value(val.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            let ret = object_pick(&val, &keys, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
-            }
+            None => assert!(res.is_err()),
         }
     }
 }
@@ -1896,39 +1582,20 @@ fn test_object_delete() {
         ),
         (r#"1"#, vec!["a", "b"], None),
     ];
-    for (val, keys, result) in sources {
+    for (val, keys, expected) in sources {
+        let owned_jsonb = val.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
         let keys = BTreeSet::from_iter(keys);
-        {
-            let val = val.as_bytes();
-            let mut buf = Vec::new();
-            let ret = object_delete(val, &keys, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
+
+        let res = raw_jsonb.object_delete(&keys);
+        match expected {
+            Some(expected) => {
+                assert!(res.is_ok());
+                let res_jsonb = res.unwrap();
+                let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
+                assert_eq!(res_jsonb, expected_jsonb);
             }
-        }
-        {
-            let val = parse_value(val.as_bytes()).unwrap().to_vec();
-            let mut buf = Vec::new();
-            let ret = object_delete(&val, &keys, &mut buf);
-            match result {
-                Some(result) => {
-                    assert!(ret.is_ok());
-                    let actual = from_slice(&buf).unwrap();
-                    let expected = parse_value(result.as_bytes()).unwrap();
-                    assert_eq!(actual, expected);
-                }
-                None => {
-                    assert!(ret.is_err());
-                }
-            }
+            None => assert!(res.is_err()),
         }
     }
 }
@@ -1942,26 +1609,24 @@ fn test_to_serde_json() {
         r#"{"a":1,"b":[1,2,3]}"#,
         r#"{"ab":{"k1":"v1","k2":"v2"},"cd":[true,100.23,"测试"]}"#,
     ];
-    let mut buf: Vec<u8> = Vec::new();
     for s in sources {
-        let value = parse_value(s.as_bytes()).unwrap();
-        buf.clear();
-        value.write_to_vec(&mut buf);
-        let jsonb_val_str = to_string(&buf);
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+        let jsonb_val_str = raw_jsonb.to_string();
 
-        let json_val = to_serde_json(&buf).unwrap();
-        let json_val_str = json_val.to_string();
-        assert_eq!(jsonb_val_str, json_val_str);
+        let serde_json_val = raw_jsonb.to_serde_json().unwrap();
+        let serde_json_val_str = serde_json_val.to_string();
+        assert_eq!(jsonb_val_str, serde_json_val_str);
 
-        let obj_val = to_serde_json_object(&buf).unwrap();
-        if is_object(&buf) {
-            assert!(obj_val.is_some());
-            let obj_val = obj_val.unwrap();
-            let json_val = serde_json::Value::Object(obj_val);
-            let obj_val_str = json_val.to_string();
-            assert_eq!(jsonb_val_str, obj_val_str);
+        let serde_json_obj_val = raw_jsonb.to_serde_json_object().unwrap();
+        if raw_jsonb.is_object().unwrap() {
+            assert!(serde_json_obj_val.is_some());
+            let serde_json_obj_val = serde_json_obj_val.unwrap();
+            let serde_json_val = serde_json::Value::Object(serde_json_obj_val);
+            let serde_json_obj_val_str = serde_json_val.to_string();
+            assert_eq!(jsonb_val_str, serde_json_obj_val_str);
         } else {
-            assert!(obj_val.is_none());
+            assert!(serde_json_obj_val.is_none());
         }
     }
 }

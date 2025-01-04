@@ -21,6 +21,10 @@ use std::mem::discriminant;
 
 use super::number::Number;
 use super::ser::Encoder;
+use rand::distributions::Alphanumeric;
+use rand::distributions::DistString;
+use rand::thread_rng;
+use rand::Rng;
 
 pub type Object<'a> = BTreeMap<String, Value<'a>>;
 
@@ -36,7 +40,7 @@ pub enum Value<'a> {
     Object(Object<'a>),
 }
 
-impl<'a> Debug for Value<'a> {
+impl Debug for Value<'_> {
     fn fmt(&self, formatter: &mut Formatter) -> std::fmt::Result {
         match *self {
             Value::Null => formatter.debug_tuple("Null").finish(),
@@ -57,7 +61,7 @@ impl<'a> Debug for Value<'a> {
     }
 }
 
-impl<'a> Display for Value<'a> {
+impl Display for Value<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Null => write!(f, "null"),
@@ -260,5 +264,62 @@ impl<'a> Value<'a> {
 
     pub fn eq_variant(&self, other: &Value) -> bool {
         discriminant(self) == discriminant(other)
+    }
+
+    /// generate random JSONB value
+    pub fn rand_value() -> Value<'static> {
+        let mut rng = thread_rng();
+        let val = match rng.gen_range(0..=2) {
+            0 => {
+                let len = rng.gen_range(0..=5);
+                let mut values = Vec::with_capacity(len);
+                for _ in 0..len {
+                    values.push(Self::rand_scalar_value());
+                }
+                Value::Array(values)
+            }
+            1 => {
+                let len = rng.gen_range(0..=5);
+                let mut obj = Object::new();
+                for _ in 0..len {
+                    let k = Alphanumeric.sample_string(&mut rng, 5);
+                    let v = Self::rand_scalar_value();
+                    obj.insert(k, v);
+                }
+                Value::Object(obj)
+            }
+            _ => Self::rand_scalar_value(),
+        };
+        val
+    }
+
+    fn rand_scalar_value() -> Value<'static> {
+        let mut rng = thread_rng();
+        let val = match rng.gen_range(0..=3) {
+            0 => {
+                let v = rng.gen_bool(0.5);
+                Value::Bool(v)
+            }
+            1 => {
+                let s = Alphanumeric.sample_string(&mut rng, 5);
+                Value::String(Cow::from(s))
+            }
+            2 => match rng.gen_range(0..=2) {
+                0 => {
+                    let n: u64 = rng.gen_range(0..=100000);
+                    Value::Number(Number::UInt64(n))
+                }
+                1 => {
+                    let n: i64 = rng.gen_range(-100000..=100000);
+                    Value::Number(Number::Int64(n))
+                }
+                _ => {
+                    let n: f64 = rng.gen_range(-4000.0..1.3e5);
+                    Value::Number(Number::Float64(n))
+                }
+            },
+            _ => Value::Null,
+        };
+        val
     }
 }

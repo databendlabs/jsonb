@@ -15,7 +15,7 @@
 use std::{fs, io::Read};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use jsonb::{from_slice, strip_nulls, Value};
+use jsonb::{from_slice, Value};
 
 fn read(file: &str) -> Vec<u8> {
     let mut f = fs::File::open(file).unwrap();
@@ -50,9 +50,9 @@ fn strip_value_nulls(val: &mut Value<'_>) {
 }
 
 fn strip_nulls_fast(data: &[u8]) {
-    let mut buf = Vec::new();
-    strip_nulls(data, &mut buf).unwrap();
-    assert!(!buf.is_empty());
+    let raw_jsonb = jsonb::RawJsonb::new(data);
+    let result_jsonb = raw_jsonb.strip_nulls().unwrap();
+    assert!(!result_jsonb.is_empty());
 }
 
 fn add_benchmark(c: &mut Criterion) {

@@ -72,25 +72,25 @@ from_float! {
     f32 f64
 }
 
-impl<'a> From<OrderedFloat<f32>> for Value<'a> {
+impl From<OrderedFloat<f32>> for Value<'_> {
     fn from(f: OrderedFloat<f32>) -> Self {
         Value::Number(Number::Float64(f.0 as f64))
     }
 }
 
-impl<'a> From<OrderedFloat<f64>> for Value<'a> {
+impl From<OrderedFloat<f64>> for Value<'_> {
     fn from(f: OrderedFloat<f64>) -> Self {
         Value::Number(Number::Float64(f.0))
     }
 }
 
-impl<'a> From<bool> for Value<'a> {
+impl From<bool> for Value<'_> {
     fn from(f: bool) -> Self {
         Value::Bool(f)
     }
 }
 
-impl<'a> From<String> for Value<'a> {
+impl From<String> for Value<'_> {
     fn from(f: String) -> Self {
         Value::String(f.into())
     }
@@ -142,13 +142,13 @@ impl<'a, K: Into<String>, V: Into<Value<'a>>> FromIterator<(K, V)> for Value<'a>
     }
 }
 
-impl<'a> From<()> for Value<'a> {
+impl From<()> for Value<'_> {
     fn from((): ()) -> Self {
         Value::Null
     }
 }
 
-impl<'a> From<&JsonValue> for Value<'a> {
+impl From<&JsonValue> for Value<'_> {
     fn from(value: &JsonValue) -> Self {
         match value {
             JsonValue::Null => Value::Null,
@@ -182,7 +182,7 @@ impl<'a> From<&JsonValue> for Value<'a> {
     }
 }
 
-impl<'a> From<JsonValue> for Value<'a> {
+impl From<JsonValue> for Value<'_> {
     fn from(value: JsonValue) -> Self {
         (&value).into()
     }

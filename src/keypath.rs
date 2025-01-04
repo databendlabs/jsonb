@@ -47,7 +47,7 @@ pub enum KeyPath<'a> {
     Name(Cow<'a, str>),
 }
 
-impl<'a> Display for KeyPaths<'a> {
+impl Display for KeyPaths<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{{")?;
         for (i, path) in self.paths.iter().enumerate() {
@@ -61,7 +61,7 @@ impl<'a> Display for KeyPaths<'a> {
     }
 }
 
-impl<'a> Display for KeyPath<'a> {
+impl Display for KeyPath<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             KeyPath::Index(idx) => {

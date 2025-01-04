@@ -14,7 +14,6 @@
 
 use std::borrow::Cow;
 
-use crate::is_jsonb;
 use crate::lazy_value::LazyValue;
 
 use super::constants::*;
@@ -386,4 +385,15 @@ impl<'a> Parser<'a> {
         }
         Ok(Value::Object(obj))
     }
+}
+
+// Check whether the value is `JSONB` format,
+// for compatibility with previous `JSON` string.
+fn is_jsonb(value: &[u8]) -> bool {
+    if let Some(v) = value.first() {
+        if matches!(*v, ARRAY_PREFIX | OBJECT_PREFIX | SCALAR_PREFIX) {
+            return true;
+        }
+    }
+    false
 }

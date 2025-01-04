@@ -30,12 +30,12 @@ use super::value::Value;
 /// This structure can be nested. Each group of structures starts with a `Header`.
 /// The upper-level `Value` will store the `Header` length or offset of
 /// the lower-level `Value`.
-
+///
 /// `Header` stores the type of the `Value`, include `Array`, `Object` and `Scalar`,
 /// `Scalar` has only one `Value`, and a corresponding `JEntry`.
 /// `Array` and `Object` are nested type, they have multiple lower-level `Values`.
 /// So the `Header` also stores the number of lower-level `Values`.
-
+///
 /// `JEntry` stores the types of `Scalar Value`, including `Null`, `True`, `False`,
 /// `Number`, `String` and `Container`. They have three different decode methods.
 /// 1. `Null`, `True` and `False` can be obtained by `JEntry`, no extra work required.
