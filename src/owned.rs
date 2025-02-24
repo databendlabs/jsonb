@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use crate::error::Error;
+use crate::error::Result;
 use crate::parse_value;
 use crate::RawJsonb;
 use std::fmt::Display;
 use std::str::FromStr;
+
+use crate::core::Serializer;
 
 /// Represents a JSONB data that owns its underlying data.
 ///
@@ -24,7 +27,7 @@ use std::str::FromStr;
 /// `OwnedJsonb` is primarily used to create JSONB data from other data types (such as JSON String).
 /// However, for most operations, it's necessary to convert an `OwnedJsonb` to a `RawJsonb` using the `as_raw()` method
 /// to avoid unnecessary copying and to take advantage of the performance benefits of the read-only access of the `RawJsonb`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq)]
 pub struct OwnedJsonb {
     /// The underlying `Vec<u8>` containing the binary JSONB data.
     pub(crate) data: Vec<u8>,
@@ -104,7 +107,7 @@ impl From<Vec<u8>> for OwnedJsonb {
 impl FromStr for OwnedJsonb {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let value = parse_value(s.as_bytes())?;
         let mut data = Vec::new();
         value.write_to_vec(&mut data);
@@ -126,4 +129,14 @@ impl Display for OwnedJsonb {
         let raw_jsonb = self.as_raw();
         write!(f, "{}", raw_jsonb.to_string())
     }
+}
+
+/// Serialize a value into a JSONB byte array
+pub fn to_owned_jsonb<T>(value: &T) -> Result<OwnedJsonb>
+where
+    T: serde::ser::Serialize,
+{
+    let mut serializer = Serializer::default();
+    value.serialize(&mut serializer)?;
+    Ok(OwnedJsonb::new(serializer.to_vec()))
 }

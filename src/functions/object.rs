@@ -14,21 +14,19 @@
 
 // This file contains functions that specifically operate on JSONB object values.
 
-use core::convert::TryInto;
+use crate::raw::JsonbItem;
+use crate::ValueType;
 use std::collections::BTreeSet;
-use std::collections::VecDeque;
 use std::str::from_utf8;
-use std::str::from_utf8_unchecked;
 
-use crate::builder::ObjectBuilder;
-use crate::constants::*;
+use crate::core::ArrayBuilder;
+use crate::core::ArrayIterator;
+use crate::core::ObjectBuilder;
+use crate::core::ObjectIterator;
+use crate::core::ObjectKeyIterator;
+use crate::core::OwnedObjectBuilder;
+
 use crate::error::*;
-use crate::functions::core::extract_by_jentry;
-use crate::functions::core::read_u32;
-use crate::iterator::iteate_object_keys;
-use crate::iterator::iterate_array;
-use crate::iterator::iterate_object_entries;
-use crate::jentry::JEntry;
 
 use crate::OwnedJsonb;
 use crate::RawJsonb;
@@ -77,53 +75,13 @@ impl OwnedJsonb {
     /// ```
     pub fn build_object<'a, K: AsRef<str>>(
         items: impl IntoIterator<Item = (K, RawJsonb<'a>)>,
-    ) -> Result<OwnedJsonb, Error> {
-        let mut key_jentries = Vec::new();
-        let mut val_jentries = Vec::new();
-        let mut key_data = Vec::new();
-        let mut val_data = Vec::new();
-
-        for (key, value) in items.into_iter() {
-            let key = key.as_ref();
-            // write key jentry and key data
-            let encoded_key_jentry = (STRING_TAG | key.len() as u32).to_be_bytes();
-            key_jentries.push(encoded_key_jentry);
-            key_data.extend_from_slice(key.as_bytes());
-
-            // build value jentry and write value data
-            let header = read_u32(value.data, 0)?;
-            let encoded_val_jentry = match header & CONTAINER_HEADER_TYPE_MASK {
-                SCALAR_CONTAINER_TAG => {
-                    let jentry = &value.data[4..8];
-                    val_data.extend_from_slice(&value.data[8..]);
-                    jentry.try_into().unwrap()
-                }
-                ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                    val_data.extend_from_slice(value.data);
-                    (CONTAINER_TAG | value.data.len() as u32).to_be_bytes()
-                }
-                _ => return Err(Error::InvalidJsonbHeader),
-            };
-            val_jentries.push(encoded_val_jentry);
+    ) -> Result<OwnedJsonb> {
+        let mut builder = OwnedObjectBuilder::new();
+        for (key, val_jsonb) in items.into_iter() {
+            let key_str = key.as_ref().to_string();
+            builder.push_owned_jsonb(key_str, val_jsonb.to_owned())?;
         }
-        let len = key_jentries.len();
-        // reserve space for header, jentries and value data
-        let mut buf = Vec::with_capacity(key_data.len() + val_data.len() + len * 8 + 4);
-        // write header
-        let header = OBJECT_CONTAINER_TAG | (len as u32);
-        buf.extend_from_slice(&header.to_be_bytes());
-        // write key jentries
-        for jentry in key_jentries.into_iter() {
-            buf.extend_from_slice(&jentry);
-        }
-        // write value jentries
-        for jentry in val_jentries.into_iter() {
-            buf.extend_from_slice(&jentry);
-        }
-        // write key data and value data
-        buf.extend_from_slice(&key_data);
-        buf.extend_from_slice(&val_data);
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 }
 
@@ -168,38 +126,18 @@ impl RawJsonb<'_> {
     /// assert!(keys_result.is_ok());
     /// assert!(keys_result.unwrap().is_none());
     /// ```
-    pub fn object_keys(&self) -> Result<Option<OwnedJsonb>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let mut buf: Vec<u8> = Vec::new();
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let key_header = ARRAY_CONTAINER_TAG | length as u32;
-                buf.extend_from_slice(&key_header.to_be_bytes());
-
-                let mut jentry_offset = 4;
-                let mut key_offset = 8 * length + 4;
-                let mut key_offsets = Vec::with_capacity(length);
-                for _ in 0..length {
-                    let key_encoded = read_u32(self.data, jentry_offset)?;
-                    let key_jentry = JEntry::decode_jentry(key_encoded);
-                    buf.extend_from_slice(&key_encoded.to_be_bytes());
-
-                    jentry_offset += 4;
-                    key_offset += key_jentry.length as usize;
-                    key_offsets.push(key_offset);
+    pub fn object_keys(&self) -> Result<Option<OwnedJsonb>> {
+        let object_key_iter_opt = ObjectKeyIterator::new(*self)?;
+        match object_key_iter_opt {
+            Some(mut object_key_iter) => {
+                let mut builder = ArrayBuilder::with_capacity(object_key_iter.len());
+                for key_result in &mut object_key_iter {
+                    let key_item = key_result?;
+                    builder.push_raw_jsonb_item(key_item);
                 }
-                let mut prev_key_offset = 8 * length + 4;
-                for key_offset in key_offsets {
-                    if key_offset > prev_key_offset {
-                        buf.extend_from_slice(&self.data[prev_key_offset..key_offset]);
-                    }
-                    prev_key_offset = key_offset;
-                }
-                Ok(Some(OwnedJsonb::new(buf)))
+                Ok(Some(builder.build()?))
             }
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+            None => Ok(None),
         }
     }
 
@@ -251,45 +189,19 @@ impl RawJsonb<'_> {
     /// assert!(items_result.is_ok());
     /// assert!(items_result.unwrap().is_none());
     /// ```
-    pub fn object_each(&self) -> Result<Option<Vec<(String, OwnedJsonb)>>, Error> {
-        let header = read_u32(self.data, 0)?;
-
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let mut items: Vec<(String, OwnedJsonb)> = Vec::with_capacity(length);
-                let mut jentries: VecDeque<(JEntry, u32)> = VecDeque::with_capacity(length * 2);
-                let mut offset = 4;
-
-                for _ in 0..length * 2 {
-                    let encoded = read_u32(self.data, offset)?;
-                    offset += 4;
-                    jentries.push_back((JEntry::decode_jentry(encoded), encoded));
-                }
-
-                let mut keys: VecDeque<String> = VecDeque::with_capacity(length);
-                for _ in 0..length {
-                    let (jentry, _) = jentries.pop_front().unwrap();
-                    let key_len = jentry.length as usize;
-                    let key_data = self.data[offset..offset + key_len].to_vec();
-                    let key = String::from_utf8(key_data).map_err(|_| Error::InvalidJsonb)?;
-                    keys.push_back(key);
-                    offset += key_len;
-                }
-
-                for _ in 0..length {
-                    let (jentry, encoded) = jentries.pop_front().unwrap();
-                    let key = keys.pop_front().unwrap();
-                    let val_length = jentry.length as usize;
-                    let val_data = extract_by_jentry(&jentry, encoded, offset, self.data);
-                    let val = OwnedJsonb::new(val_data);
-                    offset += val_length;
-                    items.push((key, val));
+    pub fn object_each(&self) -> Result<Option<Vec<(String, OwnedJsonb)>>> {
+        let object_iter_opt = ObjectIterator::new(*self)?;
+        match object_iter_opt {
+            Some(mut object_iter) => {
+                let mut items = Vec::with_capacity(object_iter.len());
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    let owned_jsonb_val = OwnedJsonb::from_item(val_item)?;
+                    items.push((key.to_string(), owned_jsonb_val));
                 }
                 Ok(Some(items))
             }
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+            None => Ok(None),
         }
     }
 
@@ -324,102 +236,61 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = obj_jsonb.as_raw();
     /// let new_jsonb = "2".parse::<OwnedJsonb>().unwrap();
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let inserted = raw_jsonb.object_insert("b", new_raw_jsonb, false).unwrap();
+    /// let inserted = raw_jsonb.object_insert("b", &new_raw_jsonb, false).unwrap();
     /// assert_eq!(inserted.to_string(), r#"{"a":1,"b":2}"#);
     ///
     /// // Updating an existing key-value pair
-    /// let updated = inserted.as_raw().object_insert("b", r#"3"#.parse::<OwnedJsonb>().unwrap().as_raw(), true).unwrap();
+    /// let new_jsonb = r#"3"#.parse::<OwnedJsonb>().unwrap();
+    /// let new_raw_jsonb = new_jsonb.as_raw();
+    /// let updated = inserted.as_raw().object_insert("b", &new_raw_jsonb, true).unwrap();
     /// assert_eq!(updated.to_string(), r#"{"a":1,"b":3}"#);
     ///
     /// // Attempting to insert a duplicate key without update
-    /// let result = raw_jsonb.object_insert("a", r#"4"#.parse::<OwnedJsonb>().unwrap().as_raw(), false);
+    /// let result = raw_jsonb.object_insert("a", &new_raw_jsonb, false);
     /// assert!(result.is_err()); // Returns an error because key "a" already exists
     ///
     /// // Invalid JSONB input
     /// let invalid_jsonb = OwnedJsonb::new(vec![1,2,3,4]);
     /// let invalid_raw_jsonb = invalid_jsonb.as_raw();
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let result = invalid_raw_jsonb.object_insert("a", new_raw_jsonb, false);
+    /// let result = invalid_raw_jsonb.object_insert("a", &new_raw_jsonb, false);
     /// assert!(result.is_err()); // Returns an error due to invalid JSONB data
     ///
     /// // Inserting into a non-object
     /// let arr_jsonb = "[1,2,3]".parse::<OwnedJsonb>().unwrap();
     /// let arr_raw_jsonb = invalid_jsonb.as_raw();
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let result = arr_raw_jsonb.object_insert("a", new_raw_jsonb, false);
+    /// let result = arr_raw_jsonb.object_insert("a", &new_raw_jsonb, false);
     /// assert!(result.is_err()); // Returns an error because input is not a JSONB object
     /// ```
     pub fn object_insert(
         &self,
         new_key: &str,
-        new_val: RawJsonb,
+        new_val: &RawJsonb,
         update_flag: bool,
-    ) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let new_value = new_val.data;
-
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {}
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => {
+    ) -> Result<OwnedJsonb> {
+        let mut builder = ObjectBuilder::new();
+        let object_iter_opt = ObjectIterator::new(*self)?;
+        match object_iter_opt {
+            Some(mut object_iter) => {
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    if new_key.eq(key) {
+                        if !update_flag {
+                            return Err(Error::ObjectDuplicateKey);
+                        }
+                    } else {
+                        builder.push_raw_jsonb_item(key, val_item)?;
+                    }
+                }
+                let new_val_item = JsonbItem::from_raw_jsonb(*new_val)?;
+                builder.push_raw_jsonb_item(new_key, new_val_item)?;
+            }
+            None => {
                 return Err(Error::InvalidObject);
             }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
         }
-
-        let mut idx = 0;
-        let mut duplicate_key = false;
-        for (i, obj_key) in iteate_object_keys(value, header).enumerate() {
-            if new_key.eq(obj_key) {
-                if !update_flag {
-                    return Err(Error::ObjectDuplicateKey);
-                }
-                idx = i;
-                duplicate_key = true;
-                break;
-            } else if new_key > obj_key {
-                idx = i + 1;
-            } else {
-                break;
-            }
-        }
-
-        let mut builder = ObjectBuilder::new();
-        let mut obj_iter = iterate_object_entries(value, header);
-        for _ in 0..idx {
-            if let Some((key, jentry, item)) = obj_iter.next() {
-                builder.push_raw(key, jentry, item);
-            }
-        }
-        // insert new key and value
-        let new_header = read_u32(new_value, 0)?;
-        match new_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                let new_jentry = JEntry::make_container_jentry(new_value.len());
-                builder.push_raw(new_key, new_jentry, new_value);
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(new_value, 4)?;
-                let new_jentry = JEntry::decode_jentry(encoded);
-                builder.push_raw(new_key, new_jentry, &new_value[8..]);
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        }
-        // if the key is duplicated, ignore the original key and value.
-        if duplicate_key {
-            let _ = obj_iter.next();
-        }
-        for (key, jentry, item) in obj_iter {
-            builder.push_raw(key, jentry, item);
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 
     /// Deletes key-value pairs from a JSONB object based on a set of keys.
@@ -468,30 +339,24 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.object_delete(&keys_to_delete);
     /// assert!(result.is_err()); // Returns an error
     /// ```
-    pub fn object_delete(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {}
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => {
+    pub fn object_delete(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb> {
+        let mut builder = ObjectBuilder::new();
+        let object_iter_opt = ObjectIterator::new(*self)?;
+        match object_iter_opt {
+            Some(mut object_iter) => {
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    if keys.contains(key) {
+                        continue;
+                    }
+                    builder.push_raw_jsonb_item(key, val_item)?;
+                }
+            }
+            None => {
                 return Err(Error::InvalidObject);
             }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
         }
-
-        let mut builder = ObjectBuilder::new();
-        for (key, jentry, item) in iterate_object_entries(value, header) {
-            if keys.contains(key) {
-                continue;
-            }
-            builder.push_raw(key, jentry, item);
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 
     /// Creates a new JSONB object containing only the specified keys from the original object.
@@ -540,31 +405,24 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.object_pick(&keys_to_pick);
     /// assert!(result.is_err()); // Returns an error
     /// ```
-    pub fn object_pick(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {}
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => {
+    pub fn object_pick(&self, keys: &BTreeSet<&str>) -> Result<OwnedJsonb> {
+        let mut builder = ObjectBuilder::new();
+        let object_iter_opt = ObjectIterator::new(*self)?;
+        match object_iter_opt {
+            Some(mut object_iter) => {
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    if !keys.contains(key) {
+                        continue;
+                    }
+                    builder.push_raw_jsonb_item(key, val_item)?;
+                }
+            }
+            None => {
                 return Err(Error::InvalidObject);
             }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
         }
-
-        let mut builder = ObjectBuilder::new();
-        for (key, jentry, item) in iterate_object_entries(value, header) {
-            if !keys.contains(key) {
-                continue;
-            }
-            builder.push_raw(key, jentry, item);
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 
     /// Checks if all specified keys exist in a JSONB object.
@@ -610,21 +468,37 @@ impl RawJsonb<'_> {
     /// let keys = ["a b".as_bytes(), "c".as_bytes()];
     /// assert!(raw_jsonb.exists_all_keys(keys.into_iter()).unwrap());
     /// ```
-    pub fn exists_all_keys<'a, I: Iterator<Item = &'a [u8]>>(
-        &self,
-        keys: I,
-    ) -> Result<bool, Error> {
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-
-        for key in keys {
-            match from_utf8(key) {
-                Ok(key) => {
-                    if !Self::exists_key(value, header, key)? {
-                        return Ok(false);
+    pub fn exists_all_keys<'a, I: Iterator<Item = &'a [u8]>>(&self, keys: I) -> Result<bool> {
+        let mut self_keys = BTreeSet::new();
+        let value_type = self.value_type()?;
+        match value_type {
+            ValueType::Object(_) => {
+                let mut object_key_iter = ObjectKeyIterator::new(*self)?.unwrap();
+                for result in &mut object_key_iter {
+                    let item = result?;
+                    if let Some(obj_key) = item.as_str() {
+                        self_keys.insert(obj_key);
                     }
                 }
-                Err(_) => return Ok(false),
+            }
+            ValueType::Array(_) => {
+                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
+                for result in &mut array_iter {
+                    let item = result?;
+                    if let Some(arr_key) = item.as_str() {
+                        self_keys.insert(arr_key);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for key in keys {
+            if let Ok(key) = from_utf8(key) {
+                if !self_keys.contains(key) {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
             }
         }
         Ok(true)
@@ -673,51 +547,39 @@ impl RawJsonb<'_> {
     /// let keys = ["a b".as_bytes()];
     /// assert!(raw_jsonb.exists_any_keys(keys.into_iter()).unwrap());
     /// ```
-    pub fn exists_any_keys<'a, I: Iterator<Item = &'a [u8]>>(
-        &self,
-        keys: I,
-    ) -> Result<bool, Error> {
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-
-        for key in keys {
-            if let Ok(key) = from_utf8(key) {
-                if Self::exists_key(value, header, key)? {
-                    return Ok(true);
+    pub fn exists_any_keys<'a, I: Iterator<Item = &'a [u8]>>(&self, keys: I) -> Result<bool> {
+        let mut self_keys = BTreeSet::new();
+        let value_type = self.value_type()?;
+        match value_type {
+            ValueType::Object(_) => {
+                let mut object_key_iter = ObjectKeyIterator::new(*self)?.unwrap();
+                for result in &mut object_key_iter {
+                    let item = result?;
+                    if let Some(obj_key) = item.as_str() {
+                        self_keys.insert(obj_key);
+                    }
+                }
+            }
+            ValueType::Array(_) => {
+                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
+                for result in &mut array_iter {
+                    let item = result?;
+                    if let Some(arr_key) = item.as_str() {
+                        self_keys.insert(arr_key);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !self_keys.is_empty() {
+            for key in keys {
+                if let Ok(key) = from_utf8(key) {
+                    if self_keys.contains(key) {
+                        return Ok(true);
+                    }
                 }
             }
         }
         Ok(false)
-    }
-
-    fn exists_key(value: &[u8], header: u32, key: &str) -> Result<bool, Error> {
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let mut matches = false;
-                for obj_key in iteate_object_keys(value, header) {
-                    if obj_key.eq(key) {
-                        matches = true;
-                        break;
-                    }
-                }
-                Ok(matches)
-            }
-            ARRAY_CONTAINER_TAG => {
-                let mut matches = false;
-                for (jentry, val) in iterate_array(value, header) {
-                    if jentry.type_code != STRING_TAG {
-                        continue;
-                    }
-                    let val = unsafe { from_utf8_unchecked(val) };
-                    if val.eq(key) {
-                        matches = true;
-                        break;
-                    }
-                }
-                Ok(matches)
-            }
-            SCALAR_CONTAINER_TAG => Ok(false),
-            _ => Err(Error::InvalidJsonb),
-        }
     }
 }

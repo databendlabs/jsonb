@@ -23,10 +23,9 @@ fn jsonb_get(data: &[u8], paths: &[&str], expected: &str) {
         .map(|p| jsonb::jsonpath::Path::DotField(std::borrow::Cow::Borrowed(p)))
         .collect::<Vec<_>>();
     let json_path = jsonb::jsonpath::JsonPath { paths };
-    let mode = jsonb::jsonpath::Mode::Mixed;
 
     let raw_jsonb = jsonb::RawJsonb::new(data);
-    let result_jsonb = raw_jsonb.get_by_path_opt(&json_path, mode).unwrap();
+    let result_jsonb = raw_jsonb.get_by_path_scalar(&json_path).unwrap();
     assert!(result_jsonb.is_some());
     let result_jsonb = result_jsonb.unwrap();
     let result_raw_jsonb = result_jsonb.as_raw();

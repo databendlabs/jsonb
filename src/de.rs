@@ -53,7 +53,7 @@ use super::value::Value;
 ///    Decode can be executed recursively.
 ///
 ///    Decode `JSONB` Value from binary bytes.
-pub fn from_slice(buf: &[u8]) -> Result<Value<'_>, Error> {
+pub fn from_slice(buf: &[u8]) -> Result<Value<'_>> {
     let mut decoder = Decoder::new(buf);
     match decoder.decode() {
         Ok(value) => Ok(value),
@@ -62,7 +62,7 @@ pub fn from_slice(buf: &[u8]) -> Result<Value<'_>, Error> {
     }
 }
 
-pub fn parse_jsonb(buf: &[u8]) -> Result<Value<'_>, Error> {
+pub fn parse_jsonb(buf: &[u8]) -> Result<Value<'_>> {
     let mut decoder = Decoder::new(buf);
     decoder.decode()
 }
@@ -77,7 +77,7 @@ impl<'a> Decoder<'a> {
         Self { buf }
     }
 
-    pub fn decode(&mut self) -> Result<Value<'a>, Error> {
+    pub fn decode(&mut self) -> Result<Value<'a>> {
         // Valid `JSONB` Value has at least one `Header`
         if self.buf.len() < 4 {
             return Err(Error::InvalidJsonb);
@@ -89,7 +89,7 @@ impl<'a> Decoder<'a> {
     // Read value type from the `Header`
     // `Scalar` has one `JEntry`
     // `Array` and `Object` store the numbers of elements
-    fn decode_jsonb(&mut self) -> Result<Value<'a>, Error> {
+    fn decode_jsonb(&mut self) -> Result<Value<'a>> {
         let container_header = self.buf.read_u32::<BigEndian>()?;
 
         match container_header & CONTAINER_HEADER_TYPE_MASK {
@@ -109,7 +109,7 @@ impl<'a> Decoder<'a> {
     // `Number` and `String` `JEntry` stores the length or offset of the data,
     // read them and decode to the `Value`
     // `Array` and `Object` need to read nested data from the lower-level `Header`
-    fn decode_scalar(&mut self, jentry: JEntry) -> Result<Value<'a>, Error> {
+    fn decode_scalar(&mut self, jentry: JEntry) -> Result<Value<'a>> {
         match jentry.type_code {
             NULL_TAG => Ok(Value::Null),
             TRUE_TAG => Ok(Value::Bool(true)),
@@ -135,7 +135,7 @@ impl<'a> Decoder<'a> {
 
     // Decode the numbers of values from the `Header`,
     // then read all `JEntries`, finally decode the `Value` by `JEntry`
-    fn decode_array(&mut self, container_header: u32) -> Result<Value<'a>, Error> {
+    fn decode_array(&mut self, container_header: u32) -> Result<Value<'a>> {
         let length = (container_header & CONTAINER_HEADER_LEN_MASK) as usize;
         let jentries = self.decode_jentries(length)?;
         let mut values: Vec<Value> = Vec::with_capacity(length);
@@ -151,7 +151,7 @@ impl<'a> Decoder<'a> {
 
     // The basic process is the same as that of `Array`
     // but first decode the keys and then decode the values
-    fn decode_object(&mut self, container_header: u32) -> Result<Value<'a>, Error> {
+    fn decode_object(&mut self, container_header: u32) -> Result<Value<'a>> {
         let length = (container_header & CONTAINER_HEADER_LEN_MASK) as usize;
         let mut jentries = self.decode_jentries(length * 2)?;
 
@@ -178,7 +178,7 @@ impl<'a> Decoder<'a> {
     }
 
     // Decode `JEntries` for `Array` and `Object`
-    fn decode_jentries(&mut self, length: usize) -> Result<VecDeque<JEntry>, Error> {
+    fn decode_jentries(&mut self, length: usize) -> Result<VecDeque<JEntry>> {
         let mut jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
         for _ in 0..length {
             let encoded = self.buf.read_u32::<BigEndian>()?;

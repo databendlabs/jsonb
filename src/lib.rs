@@ -63,13 +63,12 @@
 
 #![allow(clippy::uninlined_format_args)]
 
-mod builder;
 mod constants;
+pub mod core;
 mod de;
 mod error;
 mod from;
 mod functions;
-mod iterator;
 mod jentry;
 pub mod jsonpath;
 pub mod keypath;
@@ -88,8 +87,11 @@ pub use error::Error;
 pub use from::*;
 pub use lazy_value::*;
 pub use number::Number;
+pub use owned::to_owned_jsonb;
 pub use owned::OwnedJsonb;
 pub use parser::parse_lazy_value;
 pub use parser::parse_value;
+pub use raw::from_raw_jsonb;
 pub use raw::RawJsonb;
+pub use raw::ValueType;
 pub use value::*;

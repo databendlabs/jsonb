@@ -88,6 +88,45 @@ pub enum ArrayIndex {
     Slice((Index, Index)),
 }
 
+impl ArrayIndex {
+    pub fn to_indices(&self, length: usize) -> Vec<usize> {
+        let length = length as i32;
+
+        let mut indices = Vec::new();
+        match self {
+            ArrayIndex::Index(idx) => {
+                let idx = Self::convert_index(idx, length);
+                if idx >= 0 && idx < length {
+                    indices.push(idx as usize);
+                }
+            }
+            ArrayIndex::Slice((start, end)) => {
+                let start_idx = Self::convert_index(start, length);
+                let end_idx = Self::convert_index(end, length);
+
+                let start_idx = if start_idx < 0 { 0 } else { start_idx as usize };
+                let end_idx = if end_idx >= length {
+                    (length - 1) as usize
+                } else {
+                    end_idx as usize
+                };
+                if start_idx <= end_idx {
+                    let mut sclie_indices = (start_idx..=end_idx).collect();
+                    indices.append(&mut sclie_indices);
+                }
+            }
+        }
+        indices
+    }
+
+    fn convert_index(index: &Index, length: i32) -> i32 {
+        match index {
+            Index::Index(idx) => *idx,
+            Index::LastIndex(idx) => length + *idx - 1,
+        }
+    }
+}
+
 /// Represents a literal value used in filter expression.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum PathValue<'a> {

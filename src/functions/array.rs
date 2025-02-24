@@ -14,21 +14,15 @@
 
 // This file contains functions that specifically operate on JSONB array values.
 
-use core::convert::TryInto;
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
-use std::collections::VecDeque;
+use crate::core::ArrayBuilder;
+use crate::core::ArrayDistinctBuilder;
+use crate::core::ArrayIterator;
 
-use crate::builder::ArrayBuilder;
-use crate::constants::*;
 use crate::error::*;
-use crate::functions::core::extract_by_jentry;
-use crate::functions::core::read_u32;
-use crate::iterator::iterate_array;
-use crate::jentry::JEntry;
 
 use crate::OwnedJsonb;
 use crate::RawJsonb;
+use crate::ValueType;
 
 impl OwnedJsonb {
     /// Builds a JSONB array from a collection of RawJsonb values.
@@ -73,38 +67,13 @@ impl OwnedJsonb {
     /// assert!(result.is_err());
     /// ```
     pub fn build_array<'a>(
-        items: impl IntoIterator<Item = RawJsonb<'a>>,
-    ) -> Result<OwnedJsonb, Error> {
-        let mut jentries = Vec::new();
-        let mut data = Vec::new();
-        for value in items.into_iter() {
-            let header = read_u32(value.data, 0)?;
-            let encoded_jentry = match header & CONTAINER_HEADER_TYPE_MASK {
-                SCALAR_CONTAINER_TAG => {
-                    let jentry = &value.data[4..8];
-                    data.extend_from_slice(&value.data[8..]);
-                    jentry.try_into().unwrap()
-                }
-                ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                    data.extend_from_slice(value.data);
-                    (CONTAINER_TAG | value.data.len() as u32).to_be_bytes()
-                }
-                _ => return Err(Error::InvalidJsonbHeader),
-            };
-            jentries.push(encoded_jentry);
+        raw_jsonbs: impl IntoIterator<Item = RawJsonb<'a>>,
+    ) -> Result<OwnedJsonb> {
+        let mut builder = ArrayBuilder::new();
+        for raw_jsonb in raw_jsonbs.into_iter() {
+            builder.push_raw_jsonb(raw_jsonb);
         }
-        let len = jentries.len();
-        // reserve space for header, jentries and value data
-        let mut buf = Vec::with_capacity(data.len() + len * 4 + 4);
-        // write header
-        let header = ARRAY_CONTAINER_TAG | (len as u32);
-        buf.extend_from_slice(&header.to_be_bytes());
-        // write jentries
-        for jentry in jentries.into_iter() {
-            buf.extend_from_slice(&jentry);
-        }
-        buf.extend_from_slice(&data);
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 }
 
@@ -131,19 +100,13 @@ impl RawJsonb<'_> {
     /// let len = raw_jsonb.array_length().unwrap();
     /// assert_eq!(len, None);
     /// ```
-    pub fn array_length(&self) -> Result<Option<usize>, Error> {
-        let header = read_u32(self.data, 0)?;
-        let len = match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                Some(length)
-            }
-            OBJECT_CONTAINER_TAG | SCALAR_CONTAINER_TAG => None,
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        };
-        Ok(len)
+    pub fn array_length(&self) -> Result<Option<usize>> {
+        let value_type = self.value_type()?;
+        if let ValueType::Array(len) = value_type {
+            Ok(Some(len))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Extracts the values from a JSONB array.
@@ -193,29 +156,19 @@ impl RawJsonb<'_> {
     /// assert!(values_result.is_ok());
     /// assert!(values_result.unwrap().is_none());
     /// ```
-    pub fn array_values(&self) -> Result<Option<Vec<OwnedJsonb>>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let mut jentry_offset = 4;
-                let mut val_offset = 4 * length + 4;
-                let mut items = Vec::with_capacity(length);
-                for _ in 0..length {
-                    let encoded = read_u32(self.data, jentry_offset)?;
-                    let jentry = JEntry::decode_jentry(encoded);
-                    let val_length = jentry.length as usize;
-                    let item_data = extract_by_jentry(&jentry, encoded, val_offset, self.data);
-                    let item = OwnedJsonb::new(item_data);
-                    items.push(item);
-
-                    jentry_offset += 4;
-                    val_offset += val_length;
+    pub fn array_values(&self) -> Result<Option<Vec<OwnedJsonb>>> {
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                let mut values = Vec::with_capacity(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    let value = OwnedJsonb::from_item(item)?;
+                    values.push(value);
                 }
-                Ok(Some(items))
+                Ok(Some(values))
             }
-            OBJECT_CONTAINER_TAG | SCALAR_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+            None => Ok(None),
         }
     }
 
@@ -269,37 +222,23 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.array_distinct();
     /// assert!(result.is_err());
     /// ```
-    pub fn array_distinct(&self) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-        let mut builder = ArrayBuilder::new(0);
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                let mut item_set = BTreeSet::new();
-                for (jentry, item) in iterate_array(value, header) {
-                    if !item_set.contains(&(jentry.clone(), item)) {
-                        item_set.insert((jentry.clone(), item));
-                        builder.push_raw(jentry, item);
-                    }
+    pub fn array_distinct(&self) -> Result<OwnedJsonb> {
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    builder.push_raw_jsonb_item(item);
                 }
+                builder.build()
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(value.len());
-                builder.push_raw(jentry, value);
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(value, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                builder.push_raw(jentry, &value[8..]);
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
+            None => {
+                let mut builder = ArrayBuilder::with_capacity(1);
+                builder.push_raw_jsonb(*self);
+                builder.build()
             }
         }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
     }
 
     /// Computes the intersection of two JSONB arrays or the containment check for objects and scalars.
@@ -329,100 +268,73 @@ impl RawJsonb<'_> {
     /// // Array intersection
     /// let arr1 = r#"[1, 2, 2, 3]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[2, 3, 4]"#.parse::<OwnedJsonb>().unwrap();
-    /// let intersection = arr1.as_raw().array_intersection(arr2.as_raw()).unwrap();
+    /// let intersection = arr1.as_raw().array_intersection(&arr2.as_raw()).unwrap();
     /// assert_eq!(intersection.to_string(), "[2,3]"); // Order may vary, duplicates handled
     ///
     /// let arr1 = r#"[1, 1, 2, 3]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[1, 1, 1, 3]"#.parse::<OwnedJsonb>().unwrap();
-    /// let intersection = arr1.as_raw().array_intersection(arr2.as_raw()).unwrap();
+    /// let intersection = arr1.as_raw().array_intersection(&arr2.as_raw()).unwrap();
     /// assert_eq!(intersection.to_string(), "[1,1,3]"); //Order may vary
     ///
     /// // Object containment (checks for complete equality)
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
-    /// let contained = obj1.as_raw().array_intersection(obj2.as_raw()).unwrap();
+    /// let contained = obj1.as_raw().array_intersection(&obj2.as_raw()).unwrap();
     /// assert_eq!(contained.to_string(), r#"[{"a":1}]"#);
     ///
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 2}"#.parse::<OwnedJsonb>().unwrap();
-    /// let contained = obj1.as_raw().array_intersection(obj2.as_raw()).unwrap();
+    /// let contained = obj1.as_raw().array_intersection(&obj2.as_raw()).unwrap();
     /// assert_eq!(contained.to_string(), "[]"); // Not contained
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "1".parse::<OwnedJsonb>().unwrap();
-    /// let contained = scalar1.as_raw().array_intersection(scalar2.as_raw()).unwrap();
+    /// let contained = scalar1.as_raw().array_intersection(&scalar2.as_raw()).unwrap();
     /// assert_eq!(contained.to_string(), "[1]"); // Contained
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "2".parse::<OwnedJsonb>().unwrap();
-    /// let contained = scalar1.as_raw().array_intersection(scalar2.as_raw()).unwrap();
+    /// let contained = scalar1.as_raw().array_intersection(&scalar2.as_raw()).unwrap();
     /// assert_eq!(contained.to_string(), "[]"); // Not contained
     /// ```
-    pub fn array_intersection(&self, other: RawJsonb) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let left = self.data;
-        let right = other.data;
+    pub fn array_intersection(&self, other: &RawJsonb) -> Result<OwnedJsonb> {
+        let other_array_iter_opt = ArrayIterator::new(*other)?;
+        let mut other_builder = match other_array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    builder.push_raw_jsonb_item(item);
+                }
+                builder
+            }
+            None => {
+                let mut builder = ArrayDistinctBuilder::new(1);
+                builder.push_raw_jsonb(*other);
+                builder
+            }
+        };
 
-        let left_header = read_u32(left, 0)?;
-        let right_header = read_u32(right, 0)?;
-
-        let mut item_map = BTreeMap::new();
-        match right_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(right, right_header) {
-                    if let Some(cnt) = item_map.get_mut(&(jentry.clone(), item)) {
-                        *cnt += 1;
-                    } else {
-                        item_map.insert((jentry, item), 1);
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    if other_builder.pop_raw_jsonb_item(item.clone()).is_some() {
+                        builder.push_raw_jsonb_item(item);
                     }
                 }
+                builder.build()
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(right.len());
-                item_map.insert((jentry, right), 1);
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(right, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                item_map.insert((jentry, &right[8..]), 1);
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
+            None => {
+                let mut builder = ArrayBuilder::with_capacity(1);
+                if other_builder.pop_raw_jsonb(*self).is_some() {
+                    builder.push_raw_jsonb(*self);
+                }
+                builder.build()
             }
         }
-
-        let mut builder = ArrayBuilder::new(0);
-        match left_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(left, left_header) {
-                    if let Some(cnt) = item_map.get_mut(&(jentry.clone(), item)) {
-                        if *cnt > 0 {
-                            *cnt -= 1;
-                            builder.push_raw(jentry, item);
-                        }
-                    }
-                }
-            }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(left.len());
-                if item_map.contains_key(&(jentry.clone(), left)) {
-                    builder.push_raw(jentry, left);
-                }
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(left, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                if item_map.contains_key(&(jentry.clone(), &left[8..])) {
-                    builder.push_raw(jentry, &left[8..]);
-                }
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
     }
 
     /// Computes the set difference between two JSONB arrays or checks for non-containment of objects and scalars.
@@ -451,101 +363,73 @@ impl RawJsonb<'_> {
     /// // Array except
     /// let arr1 = r#"[1, 2, 2, 3]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[2, 3, 4]"#.parse::<OwnedJsonb>().unwrap();
-    /// let except = arr1.as_raw().array_except(arr2.as_raw()).unwrap();
+    /// let except = arr1.as_raw().array_except(&arr2.as_raw()).unwrap();
     /// assert_eq!(except.to_string(), "[1,2]"); // Order may vary, duplicates handled
     ///
     /// let arr1 = r#"[1, 1, 2, 3, 3]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[1, 3, 3]"#.parse::<OwnedJsonb>().unwrap();
-    /// let except = arr1.as_raw().array_except(arr2.as_raw()).unwrap();
+    /// let except = arr1.as_raw().array_except(&arr2.as_raw()).unwrap();
     /// assert_eq!(except.to_string(), "[1,2]"); // Order may vary
     ///
     /// // Object non-containment
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
-    /// let not_contained = obj1.as_raw().array_except(obj2.as_raw()).unwrap();
+    /// let not_contained = obj1.as_raw().array_except(&obj2.as_raw()).unwrap();
     /// assert_eq!(not_contained.to_string(), "[]"); // Completely contained
     ///
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 2}"#.parse::<OwnedJsonb>().unwrap();
-    /// let not_contained = obj1.as_raw().array_except(obj2.as_raw()).unwrap();
+    /// let not_contained = obj1.as_raw().array_except(&obj2.as_raw()).unwrap();
     /// assert_eq!(not_contained.to_string(), r#"[{"a":1}]"#); // Not contained
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "1".parse::<OwnedJsonb>().unwrap();
-    /// let not_contained = scalar1.as_raw().array_except(scalar2.as_raw()).unwrap();
+    /// let not_contained = scalar1.as_raw().array_except(&scalar2.as_raw()).unwrap();
     /// assert_eq!(not_contained.to_string(), "[]"); // Contained
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "2".parse::<OwnedJsonb>().unwrap();
-    /// let not_contained = scalar1.as_raw().array_except(scalar2.as_raw()).unwrap();
+    /// let not_contained = scalar1.as_raw().array_except(&scalar2.as_raw()).unwrap();
     /// assert_eq!(not_contained.to_string(), "[1]"); // Not contained
     /// ```
-    pub fn array_except(&self, other: RawJsonb) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let left = self.data;
-        let right = other.data;
+    pub fn array_except(&self, other: &RawJsonb) -> Result<OwnedJsonb> {
+        let other_array_iter_opt = ArrayIterator::new(*other)?;
+        let mut other_builder = match other_array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    builder.push_raw_jsonb_item(item);
+                }
+                builder
+            }
+            None => {
+                let mut builder = ArrayDistinctBuilder::new(1);
+                builder.push_raw_jsonb(*other);
+                builder
+            }
+        };
 
-        let left_header = read_u32(left, 0)?;
-        let right_header = read_u32(right, 0)?;
-
-        let mut item_map = BTreeMap::new();
-        match right_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(right, right_header) {
-                    if let Some(cnt) = item_map.get_mut(&(jentry.clone(), item)) {
-                        *cnt += 1;
-                    } else {
-                        item_map.insert((jentry, item), 1);
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    if other_builder.pop_raw_jsonb_item(item.clone()).is_none() {
+                        builder.push_raw_jsonb_item(item);
                     }
                 }
+                builder.build()
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(right.len());
-                item_map.insert((jentry, right), 1);
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(right, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                item_map.insert((jentry, &right[8..]), 1);
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
+            None => {
+                let mut builder = ArrayBuilder::with_capacity(1);
+                if other_builder.pop_raw_jsonb(*self).is_none() {
+                    builder.push_raw_jsonb(*self);
+                }
+                builder.build()
             }
         }
-
-        let mut builder = ArrayBuilder::new(0);
-        match left_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(left, left_header) {
-                    if let Some(cnt) = item_map.get_mut(&(jentry.clone(), item)) {
-                        if *cnt > 0 {
-                            *cnt -= 1;
-                            continue;
-                        }
-                    }
-                    builder.push_raw(jentry, item);
-                }
-            }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(left.len());
-                if !item_map.contains_key(&(jentry.clone(), left)) {
-                    builder.push_raw(jentry, left);
-                }
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(left, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                if !item_map.contains_key(&(jentry.clone(), &left[8..])) {
-                    builder.push_raw(jentry, &left[8..]);
-                }
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
     }
 
     /// Checks if two JSONB arrays or a JSONB array and an object/scalar have any elements in common.
@@ -577,95 +461,73 @@ impl RawJsonb<'_> {
     /// // Array overlap
     /// let arr1 = r#"[1, 2, 3]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[3, 4, 5]"#.parse::<OwnedJsonb>().unwrap();
-    /// assert!(arr1.as_raw().array_overlap(arr2.as_raw()).unwrap()); // True because of '3'
+    /// assert!(arr1.as_raw().array_overlap(&arr2.as_raw()).unwrap()); // True because of '3'
     ///
     /// let arr1 = r#"[1, 2]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[3, 4]"#.parse::<OwnedJsonb>().unwrap();
-    /// assert!(!arr1.as_raw().array_overlap(arr2.as_raw()).unwrap()); // False, no common elements
+    /// assert!(!arr1.as_raw().array_overlap(&arr2.as_raw()).unwrap()); // False, no common elements
     ///
     /// let arr1 = r#"[1, 2, 2]"#.parse::<OwnedJsonb>().unwrap();
     /// let arr2 = r#"[2, 3]"#.parse::<OwnedJsonb>().unwrap();
-    /// assert!(arr1.as_raw().array_overlap(arr2.as_raw()).unwrap()); // True, '2' is common
+    /// assert!(arr1.as_raw().array_overlap(&arr2.as_raw()).unwrap()); // True, '2' is common
     ///
     /// // Object/scalar overlap (requires complete equality for true)
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
-    /// assert!(obj1.as_raw().array_overlap(obj2.as_raw()).unwrap()); // True, completely equal
+    /// assert!(obj1.as_raw().array_overlap(&obj2.as_raw()).unwrap()); // True, completely equal
     ///
     /// let obj1 = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let obj2 = r#"{"a": 2}"#.parse::<OwnedJsonb>().unwrap();
-    /// assert!(!obj1.as_raw().array_overlap(obj2.as_raw()).unwrap()); // False, not equal
+    /// assert!(!obj1.as_raw().array_overlap(&obj2.as_raw()).unwrap()); // False, not equal
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "1".parse::<OwnedJsonb>().unwrap();
-    /// assert!(scalar1.as_raw().array_overlap(scalar2.as_raw()).unwrap()); // True, equal
+    /// assert!(scalar1.as_raw().array_overlap(&scalar2.as_raw()).unwrap()); // True, equal
     ///
     /// let scalar1 = "1".parse::<OwnedJsonb>().unwrap();
     /// let scalar2 = "2".parse::<OwnedJsonb>().unwrap();
-    /// assert!(!scalar1.as_raw().array_overlap(scalar2.as_raw()).unwrap()); // False, not equal
+    /// assert!(!scalar1.as_raw().array_overlap(&scalar2.as_raw()).unwrap()); // False, not equal
     ///
     /// // Invalid input
     /// let invalid_jsonb = OwnedJsonb::new(vec![1, 2, 3, 4]);
     /// let invalid_raw_jsonb = invalid_jsonb.as_raw();
-    /// let result = invalid_raw_jsonb.array_overlap(arr1.as_raw());
+    /// let result = invalid_raw_jsonb.array_overlap(&arr1.as_raw());
     /// assert!(result.is_err()); // Returns an error
     /// ```
-    pub fn array_overlap(&self, other: RawJsonb) -> Result<bool, Error> {
-        let left = self.data;
-        let right = other.data;
-
-        let left_header = read_u32(left, 0)?;
-        let right_header = read_u32(right, 0)?;
-
-        let mut item_set = BTreeSet::new();
-        match right_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(right, right_header) {
-                    if !item_set.contains(&(jentry.clone(), item)) {
-                        item_set.insert((jentry, item));
-                    }
+    pub fn array_overlap(&self, other: &RawJsonb) -> Result<bool> {
+        let other_array_iter_opt = ArrayIterator::new(*other)?;
+        let mut other_builder = match other_array_iter_opt {
+            Some(mut array_iter) => {
+                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    builder.push_raw_jsonb_item(item);
                 }
+                builder
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(right.len());
-                item_set.insert((jentry, right));
+            None => {
+                let mut builder = ArrayDistinctBuilder::new(1);
+                builder.push_raw_jsonb(*other);
+                builder
             }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(right, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                item_set.insert((jentry, &right[8..]));
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        }
+        };
 
-        match left_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(left, left_header) {
-                    if item_set.contains(&(jentry, item)) {
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    if other_builder.pop_raw_jsonb_item(item).is_some() {
                         return Ok(true);
                     }
                 }
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(left.len());
-                if item_set.contains(&(jentry, left)) {
+            None => {
+                if other_builder.pop_raw_jsonb(*self).is_some() {
                     return Ok(true);
                 }
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = read_u32(left, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                if item_set.contains(&(jentry, &left[8..])) {
-                    return Ok(true);
-                }
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
             }
         }
-
         Ok(false)
     }
 
@@ -700,17 +562,17 @@ impl RawJsonb<'_> {
     /// let new_raw_jsonb = new_jsonb.as_raw();
     ///
     /// // Insert at index 1
-    /// let inserted = raw_jsonb.array_insert(1, new_raw_jsonb).unwrap();
+    /// let inserted = raw_jsonb.array_insert(1, &new_raw_jsonb).unwrap();
     /// assert_eq!(inserted.to_string(), "[1,4,2,3]");
     ///
     /// // Insert at the beginning (pos = 0)
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let inserted = raw_jsonb.array_insert(0, new_raw_jsonb).unwrap();
+    /// let inserted = raw_jsonb.array_insert(0, &new_raw_jsonb).unwrap();
     /// assert_eq!(inserted.to_string(), "[4,1,2,3]");
     ///
     /// // Insert at the end (pos >= length)
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let inserted = raw_jsonb.array_insert(10, new_raw_jsonb).unwrap();
+    /// let inserted = raw_jsonb.array_insert(10, &new_raw_jsonb).unwrap();
     /// assert_eq!(inserted.to_string(), "[1,2,3,4]");
     ///
     /// // Insert into an object
@@ -718,7 +580,7 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = obj_jsonb.as_raw();
     /// let new_jsonb = "2".parse::<OwnedJsonb>().unwrap();
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let inserted = raw_jsonb.array_insert(0, new_raw_jsonb);
+    /// let inserted = raw_jsonb.array_insert(0, &new_raw_jsonb);
     /// assert_eq!(inserted.unwrap().to_string(), r#"[2,{"a":1}]"#);
     ///
     /// // Insert into a scalar
@@ -726,80 +588,48 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = scalar_jsonb.as_raw();
     /// let new_jsonb = "2".parse::<OwnedJsonb>().unwrap();
     /// let new_raw_jsonb = new_jsonb.as_raw();
-    /// let inserted = raw_jsonb.array_insert(0, new_raw_jsonb);
+    /// let inserted = raw_jsonb.array_insert(0, &new_raw_jsonb);
     /// assert_eq!(inserted.unwrap().to_string(), "[2,1]");
     /// ```
-    pub fn array_insert(&self, pos: i32, new_val: RawJsonb) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let new_value = new_val.data;
-        let header = read_u32(value, 0)?;
-        let len = match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => (header & CONTAINER_HEADER_LEN_MASK) as i32,
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => 1,
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        };
+    pub fn array_insert(&self, pos: i32, new_val: &RawJsonb) -> Result<OwnedJsonb> {
+        let len = self.array_length()?.unwrap_or(1);
 
-        let idx = if pos < 0 { len - pos.abs() } else { pos };
+        let idx = if pos < 0 { len as i32 - pos.abs() } else { pos };
         let idx = if idx < 0 {
             0
-        } else if idx > len {
+        } else if idx > len as i32 {
             len
         } else {
-            idx
-        } as usize;
-        let len = len as usize;
+            idx as usize
+        };
 
-        let mut items = VecDeque::with_capacity(len);
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                for (jentry, item) in iterate_array(value, header) {
-                    items.push_back((jentry, item));
+        let mut builder = ArrayBuilder::with_capacity(len + 1);
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        match array_iter_opt {
+            Some(mut array_iter) => {
+                let mut i = 0;
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    if i == idx {
+                        builder.push_raw_jsonb(*new_val);
+                    }
+                    builder.push_raw_jsonb_item(item);
+                    i += 1;
+                }
+                if i == idx {
+                    builder.push_raw_jsonb(*new_val);
                 }
             }
-            OBJECT_CONTAINER_TAG => {
-                let jentry = JEntry::make_container_jentry(value.len());
-                items.push_back((jentry, value));
-            }
-            _ => {
-                let encoded = read_u32(value, 4)?;
-                let jentry = JEntry::decode_jentry(encoded);
-                items.push_back((jentry, &value[8..]));
-            }
-        }
-
-        let mut builder = ArrayBuilder::new(len + 1);
-        if idx > 0 {
-            let mut i = 0;
-            while let Some((jentry, item)) = items.pop_front() {
-                builder.push_raw(jentry, item);
-                i += 1;
-                if i >= idx {
-                    break;
+            None => {
+                if idx == 0 {
+                    builder.push_raw_jsonb(*new_val);
+                    builder.push_raw_jsonb(*self);
+                } else {
+                    builder.push_raw_jsonb(*self);
+                    builder.push_raw_jsonb(*new_val);
                 }
             }
         }
-
-        let new_header = read_u32(new_value, 0)?;
-        match new_header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => {
-                let new_jentry = JEntry::make_container_jentry(new_value.len());
-                builder.push_raw(new_jentry, new_value);
-            }
-            _ => {
-                let encoded = read_u32(new_value, 4)?;
-                let new_jentry = JEntry::decode_jentry(encoded);
-                builder.push_raw(new_jentry, &new_value[8..]);
-            }
-        }
-
-        while let Some((jentry, item)) = items.pop_front() {
-            builder.push_raw(jentry, item);
-        }
-        builder.build_into(&mut buf);
-
-        Ok(OwnedJsonb::new(buf))
+        builder.build()
     }
 }

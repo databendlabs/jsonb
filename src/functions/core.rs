@@ -20,205 +20,13 @@ use std::collections::VecDeque;
 
 use crate::constants::*;
 use crate::error::*;
-use crate::iterator::iterate_array;
-use crate::iterator::iterate_object_entries;
 use crate::jentry::JEntry;
 use crate::number::Number;
-use crate::parser::parse_value;
+use serde::Serialize;
 
 use crate::RawJsonb;
 
 impl RawJsonb<'_> {
-    /// Converts a JSONB value to a serde_json::Value.
-    ///
-    /// This function converts a JSONB value into a `serde_json::Value`.  This allows you to use the powerful features of the `serde_json` crate for further manipulation and processing of the data.
-    ///
-    /// # Arguments
-    ///
-    /// * `self` - The JSONB value.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(serde_json::Value)` - The `serde_json::Value` representation of the JSONB data.
-    /// * `Err(Error)` - If the JSONB data is invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use jsonb::OwnedJsonb;
-    /// use serde_json::json;
-    ///
-    /// // Convert a JSONB object
-    /// let obj_jsonb = r#"{"a": 1, "b": "hello"}"#.parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = obj_jsonb.as_raw();
-    /// let serde_value = raw_jsonb.to_serde_json().unwrap();
-    /// assert_eq!(serde_value, json!({"a": 1, "b": "hello"}));
-    ///
-    /// // Convert a JSONB array
-    /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = arr_jsonb.as_raw();
-    /// let serde_value = raw_jsonb.to_serde_json().unwrap();
-    /// assert_eq!(serde_value, json!([1, 2, 3]));
-    ///
-    /// // Convert a JSONB scalar
-    /// let num_jsonb = "123".parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = num_jsonb.as_raw();
-    /// let serde_value = raw_jsonb.to_serde_json().unwrap();
-    /// assert_eq!(serde_value, json!(123));
-    ///
-    /// // Invalid JSONB data
-    /// let invalid_jsonb = OwnedJsonb::new(vec![1, 2, 3, 4]);
-    /// let invalid_raw_jsonb = invalid_jsonb.as_raw();
-    /// let result = invalid_raw_jsonb.to_serde_json();
-    /// assert!(result.is_err());
-    /// ```
-    pub fn to_serde_json(&self) -> Result<serde_json::Value, Error> {
-        let value = self.data;
-        Self::containter_to_serde_json(value)
-    }
-
-    /// Converts a JSONB value to a serde_json::Map (if it's a JSON object).
-    ///
-    /// This function attempts to convert a JSONB value into a `serde_json::Map<String, serde_json::Value>`.  If the JSONB value is a JSON object, the function returns `Some` containing the converted map; otherwise, it returns `None`. This allows using the powerful features of the `serde_json` crate for further manipulation and processing of the object data.
-    ///
-    /// # Arguments
-    ///
-    /// * `self` - The JSONB value.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Some(serde_json::Map<String, serde_json::Value>))` - If the value is a JSON object, the converted map.
-    /// * `Ok(None)` - If the value is not a JSON object (e.g., array, scalar).
-    /// * `Err(Error)` - If the JSONB data is invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use jsonb::OwnedJsonb;
-    /// use serde_json::json;
-    /// use serde_json::Map;
-    ///
-    /// // JSON object
-    /// let obj_jsonb = r#"{"a": 1, "b": "hello"}"#.parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = obj_jsonb.as_raw();
-    /// let serde_map = raw_jsonb.to_serde_json_object().unwrap();
-    /// assert_eq!(serde_map, Some(json!({"a": 1, "b": "hello"}).as_object().unwrap().clone()));
-    ///
-    /// // Non-object values
-    /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = arr_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.to_serde_json_object().unwrap(), None);
-    ///
-    /// let num_jsonb = "123".parse::<OwnedJsonb>().unwrap();
-    /// let raw_jsonb = num_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.to_serde_json_object().unwrap(), None);
-    ///
-    /// // Invalid JSONB data
-    /// let invalid_jsonb = OwnedJsonb::new(vec![1, 2, 3, 4]);
-    /// let invalid_raw_jsonb = invalid_jsonb.as_raw();
-    /// let result = invalid_raw_jsonb.to_serde_json_object();
-    /// assert!(result.is_err());
-    /// ```
-    pub fn to_serde_json_object(
-        &self,
-    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
-        let value = self.data;
-        Self::containter_to_serde_json_object(value)
-    }
-
-    fn containter_to_serde_json_object(
-        value: &[u8],
-    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, Error> {
-        let header = read_u32(value, 0).unwrap_or_default();
-        let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-
-        let obj_value = match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let mut obj = serde_json::Map::with_capacity(length);
-                for (key, jentry, val) in iterate_object_entries(value, header) {
-                    let item = Self::scalar_to_serde_json(jentry, val)?;
-                    obj.insert(key.to_string(), item);
-                }
-                Some(obj)
-            }
-            ARRAY_CONTAINER_TAG | SCALAR_CONTAINER_TAG => None,
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        };
-        Ok(obj_value)
-    }
-
-    fn containter_to_serde_json(value: &[u8]) -> Result<serde_json::Value, Error> {
-        let header = read_u32(value, 0).unwrap_or_default();
-        let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-
-        let json_value = match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let mut obj = serde_json::Map::with_capacity(length);
-                for (key, jentry, val) in iterate_object_entries(value, header) {
-                    let item = Self::scalar_to_serde_json(jentry, val)?;
-                    obj.insert(key.to_string(), item);
-                }
-                serde_json::Value::Object(obj)
-            }
-            ARRAY_CONTAINER_TAG => {
-                let mut arr = Vec::with_capacity(length);
-                for (jentry, val) in iterate_array(value, header) {
-                    let item = Self::scalar_to_serde_json(jentry, val)?;
-                    arr.push(item);
-                }
-                serde_json::Value::Array(arr)
-            }
-            SCALAR_CONTAINER_TAG => {
-                let encoded = match read_u32(value, 4) {
-                    Ok(encoded) => encoded,
-                    Err(_) => {
-                        return Err(Error::InvalidJsonb);
-                    }
-                };
-                let jentry = JEntry::decode_jentry(encoded);
-                Self::scalar_to_serde_json(jentry, &value[8..])?
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        };
-        Ok(json_value)
-    }
-
-    fn scalar_to_serde_json(jentry: JEntry, value: &[u8]) -> Result<serde_json::Value, Error> {
-        let json_value = match jentry.type_code {
-            NULL_TAG => serde_json::Value::Null,
-            TRUE_TAG => serde_json::Value::Bool(true),
-            FALSE_TAG => serde_json::Value::Bool(false),
-            NUMBER_TAG => {
-                let len = jentry.length as usize;
-                let n = Number::decode(&value[..len])?;
-                match n {
-                    Number::Int64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
-                    Number::UInt64(v) => serde_json::Value::Number(serde_json::Number::from(v)),
-                    Number::Float64(v) => match serde_json::Number::from_f64(v) {
-                        Some(v) => serde_json::Value::Number(v),
-                        None => {
-                            return Err(Error::InvalidJson);
-                        }
-                    },
-                }
-            }
-            STRING_TAG => {
-                let len = jentry.length as usize;
-                let s = unsafe { String::from_utf8_unchecked(value[..len].to_vec()) };
-                serde_json::Value::String(s)
-            }
-            CONTAINER_TAG => Self::containter_to_serde_json(value)?,
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        };
-        Ok(json_value)
-    }
-
     /// Converts the JSONB value to a JSON string.
     ///
     /// This function serializes the JSONB value into a human-readable JSON string representation.
@@ -263,21 +71,13 @@ impl RawJsonb<'_> {
     /// ```
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
-        let value = self.data;
-        let mut json = String::with_capacity(value.len());
-        if Self::container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(false)).is_err() {
-            json.clear();
-            // Compatible with text json data
-            match parse_value(value) {
-                Ok(val) => {
-                    json = format!("{}", val);
-                }
-                Err(_) => {
-                    json.push_str("null");
-                }
-            }
+        let mut buf = Vec::with_capacity(self.len());
+        let formatter = serde_json::ser::CompactFormatter {};
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+        match self.serialize(&mut ser) {
+            Ok(_) => String::from_utf8(buf).unwrap(),
+            Err(_) => "null".to_string(),
         }
-        json
     }
 
     /// Converts the JSONB value to a pretty-printed JSON string.
@@ -318,207 +118,13 @@ impl RawJsonb<'_> {
     /// assert_eq!(invalid_raw_jsonb.to_pretty_string(), "null"); // Fails and returns "null"
     /// ```
     pub fn to_pretty_string(&self) -> String {
-        let value = self.data;
-        let mut json = String::with_capacity(value.len());
-        if Self::container_to_string(value, &mut 0, &mut json, &PrettyOpts::new(true)).is_err() {
-            json.clear();
-            // Compatible with text json data
-            match parse_value(value) {
-                Ok(val) => {
-                    let mut buf = Vec::with_capacity(value.len());
-                    val.write_to_vec(&mut buf);
-                    if Self::container_to_string(
-                        buf.as_ref(),
-                        &mut 0,
-                        &mut json,
-                        &PrettyOpts::new(true),
-                    )
-                    .is_err()
-                    {
-                        json.clear();
-                        json.push_str("null");
-                    }
-                }
-                Err(_) => {
-                    json.push_str("null");
-                }
-            }
+        let mut buf = Vec::with_capacity(self.len());
+        let formatter = serde_json::ser::PrettyFormatter::new();
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+        match self.serialize(&mut ser) {
+            Ok(_) => String::from_utf8(buf).unwrap(),
+            Err(_) => "null".to_string(),
         }
-        json
-    }
-
-    fn container_to_string(
-        value: &[u8],
-        offset: &mut usize,
-        json: &mut String,
-        pretty_opts: &PrettyOpts,
-    ) -> Result<(), Error> {
-        let header = read_u32(value, *offset)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let mut jentry_offset = 4 + *offset;
-                let mut value_offset = 8 + *offset;
-                Self::scalar_to_string(
-                    value,
-                    &mut jentry_offset,
-                    &mut value_offset,
-                    json,
-                    pretty_opts,
-                )?;
-            }
-            ARRAY_CONTAINER_TAG => {
-                if pretty_opts.enabled {
-                    json.push_str("[\n");
-                } else {
-                    json.push('[');
-                }
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let mut jentry_offset = 4 + *offset;
-                let mut value_offset = 4 + *offset + 4 * length;
-                let inner_pretty_ops = pretty_opts.inc_indent();
-                for i in 0..length {
-                    if i > 0 {
-                        if pretty_opts.enabled {
-                            json.push_str(",\n");
-                        } else {
-                            json.push(',');
-                        }
-                    }
-                    if pretty_opts.enabled {
-                        json.push_str(&inner_pretty_ops.generate_indent());
-                    }
-                    Self::scalar_to_string(
-                        value,
-                        &mut jentry_offset,
-                        &mut value_offset,
-                        json,
-                        &inner_pretty_ops,
-                    )?;
-                }
-                if pretty_opts.enabled {
-                    json.push('\n');
-                    json.push_str(&pretty_opts.generate_indent());
-                }
-                json.push(']');
-            }
-            OBJECT_CONTAINER_TAG => {
-                if pretty_opts.enabled {
-                    json.push_str("{\n");
-                } else {
-                    json.push('{');
-                }
-                let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-                let mut jentry_offset = 4 + *offset;
-                let mut key_offset = 4 + *offset + 8 * length;
-                let mut keys = VecDeque::with_capacity(length);
-                for _ in 0..length {
-                    let jentry_encoded = read_u32(value, jentry_offset)?;
-                    let jentry = JEntry::decode_jentry(jentry_encoded);
-                    let key_length = jentry.length as usize;
-                    keys.push_back((key_offset, key_offset + key_length));
-                    jentry_offset += 4;
-                    key_offset += key_length;
-                }
-                let mut value_offset = key_offset;
-                let inner_pretty_ops = pretty_opts.inc_indent();
-                for i in 0..length {
-                    if i > 0 {
-                        if pretty_opts.enabled {
-                            json.push_str(",\n");
-                        } else {
-                            json.push(',');
-                        }
-                    }
-                    let (key_start, key_end) = keys.pop_front().unwrap();
-                    if pretty_opts.enabled {
-                        json.push_str(&inner_pretty_ops.generate_indent());
-                        Self::escape_scalar_string(value, key_start, key_end, json);
-                        json.push_str(": ");
-                    } else {
-                        Self::escape_scalar_string(value, key_start, key_end, json);
-                        json.push(':');
-                    }
-                    Self::scalar_to_string(
-                        value,
-                        &mut jentry_offset,
-                        &mut value_offset,
-                        json,
-                        &inner_pretty_ops,
-                    )?;
-                }
-                if pretty_opts.enabled {
-                    json.push('\n');
-                    json.push_str(&pretty_opts.generate_indent());
-                }
-                json.push('}');
-            }
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
-        }
-        Ok(())
-    }
-
-    fn scalar_to_string(
-        value: &[u8],
-        jentry_offset: &mut usize,
-        value_offset: &mut usize,
-        json: &mut String,
-        pretty_opts: &PrettyOpts,
-    ) -> Result<(), Error> {
-        let jentry_encoded = read_u32(value, *jentry_offset)?;
-        let jentry = JEntry::decode_jentry(jentry_encoded);
-        let length = jentry.length as usize;
-        match jentry.type_code {
-            NULL_TAG => json.push_str("null"),
-            TRUE_TAG => json.push_str("true"),
-            FALSE_TAG => json.push_str("false"),
-            NUMBER_TAG => {
-                let num = Number::decode(&value[*value_offset..*value_offset + length])?;
-                json.push_str(&num.to_string());
-            }
-            STRING_TAG => {
-                Self::escape_scalar_string(value, *value_offset, *value_offset + length, json);
-            }
-            CONTAINER_TAG => {
-                Self::container_to_string(value, value_offset, json, pretty_opts)?;
-            }
-            _ => {}
-        }
-        *jentry_offset += 4;
-        *value_offset += length;
-        Ok(())
-    }
-
-    fn escape_scalar_string(value: &[u8], start: usize, end: usize, json: &mut String) {
-        json.push('\"');
-        let mut last_start = start;
-        for i in start..end {
-            // add backslash for escaped characters.
-            let c = match value[i] {
-                0x5C => "\\\\",
-                0x22 => "\\\"",
-                0x08 => "\\b",
-                0x0C => "\\f",
-                0x0A => "\\n",
-                0x0D => "\\r",
-                0x09 => "\\t",
-                _ => {
-                    continue;
-                }
-            };
-            if i > last_start {
-                let val = String::from_utf8_lossy(&value[last_start..i]);
-                json.push_str(&val);
-            }
-            json.push_str(c);
-            last_start = i + 1;
-        }
-        if last_start < end {
-            let val = String::from_utf8_lossy(&value[last_start..end]);
-            json.push_str(&val);
-        }
-        json.push('\"');
     }
 }
 
@@ -590,27 +196,6 @@ impl Ord for RawJsonb<'_> {
         match self.partial_cmp(other) {
             Some(ordering) => ordering,
             None => Ordering::Equal,
-        }
-    }
-}
-
-pub(crate) fn extract_by_jentry(
-    jentry: &JEntry,
-    encoded: u32,
-    offset: usize,
-    value: &[u8],
-) -> Vec<u8> {
-    let length = jentry.length as usize;
-    match jentry.type_code {
-        CONTAINER_TAG => value[offset..offset + length].to_vec(),
-        _ => {
-            let mut buf = Vec::with_capacity(8 + length);
-            buf.extend_from_slice(&SCALAR_CONTAINER_TAG.to_be_bytes());
-            buf.extend_from_slice(&encoded.to_be_bytes());
-            if jentry.length > 0 {
-                buf.extend_from_slice(&value[offset..offset + length]);
-            }
-            buf
         }
     }
 }
@@ -815,29 +400,7 @@ fn compare_object(
     Some(left_length.cmp(&right_length))
 }
 
-struct PrettyOpts {
-    enabled: bool,
-    indent: usize,
-}
-
-impl PrettyOpts {
-    fn new(enabled: bool) -> Self {
-        Self { enabled, indent: 0 }
-    }
-
-    fn inc_indent(&self) -> Self {
-        Self {
-            enabled: self.enabled,
-            indent: self.indent + 2,
-        }
-    }
-
-    fn generate_indent(&self) -> String {
-        String::from_utf8(vec![0x20; self.indent]).unwrap()
-    }
-}
-
-pub(crate) fn read_u32(buf: &[u8], idx: usize) -> Result<u32, Error> {
+pub(crate) fn read_u32(buf: &[u8], idx: usize) -> Result<u32> {
     let bytes: [u8; 4] = buf
         .get(idx..idx + 4)
         .ok_or(Error::InvalidEOF)?

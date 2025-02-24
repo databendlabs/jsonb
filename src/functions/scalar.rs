@@ -16,13 +16,12 @@
 
 use std::borrow::Cow;
 
-use crate::constants::*;
 use crate::error::*;
-use crate::functions::core::read_u32;
-use crate::jentry::JEntry;
+use crate::from_raw_jsonb;
 use crate::number::Number;
 
 use crate::RawJsonb;
+use crate::ValueType;
 
 impl RawJsonb<'_> {
     /// Checks if the JSONB value is null.
@@ -48,8 +47,9 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = obj_jsonb.as_raw();
     /// assert!(!raw_jsonb.is_null().unwrap());
     /// ```
-    pub fn is_null(&self) -> Result<bool, Error> {
-        self.as_null().map(|v| v.is_some())
+    pub fn is_null(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::Null))
     }
 
     /// Checks if the JSONB value is null.
@@ -105,20 +105,13 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_null();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_null(&self) -> Result<Option<()>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    NULL_TAG => Ok(Some(())),
-                    STRING_TAG | NUMBER_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_null(&self) -> Result<Option<()>> {
+        let res: Result<()> = from_raw_jsonb(self);
+        println!("res={:?}", res);
+        match res {
+            Ok(_) => Ok(Some(())),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -173,8 +166,9 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_boolean();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_boolean(&self) -> Result<bool, Error> {
-        self.as_bool().map(|v| v.is_some())
+    pub fn is_boolean(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::Boolean))
     }
 
     /// Extracts a boolean value from a JSONB value.
@@ -229,21 +223,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_bool();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_bool(&self) -> Result<Option<bool>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    FALSE_TAG => Ok(Some(false)),
-                    TRUE_TAG => Ok(Some(true)),
-                    NULL_TAG | STRING_TAG | NUMBER_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_bool(&self) -> Result<Option<bool>> {
+        let res: Result<bool> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -311,7 +296,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_bool();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_bool(&self) -> Result<bool, Error> {
+    pub fn to_bool(&self) -> Result<bool> {
         if let Some(v) = self.as_bool()? {
             return Ok(v);
         } else if let Some(v) = self.as_str()? {
@@ -383,8 +368,9 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_number();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_number(&self) -> Result<bool, Error> {
-        self.as_number().map(|v| v.is_some())
+    pub fn is_number(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::Number))
     }
 
     /// Extracts a number from a JSONB value.
@@ -448,24 +434,15 @@ impl RawJsonb<'_> {
     /// let result = corrupted_raw_num_jsonb.as_number();
     /// assert!(result.is_err()); //Decodes should return Err
     /// ```
-    pub fn as_number(&self) -> Result<Option<Number>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    NUMBER_TAG => {
-                        let length = jentry.length as usize;
-                        let num = Number::decode(&self.data[8..8 + length])?;
-                        Ok(Some(num))
-                    }
-                    NULL_TAG | STRING_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_number(&self) -> Result<Option<Number>> {
+        if let Some(v) = self.as_u64()? {
+            Ok(Some(Number::UInt64(v)))
+        } else if let Some(v) = self.as_i64()? {
+            Ok(Some(Number::Int64(v)))
+        } else if let Some(v) = self.as_f64()? {
+            Ok(Some(Number::Float64(v)))
+        } else {
+            Ok(None)
         }
     }
 
@@ -512,7 +489,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_i64(&self) -> Result<bool, Error> {
+    pub fn is_i64(&self) -> Result<bool> {
         self.as_i64().map(|v| v.is_some())
     }
 
@@ -563,10 +540,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_i64(&self) -> Result<Option<i64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_i64()),
-            None => Ok(None),
+    pub fn as_i64(&self) -> Result<Option<i64>> {
+        let res: Result<i64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -634,7 +613,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_i64(&self) -> Result<i64, Error> {
+    pub fn to_i64(&self) -> Result<i64> {
         if let Some(v) = self.as_i64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -714,7 +693,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_u64(&self) -> Result<bool, Error> {
+    pub fn is_u64(&self) -> Result<bool> {
         self.as_u64().map(|v| v.is_some())
     }
 
@@ -777,10 +756,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_u64(&self) -> Result<Option<u64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_u64()),
-            None => Ok(None),
+    pub fn as_u64(&self) -> Result<Option<u64>> {
+        let res: Result<u64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -852,7 +833,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_u64(&self) -> Result<u64, Error> {
+    pub fn to_u64(&self) -> Result<u64> {
         if let Some(v) = self.as_u64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -928,7 +909,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_f64(&self) -> Result<bool, Error> {
+    pub fn is_f64(&self) -> Result<bool> {
         self.as_f64().map(|v| v.is_some())
     }
 
@@ -987,10 +968,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_f64(&self) -> Result<Option<f64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_f64()),
-            None => Ok(None),
+    pub fn as_f64(&self) -> Result<Option<f64>> {
+        let res: Result<f64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -1054,7 +1037,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_f64(&self) -> Result<f64, Error> {
+    pub fn to_f64(&self) -> Result<f64> {
         if let Some(v) = self.as_f64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -1122,8 +1105,9 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_string();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_string(&self) -> Result<bool, Error> {
-        self.as_str().map(|v| v.is_some())
+    pub fn is_string(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::String))
     }
 
     /// Extracts a string from a JSONB value.
@@ -1184,24 +1168,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_utf8_jsonb.as_str();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_str(&self) -> Result<Option<Cow<'_, str>>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    STRING_TAG => {
-                        let length = jentry.length as usize;
-                        let s = unsafe { std::str::from_utf8_unchecked(&self.data[8..8 + length]) };
-                        Ok(Some(Cow::Borrowed(s)))
-                    }
-                    NULL_TAG | NUMBER_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_str(&self) -> Result<Option<Cow<'_, str>>> {
+        let res: Result<String> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(Cow::Owned(v))),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -1258,7 +1230,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_str();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_str(&self) -> Result<String, Error> {
+    pub fn to_str(&self) -> Result<String> {
         if let Some(v) = self.as_str()? {
             return Ok(v.to_string());
         } else if let Some(v) = self.as_bool()? {
@@ -1324,13 +1296,9 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_array();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_array(&self) -> Result<bool, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => Ok(true),
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(false),
-            _ => Err(Error::InvalidJsonb),
-        }
+    pub fn is_array(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::Array(_)))
     }
 
     /// Checks if the JSONB value is an object.
@@ -1384,12 +1352,8 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_object();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_object(&self) -> Result<bool, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => Ok(true),
-            SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(false),
-            _ => Err(Error::InvalidJsonb),
-        }
+    pub fn is_object(&self) -> Result<bool> {
+        let value_type = self.value_type()?;
+        Ok(matches!(value_type, ValueType::Object(_)))
     }
 }
