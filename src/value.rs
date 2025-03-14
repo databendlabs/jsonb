@@ -19,12 +19,13 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::mem::discriminant;
 
-use super::number::Number;
-use super::ser::Encoder;
 use rand::distributions::Alphanumeric;
 use rand::distributions::DistString;
 use rand::thread_rng;
 use rand::Rng;
+
+use super::number::Number;
+use crate::core::Encoder;
 
 pub type Object<'a> = BTreeMap<String, Value<'a>>;
 

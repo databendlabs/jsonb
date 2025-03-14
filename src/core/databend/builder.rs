@@ -15,17 +15,16 @@
 use core::ops::Range;
 use std::collections::BTreeMap;
 
-use crate::constants::*;
-use crate::error::Error;
-use crate::error::Result;
-use crate::jentry::JEntry;
-use crate::RawJsonb;
-
-use crate::OwnedJsonb;
 use byteorder::BigEndian;
 use byteorder::WriteBytesExt;
 
-use crate::raw::JsonbItem;
+use super::constants::*;
+use super::jentry::JEntry;
+use crate::core::JsonbItem;
+use crate::error::Error;
+use crate::error::Result;
+use crate::OwnedJsonb;
+use crate::RawJsonb;
 
 pub(crate) struct ArrayBuilder<'a> {
     items: Vec<JsonbItem<'a>>,
@@ -42,7 +41,7 @@ impl<'a> ArrayBuilder<'a> {
         }
     }
 
-    pub(crate) fn push_raw_jsonb_item(&mut self, item: JsonbItem<'a>) {
+    pub(crate) fn push_jsonb_item(&mut self, item: JsonbItem<'a>) {
         self.items.push(item);
     }
 
@@ -51,9 +50,9 @@ impl<'a> ArrayBuilder<'a> {
         self.items.push(item);
     }
 
-    pub(crate) fn push_owned_jsonb(&mut self, owned_jsonb: OwnedJsonb) {
-        let item = JsonbItem::Owned(owned_jsonb);
-        self.push_raw_jsonb_item(item)
+    pub(crate) fn push_owned_jsonb(&mut self, owned: OwnedJsonb) {
+        let item = JsonbItem::Owned(owned);
+        self.push_jsonb_item(item)
     }
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
@@ -82,7 +81,7 @@ impl<'a> ArrayDistinctBuilder<'a> {
         }
     }
 
-    pub(crate) fn push_raw_jsonb_item(&mut self, item: JsonbItem<'a>) {
+    pub(crate) fn push_jsonb_item(&mut self, item: JsonbItem<'a>) {
         if let Some(cnt) = self.item_map.get_mut(&item) {
             *cnt += 1;
         } else {
@@ -91,27 +90,24 @@ impl<'a> ArrayDistinctBuilder<'a> {
         }
     }
 
-    pub(crate) fn push_raw_jsonb(&mut self, raw_jsonb: RawJsonb<'a>) {
-        let item = JsonbItem::Raw(raw_jsonb);
-        self.push_raw_jsonb_item(item);
+    pub(crate) fn push_raw_jsonb(&mut self, raw: RawJsonb<'a>) {
+        let item = JsonbItem::Raw(raw);
+        self.push_jsonb_item(item);
     }
 
-    pub(crate) fn pop_raw_jsonb_item(&mut self, item: JsonbItem<'a>) -> Option<()> {
+    pub(crate) fn pop_jsonb_item(&mut self, item: JsonbItem<'a>) -> Option<()> {
         if let Some(cnt) = self.item_map.get_mut(&item) {
             if *cnt > 0 {
                 *cnt -= 1;
-                Some(())
-            } else {
-                None
+                return Some(());
             }
-        } else {
-            None
         }
+        None
     }
 
-    pub(crate) fn pop_raw_jsonb(&mut self, raw_jsonb: RawJsonb<'a>) -> Option<()> {
-        let item = JsonbItem::Raw(raw_jsonb);
-        self.pop_raw_jsonb_item(item)
+    pub(crate) fn pop_raw_jsonb(&mut self, raw: RawJsonb<'a>) -> Option<()> {
+        let item = JsonbItem::Raw(raw);
+        self.pop_jsonb_item(item)
     }
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
@@ -138,11 +134,7 @@ impl<'a> ObjectBuilder<'a> {
         }
     }
 
-    pub(crate) fn push_raw_jsonb_item(
-        &mut self,
-        key: &'a str,
-        val_item: JsonbItem<'a>,
-    ) -> Result<()> {
+    pub(crate) fn push_jsonb_item(&mut self, key: &'a str, val_item: JsonbItem<'a>) -> Result<()> {
         if self.entries.contains_key(key) {
             return Err(Error::ObjectDuplicateKey);
         }
@@ -150,9 +142,14 @@ impl<'a> ObjectBuilder<'a> {
         Ok(())
     }
 
-    pub(crate) fn push_owned_jsonb(&mut self, key: &'a str, owned_jsonb: OwnedJsonb) -> Result<()> {
-        let item = JsonbItem::Owned(owned_jsonb);
-        self.push_raw_jsonb_item(key, item)
+    pub(crate) fn push_raw_jsonb(&mut self, key: &'a str, raw: RawJsonb<'a>) -> Result<()> {
+        let item = JsonbItem::Raw(raw);
+        self.push_jsonb_item(key, item)
+    }
+
+    pub(crate) fn push_owned_jsonb(&mut self, key: &'a str, owned: OwnedJsonb) -> Result<()> {
+        let item = JsonbItem::Owned(owned);
+        self.push_jsonb_item(key, item)
     }
 
     pub(crate) fn contains_key(&self, key: &'a str) -> bool {
@@ -173,45 +170,6 @@ impl<'a> ObjectBuilder<'a> {
         }
         for (_, item) in self.entries.into_iter() {
             append_jsonb_item(&mut buf, &mut jentry_index, item)?;
-        }
-        Ok(OwnedJsonb::new(buf))
-    }
-}
-
-pub(crate) struct OwnedObjectBuilder {
-    entries: BTreeMap<String, OwnedJsonb>,
-}
-
-impl OwnedObjectBuilder {
-    pub(crate) fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn push_owned_jsonb(&mut self, key: String, owned_jsonb: OwnedJsonb) -> Result<()> {
-        if self.entries.contains_key(&key) {
-            return Err(Error::ObjectDuplicateKey);
-        }
-        self.entries.insert(key, owned_jsonb);
-        Ok(())
-    }
-
-    pub(crate) fn build(self) -> Result<OwnedJsonb> {
-        let mut buf = Vec::new();
-        let header = OBJECT_CONTAINER_TAG | self.entries.len() as u32;
-        buf.write_u32::<BigEndian>(header)?;
-
-        let mut jentry_index = reserve_jentries(&mut buf, self.entries.len() * 8);
-        for (key, _) in self.entries.iter() {
-            let key_len = key.len();
-            buf.extend_from_slice(key.as_bytes());
-            let jentry = JEntry::make_string_jentry(key_len);
-            replace_jentry(&mut buf, jentry, &mut jentry_index)
-        }
-        for (_, item) in self.entries.into_iter() {
-            let raw_jsonb = item.as_raw();
-            append_raw_jsonb_data(&mut buf, &mut jentry_index, raw_jsonb)?;
         }
         Ok(OwnedJsonb::new(buf))
     }
@@ -294,10 +252,10 @@ fn replace_jentry(buf: &mut [u8], jentry: JEntry, jentry_index: &mut usize) {
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::ArrayBuilder;
+    use super::ObjectBuilder;
     use crate::to_owned_jsonb;
     use crate::Value;
-
-    use super::{ArrayBuilder, ObjectBuilder};
 
     #[test]
     fn test_build_with_inner_array() {

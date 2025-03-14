@@ -14,34 +14,48 @@
 
 use std::collections::VecDeque;
 
-use crate::constants::*;
+use byteorder::BigEndian;
+use byteorder::WriteBytesExt;
+use serde::ser;
+use serde::ser::Serialize;
+use serde::ser::SerializeMap;
+use serde::ser::SerializeSeq;
+
+use super::constants::*;
+use super::jentry::JEntry;
 use crate::core::ArrayBuilder;
 use crate::core::ObjectBuilder;
 use crate::error::*;
 use crate::from_raw_jsonb;
-use crate::jentry::JEntry;
 use crate::number::Number;
+use crate::value::Object;
+use crate::value::Value;
 use crate::Error;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
 
-use serde::ser::Error as SerError;
-use serde::ser::SerializeMap;
-use serde::ser::SerializeSeq;
-
-use serde::ser::{self, Serialize};
-
-use byteorder::BigEndian;
-use byteorder::WriteBytesExt;
-
+/// `Serializer` is a custom serializer for JSONB data, implementing the
+/// `serde::ser::Serializer` trait. It allows serializing Rust data structures
+/// into a `Vec<u8>` representing the JSONB data.
 #[derive(Debug, Default)]
 pub struct Serializer {
     buffer: Vec<u8>,
 }
 
 impl Serializer {
-    fn new() -> Serializer {
+    /// Creates a new `Serializer` with an empty buffer.
+    pub fn new() -> Serializer {
         Serializer { buffer: Vec::new() }
+    }
+
+    /// Consumes the `Serializer` and returns the underlying buffer containing the
+    /// serialized JSONB data.
+    ///
+    /// This function returns the `OwnedJsonb` that has been populated with the
+    /// serialized JSONB data during the serialization process. The `Serializer`
+    /// is consumed in the process.
+    pub fn to_owned_jsonb(self) -> OwnedJsonb {
+        OwnedJsonb::new(self.buffer)
     }
 
     fn write_jentry(&mut self, jentry: JEntry) -> Result<()> {
@@ -88,30 +102,6 @@ impl Serializer {
         self.replace_jentry(jentry, &mut jentry_index);
         Ok(())
     }
-
-    pub fn to_vec(self) -> Vec<u8> {
-        self.buffer
-    }
-}
-
-/// Serialize a value into a JSONB byte array
-pub fn to_owned_jsonb<T>(value: &T) -> Result<OwnedJsonb>
-where
-    T: Serialize,
-{
-    let mut serializer = Serializer::default();
-    value.serialize(&mut serializer)?;
-    Ok(OwnedJsonb::new(serializer.buffer))
-}
-
-/// Serialize a value into a JSONB byte array
-pub fn to_vec2<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: Serialize,
-{
-    let mut serializer = Serializer::default();
-    value.serialize(&mut serializer)?;
-    Ok(serializer.buffer)
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
@@ -382,7 +372,7 @@ impl ser::SerializeMap for ObjectSerializer<'_> {
 
     fn end(self) -> Result<Self::Ok> {
         if self.keys.len() != self.values.len() {
-            return Err(SerError::custom(
+            return Err(ser::Error::custom(
                 "Invalid object keys and values length".to_string(),
             ));
         }
@@ -390,7 +380,7 @@ impl ser::SerializeMap for ObjectSerializer<'_> {
         for key in self.keys.into_iter() {
             let key_str_res: Result<String> = from_raw_jsonb(&key.as_raw());
             let Ok(key_str) = key_str_res else {
-                return Err(SerError::custom("Invalid object key".to_string()));
+                return Err(ser::Error::custom("Invalid object key".to_string()));
             };
             key_strs.push(key_str);
         }
@@ -480,20 +470,17 @@ impl Serialize for RawJsonb<'_> {
         S: serde::Serializer,
     {
         let mut index = 0;
-        let header = self
-            .read_u32(index)
-            .map_err(|e| SerError::custom(format!("{e}")))?;
+        let (header_type, header_len) = self
+            .read_header(index)
+            .map_err(|e| ser::Error::custom(format!("{e}")))?;
         index += 4;
-        let header_type = header & CONTAINER_HEADER_TYPE_MASK;
-        let header_len = header & CONTAINER_HEADER_LEN_MASK;
 
         match header_type {
             SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = self
-                    .read_u32(index)
-                    .map_err(|e| SerError::custom(format!("{e}")))?;
+                let jentry = self
+                    .read_jentry(index)
+                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
                 index += 4;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
 
                 match jentry.type_code {
                     NULL_TAG => serializer.serialize_unit(),
@@ -504,7 +491,7 @@ impl Serialize for RawJsonb<'_> {
                         let payload_end = index + jentry.length as usize;
 
                         let num = Number::decode(&self.data[payload_start..payload_end])
-                            .map_err(|e| SerError::custom(format!("{e}")))?;
+                            .map_err(|e| ser::Error::custom(format!("{e}")))?;
 
                         match num {
                             Number::Int64(i) => serializer.serialize_i64(i),
@@ -523,9 +510,9 @@ impl Serialize for RawJsonb<'_> {
                     }
                     CONTAINER_TAG => {
                         // Scalar header can't have contianer jentry tag
-                        Err(SerError::custom("Invalid jsonb".to_string()))
+                        Err(ser::Error::custom("Invalid jsonb".to_string()))
                     }
-                    _ => Err(SerError::custom("Invalid jsonb".to_string())),
+                    _ => Err(ser::Error::custom("Invalid jsonb".to_string())),
                 }
             }
             ARRAY_CONTAINER_TAG => {
@@ -533,11 +520,10 @@ impl Serialize for RawJsonb<'_> {
 
                 let mut payload_start = index + 4 * header_len as usize;
                 for _ in 0..header_len {
-                    let jentry_encoded = self
-                        .read_u32(index)
-                        .map_err(|e| SerError::custom(format!("{e}")))?;
+                    let jentry = self
+                        .read_jentry(index)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     index += 4;
-                    let jentry = JEntry::decode_jentry(jentry_encoded);
 
                     let payload_end = payload_start + jentry.length as usize;
                     match jentry.type_code {
@@ -546,7 +532,7 @@ impl Serialize for RawJsonb<'_> {
                         FALSE_TAG => serialize_seq.serialize_element(&false)?,
                         NUMBER_TAG => {
                             let num = Number::decode(&self.data[payload_start..payload_end])
-                                .map_err(|e| SerError::custom(format!("{e}")))?;
+                                .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             match num {
                                 Number::Int64(i) => serialize_seq.serialize_element(&i)?,
                                 Number::UInt64(i) => serialize_seq.serialize_element(&i)?,
@@ -567,7 +553,7 @@ impl Serialize for RawJsonb<'_> {
                             serialize_seq.serialize_element(&inner_raw_jsonb)?;
                         }
                         _ => {
-                            return Err(SerError::custom("Invalid jsonb".to_string()));
+                            return Err(ser::Error::custom("Invalid jsonb".to_string()));
                         }
                     }
                     payload_start = payload_end;
@@ -580,11 +566,10 @@ impl Serialize for RawJsonb<'_> {
                 let mut keys = VecDeque::with_capacity(header_len as usize);
                 let mut payload_start = index + 8 * header_len as usize;
                 for _ in 0..header_len {
-                    let jentry_encoded = self
-                        .read_u32(index)
-                        .map_err(|e| SerError::custom(format!("{e}")))?;
+                    let jentry = self
+                        .read_jentry(index)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     index += 4;
-                    let jentry = JEntry::decode_jentry(jentry_encoded);
 
                     let payload_end = payload_start + jentry.length as usize;
                     match jentry.type_code {
@@ -597,18 +582,17 @@ impl Serialize for RawJsonb<'_> {
                             keys.push_back(s);
                         }
                         _ => {
-                            return Err(SerError::custom("Invalid jsonb".to_string()));
+                            return Err(ser::Error::custom("Invalid jsonb".to_string()));
                         }
                     }
                     payload_start = payload_end;
                 }
 
                 for _ in 0..header_len {
-                    let jentry_encoded = self
-                        .read_u32(index)
-                        .map_err(|e| SerError::custom(format!("{e}")))?;
+                    let jentry = self
+                        .read_jentry(index)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     index += 4;
-                    let jentry = JEntry::decode_jentry(jentry_encoded);
 
                     let payload_end = payload_start + jentry.length as usize;
                     let k = keys.pop_front().unwrap();
@@ -618,7 +602,7 @@ impl Serialize for RawJsonb<'_> {
                         FALSE_TAG => serialize_map.serialize_entry(&k, &false)?,
                         NUMBER_TAG => {
                             let num = Number::decode(&self.data[payload_start..payload_end])
-                                .map_err(|e| SerError::custom(format!("{e}")))?;
+                                .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             match num {
                                 Number::Int64(i) => serialize_map.serialize_entry(&k, &i)?,
                                 Number::UInt64(i) => serialize_map.serialize_entry(&k, &i)?,
@@ -639,14 +623,153 @@ impl Serialize for RawJsonb<'_> {
                             serialize_map.serialize_entry(&k, &inner_raw_jsonb)?;
                         }
                         _ => {
-                            return Err(SerError::custom("Invalid jsonb".to_string()));
+                            return Err(ser::Error::custom("Invalid jsonb".to_string()));
                         }
                     }
                     payload_start = payload_end;
                 }
                 serialize_map.end()
             }
-            _ => Err(SerError::custom("Invalid jsonb".to_string())),
+            _ => Err(ser::Error::custom("Invalid jsonb".to_string())),
         }
+    }
+}
+
+pub(crate) struct Encoder<'a> {
+    pub buf: &'a mut Vec<u8>,
+}
+
+impl<'a> Encoder<'a> {
+    pub(crate) fn new(buf: &'a mut Vec<u8>) -> Encoder<'a> {
+        Self { buf }
+    }
+
+    // Encode `JSONB` Value to a sequence of bytes
+    pub(crate) fn encode(&mut self, value: &Value<'a>) {
+        match value {
+            Value::Array(array) => self.encode_array(array),
+            Value::Object(obj) => self.encode_object(obj),
+            _ => self.encode_scalar(value),
+        };
+    }
+
+    // Encoded `Scalar` consists of a `Header`, a `JEntry` and encoded data
+    fn encode_scalar(&mut self, value: &Value<'a>) -> usize {
+        self.buf
+            .write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)
+            .unwrap();
+
+        // Scalar Value only has one JEntry
+        let mut scalar_len = 4 + 4;
+        let mut jentry_index = self.reserve_jentries(4);
+
+        let jentry = self.encode_value(value);
+        scalar_len += jentry.length as usize;
+        self.replace_jentry(jentry, &mut jentry_index);
+
+        scalar_len
+    }
+
+    // Encoded `Array` consists of a `Header`, N `JEntries` and encoded data
+    // N is the number of `Array` inner values
+    fn encode_array(&mut self, values: &[Value<'a>]) -> usize {
+        let header = ARRAY_CONTAINER_TAG | values.len() as u32;
+        self.buf.write_u32::<BigEndian>(header).unwrap();
+
+        // `Array` has N `JEntries`
+        let mut array_len = 4 + values.len() * 4;
+        let mut jentry_index = self.reserve_jentries(values.len() * 4);
+
+        // encode all values
+        for value in values.iter() {
+            let jentry = self.encode_value(value);
+            array_len += jentry.length as usize;
+            self.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        array_len
+    }
+
+    // Encoded `Object` consists of a `Header`, 2 * N `JEntries` and encoded data
+    // N is the number of `Object` inner key value pair
+    fn encode_object(&mut self, obj: &Object<'a>) -> usize {
+        let header = OBJECT_CONTAINER_TAG | obj.len() as u32;
+        self.buf.write_u32::<BigEndian>(header).unwrap();
+
+        // `Object` has 2 * N `JEntries`
+        let mut object_len = 4 + obj.len() * 8;
+        let mut jentry_index = self.reserve_jentries(obj.len() * 8);
+
+        // encode all keys first
+        for (key, _) in obj.iter() {
+            let len = key.len();
+            object_len += len;
+            self.buf.extend_from_slice(key.as_bytes());
+            let jentry = JEntry::make_string_jentry(len);
+            self.replace_jentry(jentry, &mut jentry_index);
+        }
+        // encode all values
+        for (_, value) in obj.iter() {
+            let jentry = self.encode_value(value);
+            object_len += jentry.length as usize;
+            self.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        object_len
+    }
+
+    // Reserve space for `JEntries` and fill them later
+    // As the length of each `Value` cannot be known until the `Value` encoded
+    fn reserve_jentries(&mut self, len: usize) -> usize {
+        let old_len = self.buf.len();
+        let new_len = old_len + len;
+        self.buf.resize(new_len, 0);
+        old_len
+    }
+
+    // Write encoded `JEntry` to the corresponding index
+    fn replace_jentry(&mut self, jentry: JEntry, jentry_index: &mut usize) {
+        let jentry_bytes = jentry.encoded().to_be_bytes();
+        for (i, b) in jentry_bytes.iter().enumerate() {
+            self.buf[*jentry_index + i] = *b;
+        }
+        *jentry_index += 4;
+    }
+
+    // `Null` and `Boolean` only has a `JEntry`
+    // `Number` and `String` has a `JEntry` and an encoded data
+    // `Array` and `Object` has a container `JEntry` and nested encoded data
+    fn encode_value(&mut self, value: &Value<'a>) -> JEntry {
+        let jentry = match value {
+            Value::Null => JEntry::make_null_jentry(),
+            Value::Bool(v) => {
+                if *v {
+                    JEntry::make_true_jentry()
+                } else {
+                    JEntry::make_false_jentry()
+                }
+            }
+            Value::Number(v) => {
+                let old_off = self.buf.len();
+                let _ = v.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_number_jentry(len)
+            }
+            Value::String(s) => {
+                let len = s.len();
+                self.buf.extend_from_slice(s.as_ref().as_bytes());
+                JEntry::make_string_jentry(len)
+            }
+            Value::Array(array) => {
+                let len = self.encode_array(array);
+                JEntry::make_container_jentry(len)
+            }
+            Value::Object(obj) => {
+                let len = self.encode_object(obj);
+                JEntry::make_container_jentry(len)
+            }
+        };
+
+        jentry
     }
 }

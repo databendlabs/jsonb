@@ -14,9 +14,14 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use crate::core::ArrayBuilder;
+use crate::core::ArrayIterator;
+use crate::core::JsonbItem;
+use crate::core::JsonbItemType;
+use crate::core::ObjectIterator;
+use crate::error::Result;
 use crate::jsonpath::ArrayIndex;
 use crate::jsonpath::BinaryOperator;
 use crate::jsonpath::Expr;
@@ -28,12 +33,6 @@ use crate::number::Number;
 use crate::Error;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
-
-use crate::core::ArrayBuilder;
-use crate::core::ArrayIterator;
-use crate::core::ObjectIterator;
-use crate::error::Result;
-use crate::raw::JsonbItem;
 
 #[derive(Debug)]
 enum ExprValue<'a> {
@@ -101,7 +100,7 @@ impl<'a> Selector<'a> {
     pub(crate) fn build_array(&mut self) -> Result<OwnedJsonb> {
         let mut builder = ArrayBuilder::with_capacity(self.items.len());
         while let Some(item) = self.items.pop_front() {
-            builder.push_raw_jsonb_item(item);
+            builder.push_jsonb_item(item);
         }
         builder.build()
     }
@@ -115,7 +114,7 @@ impl<'a> Selector<'a> {
         }
     }
 
-    pub(crate) fn build_scalar(&mut self) -> Result<Option<OwnedJsonb>> {
+    pub(crate) fn build_value(&mut self) -> Result<Option<OwnedJsonb>> {
         if self.items.len() > 1 {
             let array = self.build_array()?;
             Ok(Some(array))
@@ -265,28 +264,29 @@ impl<'a> Selector<'a> {
             return Ok(());
         };
 
-        let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
-        if let Some(array_iter) = array_iter_opt {
-            let mut indices_set = HashSet::new();
-            let length = array_iter.len();
-            for array_index in array_indices {
-                let indices = array_index.to_indices(length);
-                for index in indices.into_iter() {
-                    indices_set.insert(index);
-                }
+        let jsonb_item_type = curr_raw_jsonb.jsonb_item_type()?;
+        let JsonbItemType::Array(arr_len) = jsonb_item_type else {
+            return Ok(());
+        };
+        for array_index in array_indices {
+            let indices = array_index.to_indices(arr_len);
+            if indices.is_empty() {
+                continue;
             }
-
-            for (i, item_result) in &mut array_iter.enumerate() {
-                let item = item_result?;
-                if indices_set.contains(&i) {
-                    self.items.push_back(item);
+            let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
+            if let Some(array_iter) = array_iter_opt {
+                for (i, item_result) in &mut array_iter.enumerate() {
+                    let item = item_result?;
+                    if indices.contains(&i) {
+                        self.items.push_back(item);
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    //fn filter_expr(&'a self, raw_jsonb: RawJsonb<'a>, item: JsonbItem<'a>, expr: &Expr<'a>) -> Result<bool> {
+    // fn filter_expr(&'a self, raw_jsonb: RawJsonb<'a>, item: JsonbItem<'a>, expr: &Expr<'a>) -> Result<bool> {
     fn filter_expr(&mut self, item: JsonbItem<'a>, expr: &'a Expr<'a>) -> Result<bool> {
         match expr {
             Expr::BinaryOp { op, left, right } => match op {

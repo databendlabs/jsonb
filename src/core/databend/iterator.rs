@@ -13,15 +13,13 @@
 // limitations under the License.
 
 use std::collections::VecDeque;
-
-use crate::constants::*;
-use crate::error::Result;
-use crate::jentry::JEntry;
 use std::ops::Range;
 
+use super::constants::*;
+use super::jentry::JEntry;
+use crate::core::JsonbItem;
+use crate::error::Result;
 use crate::RawJsonb;
-
-use crate::raw::JsonbItem;
 
 pub(crate) struct ArrayIterator<'a> {
     raw_jsonb: RawJsonb<'a>,
@@ -163,10 +161,7 @@ impl<'a> ObjectIterator<'a> {
             let mut jentry_offset = 4;
             let mut key_jentries = VecDeque::with_capacity(header_len as usize);
             for _ in 0..header_len {
-                let key_jentry = match raw_jsonb.read_jentry(jentry_offset) {
-                    Ok(jentry) => jentry,
-                    Err(err) => return Err(err),
-                };
+                let key_jentry = raw_jsonb.read_jentry(jentry_offset)?;
                 jentry_offset += 4;
                 key_jentries.push_back(key_jentry);
             }

@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use jsonb::{parse_lazy_value, Number, Object, Value};
+use jsonb::{Number, Object, Value};
 
 #[test]
 fn test_encode_null() {
@@ -137,13 +137,6 @@ fn test_encode_array() {
     assert_eq!(
         &Value::Array(vec![Value::Bool(false), Value::Bool(true)]).to_vec(),
         raw
-    );
-
-    let lazy_value = parse_lazy_value(raw).unwrap();
-    assert_eq!(lazy_value.array_length(), Some(2));
-    assert_eq!(
-        lazy_value.to_value().as_ref(),
-        &Value::Array(vec![Value::Bool(false), Value::Bool(true)])
     );
 }
 

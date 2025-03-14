@@ -13,7 +13,6 @@
 // limitations under the License.
 
 mod array;
-mod core;
 mod object;
 mod operator;
 mod path;

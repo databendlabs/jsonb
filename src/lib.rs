@@ -65,33 +65,26 @@
 
 mod constants;
 pub mod core;
-mod de;
 mod error;
 mod from;
 mod functions;
-mod jentry;
 pub mod jsonpath;
 pub mod keypath;
-mod lazy_value;
 mod number;
 mod owned;
 mod parser;
 mod raw;
-mod ser;
 mod util;
 mod value;
 
-pub use de::{from_slice, parse_jsonb};
 pub use error::Error;
 #[allow(unused_imports)]
 pub use from::*;
-pub use lazy_value::*;
 pub use number::Number;
 pub use owned::to_owned_jsonb;
 pub use owned::OwnedJsonb;
-pub use parser::parse_lazy_value;
+pub use parser::from_slice;
 pub use parser::parse_value;
 pub use raw::from_raw_jsonb;
 pub use raw::RawJsonb;
-pub use raw::ValueType;
 pub use value::*;

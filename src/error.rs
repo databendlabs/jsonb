@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use core::fmt::Display;
-use serde::{de, ser};
+
+use serde::de;
+use serde::ser;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParseErrorCode {
@@ -121,7 +123,7 @@ impl Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        //match self {
+        // match self {
         //    Error::JsonError(e) => Some(e),
         //    Error::Json5Error(e) => Some(e),
         //    Error::Io(e) => Some(e),

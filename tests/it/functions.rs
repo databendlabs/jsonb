@@ -207,7 +207,7 @@ fn test_path_exists_expr() {
     let raw_jsonb = owned_jsonb.as_raw();
     for (path, expected) in paths {
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = raw_jsonb.get_by_path_array(&json_path);
+        let res = raw_jsonb.select_array_by_path(&json_path);
         assert!(res.is_ok());
         let owned_jsonb = res.unwrap();
         let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
@@ -217,7 +217,7 @@ fn test_path_exists_expr() {
 }
 
 #[test]
-fn test_get_by_path() {
+fn test_select_by_path() {
     let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab"}"#;
 
     let paths = vec![
@@ -279,7 +279,7 @@ fn test_get_by_path() {
     let raw_jsonb = owned_jsonb.as_raw();
     for (path, expects) in paths {
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = raw_jsonb.get_by_path(&json_path);
+        let res = raw_jsonb.select_by_path(&json_path);
         assert!(res.is_ok());
         let owned_jsonbs = res.unwrap();
         assert_eq!(owned_jsonbs.len(), expects.len());
@@ -989,6 +989,11 @@ fn test_get_by_keypath() {
         ),
         (r#"[10,20,["a","b","c"]]"#, "{2,a}", None),
         (
+            r#"{"1":{"2":"abc"}}"#,
+            "{1,2}",
+            Some(Value::String(std::borrow::Cow::Borrowed("abc"))),
+        ),
+        (
             r#"[10,20,[{"k1":[1,2,3],"k2":{"w":1,"z":2}},"b","c"]]"#,
             "{2,0,k2}",
             Some(init_object(vec![
@@ -1030,13 +1035,14 @@ fn test_exists_all_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "f", "a"], false),
+        (r#""a""#, vec!["c", "f", "a"], false),
+        (r#""b""#, vec!["b"], true),
     ];
     for (json, keys, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
         let raw_jsonb = owned_jsonb.as_raw();
 
-        let keys = keys.iter().map(|k| k.as_bytes());
-        let res = raw_jsonb.exists_all_keys(keys);
+        let res = raw_jsonb.exists_all_keys(keys.into_iter());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), expected);
     }
@@ -1055,13 +1061,14 @@ fn test_exists_any_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["z", "f", "x"], false),
+        (r#""a""#, vec!["c", "f", "a"], true),
+        (r#""b""#, vec!["b"], true),
     ];
     for (json, keys, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
         let raw_jsonb = owned_jsonb.as_raw();
 
-        let keys = keys.iter().map(|k| k.as_bytes());
-        let res = raw_jsonb.exists_any_keys(keys);
+        let res = raw_jsonb.exists_any_keys(keys.into_iter());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), expected);
     }
@@ -1278,6 +1285,11 @@ fn test_delete_by_keypath() {
             r#"{"a":1,"b":[{"c":1},2,3]}"#,
         ),
         (r#"{"a":1,"b":[1,2,3]}"#, "{b,20}", r#"{"a":1,"b":[1,2,3]}"#),
+        (
+            r#"{"1":{"2":"abc","3":"def"}}"#,
+            "{1,2}",
+            r#"{"1":{"3":"def"}}"#,
+        ),
         (
             r#"{"a":1,"b":[1,2,3]}"#,
             "{b,20,c,e}",

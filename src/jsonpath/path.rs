@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
@@ -89,15 +90,15 @@ pub enum ArrayIndex {
 }
 
 impl ArrayIndex {
-    pub fn to_indices(&self, length: usize) -> Vec<usize> {
+    pub fn to_indices(&self, length: usize) -> HashSet<usize> {
         let length = length as i32;
 
-        let mut indices = Vec::new();
+        let mut indices = HashSet::new();
         match self {
             ArrayIndex::Index(idx) => {
                 let idx = Self::convert_index(idx, length);
                 if idx >= 0 && idx < length {
-                    indices.push(idx as usize);
+                    indices.insert(idx as usize);
                 }
             }
             ArrayIndex::Slice((start, end)) => {
@@ -110,9 +111,8 @@ impl ArrayIndex {
                 } else {
                     end_idx as usize
                 };
-                if start_idx <= end_idx {
-                    let mut sclie_indices = (start_idx..=end_idx).collect();
-                    indices.append(&mut sclie_indices);
+                for idx in start_idx..=end_idx {
+                    indices.insert(idx);
                 }
             }
         }

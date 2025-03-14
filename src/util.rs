@@ -142,6 +142,7 @@ fn parse_escaped_string<'a>(
                         return Ok(data);
                     }
 
+                    #[allow(clippy::precedence)]
                     let n = (((n1 - 0xD800) as u32) << 10 | (n2 - 0xDC00) as u32) + 0x1_0000;
                     char::from_u32(n).unwrap()
                 }
