@@ -23,4 +23,5 @@ mod item;
 pub use databend::*;
 pub(crate) use item::*;
 #[cfg(feature = "sqlite")]
+#[allow(unused_imports)]
 pub use sqlite::*;
