@@ -21,7 +21,6 @@ use crate::core::Deserializer;
 use crate::core::JsonbItemType;
 use crate::core::ObjectIterator;
 use crate::error::*;
-use crate::parse_value;
 use crate::Number;
 use crate::OwnedJsonb;
 
