@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
@@ -86,6 +87,44 @@ pub enum ArrayIndex {
     Index(Index),
     /// The range index between two number.
     Slice((Index, Index)),
+}
+
+impl ArrayIndex {
+    pub fn to_indices(&self, length: usize) -> HashSet<usize> {
+        let length = length as i32;
+
+        let mut indices = HashSet::new();
+        match self {
+            ArrayIndex::Index(idx) => {
+                let idx = Self::convert_index(idx, length);
+                if idx >= 0 && idx < length {
+                    indices.insert(idx as usize);
+                }
+            }
+            ArrayIndex::Slice((start, end)) => {
+                let start_idx = Self::convert_index(start, length);
+                let end_idx = Self::convert_index(end, length);
+
+                let start_idx = if start_idx < 0 { 0 } else { start_idx as usize };
+                let end_idx = if end_idx >= length {
+                    (length - 1) as usize
+                } else {
+                    end_idx as usize
+                };
+                for idx in start_idx..=end_idx {
+                    indices.insert(idx);
+                }
+            }
+        }
+        indices
+    }
+
+    fn convert_index(index: &Index, length: i32) -> i32 {
+        match index {
+            Index::Index(idx) => *idx,
+            Index::LastIndex(idx) => length + *idx - 1,
+        }
+    }
 }
 
 /// Represents a literal value used in filter expression.

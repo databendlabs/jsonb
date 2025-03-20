@@ -30,9 +30,11 @@ byteorder = "1.5.0"
 fast-float2 = "0.2.3"
 itoa = "1.0"
 nom = "7.1.3"
+num-traits = "0.2.19"
 ordered-float = { version = "4.5", default-features = false }
 rand = { version = "0.8.5", features = ["small_rng"] }
 ryu = "1.0"
+serde = "1.0"
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
@@ -44,7 +46,9 @@ mockalloc = "0.1.2"
 criterion = "0.5.1"
 
 [features]
-default = ["serde_json/preserve_order"]
+default = ["databend", "serde_json/preserve_order"]
+databend = []
+sqlite = []
 
 [[bench]]
 name = "parser"

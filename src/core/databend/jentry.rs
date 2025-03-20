@@ -15,61 +15,61 @@
 use super::constants::*;
 
 #[derive(Clone, Debug, PartialOrd, PartialEq, Eq, Ord)]
-pub(crate) struct JEntry {
-    pub(crate) type_code: u32,
-    pub(crate) length: u32,
+pub(super) struct JEntry {
+    pub(super) type_code: u32,
+    pub(super) length: u32,
 }
 
 impl JEntry {
-    pub(crate) fn decode_jentry(encoded: u32) -> JEntry {
+    pub(super) fn decode_jentry(encoded: u32) -> JEntry {
         let type_code = encoded & JENTRY_TYPE_MASK;
         let length = encoded & JENTRY_OFF_LEN_MASK;
         JEntry { type_code, length }
     }
 
-    pub(crate) fn make_null_jentry() -> JEntry {
+    pub(super) fn make_null_jentry() -> JEntry {
         JEntry {
             type_code: NULL_TAG,
             length: 0,
         }
     }
 
-    pub(crate) fn make_true_jentry() -> JEntry {
+    pub(super) fn make_true_jentry() -> JEntry {
         JEntry {
             type_code: TRUE_TAG,
             length: 0,
         }
     }
 
-    pub(crate) fn make_false_jentry() -> JEntry {
+    pub(super) fn make_false_jentry() -> JEntry {
         JEntry {
             type_code: FALSE_TAG,
             length: 0,
         }
     }
 
-    pub(crate) fn make_string_jentry(length: usize) -> JEntry {
+    pub(super) fn make_string_jentry(length: usize) -> JEntry {
         JEntry {
             type_code: STRING_TAG,
             length: length as u32,
         }
     }
 
-    pub(crate) fn make_number_jentry(length: usize) -> JEntry {
+    pub(super) fn make_number_jentry(length: usize) -> JEntry {
         JEntry {
             type_code: NUMBER_TAG,
             length: length as u32,
         }
     }
 
-    pub(crate) fn make_container_jentry(length: usize) -> JEntry {
+    pub(super) fn make_container_jentry(length: usize) -> JEntry {
         JEntry {
             type_code: CONTAINER_TAG,
             length: length as u32,
         }
     }
 
-    pub(crate) fn encoded(&self) -> u32 {
+    pub(super) fn encoded(&self) -> u32 {
         self.type_code | self.length
     }
 }

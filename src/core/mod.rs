@@ -12,8 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod array;
-mod object;
-mod operator;
-mod path;
-mod scalar;
+#[cfg(feature = "databend")]
+mod databend;
+#[cfg(feature = "sqlite")]
+mod sqlite;
+
+mod item;
+
+#[cfg(feature = "databend")]
+pub use databend::*;
+pub(crate) use item::*;
+#[cfg(feature = "sqlite")]
+#[allow(unused_imports)]
+pub use sqlite::*;

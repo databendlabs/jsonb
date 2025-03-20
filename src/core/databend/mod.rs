@@ -12,8 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod array;
-mod object;
-mod operator;
-mod path;
-mod scalar;
+mod builder;
+mod constants;
+mod de;
+mod iterator;
+mod jentry;
+mod ser;
+mod util;
+
+pub(crate) use builder::*;
+pub use de::*;
+pub(crate) use iterator::*;
+pub use ser::*;

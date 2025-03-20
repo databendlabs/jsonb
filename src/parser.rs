@@ -14,30 +14,58 @@
 
 use std::borrow::Cow;
 
-use crate::lazy_value::LazyValue;
-
 use super::constants::*;
 use super::error::Error;
 use super::error::ParseErrorCode;
+use super::error::Result;
 use super::number::Number;
 use super::util::parse_string;
 use super::value::Object;
 use super::value::Value;
+use crate::core::Decoder;
+
+/// The binary `JSONB` contains three parts, `Header`, `JEntry` and `RawData`.
+/// This structure can be nested. Each group of structures starts with a `Header`.
+/// The upper-level `Value` will store the `Header` length or offset of
+/// the lower-level `Value`.
+///
+/// `Header` stores the type of the `Value`, include `Array`, `Object` and `Scalar`,
+/// `Scalar` has only one `Value`, and a corresponding `JEntry`.
+/// `Array` and `Object` are nested type, they have multiple lower-level `Values`.
+/// So the `Header` also stores the number of lower-level `Values`.
+///
+/// `JEntry` stores the types of `Scalar Value`, including `Null`, `True`, `False`,
+/// `Number`, `String` and `Container`. They have three different decode methods.
+/// 1. `Null`, `True` and `False` can be obtained by `JEntry`, no extra work required.
+/// 2. `Number` and `String` has related `RawData`, `JEntry` store the length
+///    or offset of this data, the `Value` can be read out and then decoded.
+/// 3. `Container` is actually a nested `Array` or `Object` with the same structure,
+///    `JEntry` store the length or offset of the lower-level `Header`,
+///    from where the same decode process can begin.
+///
+///    `RawData` is the encoded `Value`.
+///    `Number` is a variable-length `Decimal`, store both int and float value.
+///    `String` is the original string, can be borrowed directly without extra decode.
+///    `Array` and `Object` is a lower-level encoded `JSONB` value.
+///    The upper-level doesn't care about the specific content.
+///    Decode can be executed recursively.
+///
+///    Decode `JSONB` Value from binary bytes.
+pub fn from_slice(buf: &[u8]) -> Result<Value<'_>> {
+    let mut decoder = Decoder::new(buf);
+    match decoder.decode() {
+        Ok(value) => Ok(value),
+        // for compatible with the first version of `JSON` text, parse it again
+        Err(_) => parse_value(buf),
+    }
+}
 
 // Parse JSON text to JSONB Value.
 // Inspired by `https://github.com/jorgecarleitao/json-deserializer`
 // Thanks Jorge Leitao.
-pub fn parse_value(buf: &[u8]) -> Result<Value<'_>, Error> {
+pub fn parse_value(buf: &[u8]) -> Result<Value<'_>> {
     let mut parser = Parser::new(buf);
     parser.parse()
-}
-
-pub fn parse_lazy_value(buf: &[u8]) -> Result<LazyValue<'_>, Error> {
-    if !is_jsonb(buf) {
-        parse_value(buf).map(LazyValue::Value)
-    } else {
-        Ok(LazyValue::Raw(Cow::Borrowed(buf)))
-    }
 }
 
 struct Parser<'a> {
@@ -50,7 +78,7 @@ impl<'a> Parser<'a> {
         Self { buf, idx: 0 }
     }
 
-    fn parse(&mut self) -> Result<Value<'a>, Error> {
+    fn parse(&mut self) -> Result<Value<'a>> {
         let val = self.parse_json_value()?;
         self.skip_unused();
         if self.idx < self.buf.len() {
@@ -60,7 +88,7 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
-    fn parse_json_value(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_value(&mut self) -> Result<Value<'a>> {
         self.skip_unused();
         let c = self.next()?;
         match c {
@@ -78,14 +106,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn next(&mut self) -> Result<&u8, Error> {
+    fn next(&mut self) -> Result<&u8> {
         match self.buf.get(self.idx) {
             Some(c) => Ok(c),
             None => Err(self.error(ParseErrorCode::InvalidEOF)),
         }
     }
 
-    fn must_is(&mut self, c: u8) -> Result<(), Error> {
+    fn must_is(&mut self, c: u8) -> Result<()> {
         match self.buf.get(self.idx) {
             Some(v) => {
                 self.step();
@@ -129,7 +157,7 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn step_digits(&mut self) -> Result<usize, Error> {
+    fn step_digits(&mut self) -> Result<usize> {
         if self.idx == self.buf.len() {
             return Err(self.error(ParseErrorCode::InvalidEOF));
         }
@@ -189,7 +217,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_json_null(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_null(&mut self) -> Result<Value<'a>> {
         let data = [b'n', b'u', b'l', b'l'];
         for v in data.into_iter() {
             self.must_is(v)?;
@@ -197,7 +225,7 @@ impl<'a> Parser<'a> {
         Ok(Value::Null)
     }
 
-    fn parse_json_true(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_true(&mut self) -> Result<Value<'a>> {
         let data = [b't', b'r', b'u', b'e'];
         for v in data.into_iter() {
             self.must_is(v)?;
@@ -205,7 +233,7 @@ impl<'a> Parser<'a> {
         Ok(Value::Bool(true))
     }
 
-    fn parse_json_false(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_false(&mut self) -> Result<Value<'a>> {
         let data = [b'f', b'a', b'l', b's', b'e'];
         for v in data.into_iter() {
             self.must_is(v)?;
@@ -213,7 +241,7 @@ impl<'a> Parser<'a> {
         Ok(Value::Bool(false))
     }
 
-    fn parse_json_number(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_number(&mut self) -> Result<Value<'a>> {
         let start_idx = self.idx;
 
         let mut has_fraction = false;
@@ -276,7 +304,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_json_string(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_string(&mut self) -> Result<Value<'a>> {
         self.must_is(b'"')?;
 
         let start_idx = self.idx;
@@ -324,7 +352,7 @@ impl<'a> Parser<'a> {
         Ok(Value::String(val))
     }
 
-    fn parse_json_array(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_array(&mut self) -> Result<Value<'a>> {
         self.must_is(b'[')?;
 
         let mut first = true;
@@ -349,7 +377,7 @@ impl<'a> Parser<'a> {
         Ok(Value::Array(values))
     }
 
-    fn parse_json_object(&mut self) -> Result<Value<'a>, Error> {
+    fn parse_json_object(&mut self) -> Result<Value<'a>> {
         self.must_is(b'{')?;
 
         let mut first = true;
@@ -385,15 +413,4 @@ impl<'a> Parser<'a> {
         }
         Ok(Value::Object(obj))
     }
-}
-
-// Check whether the value is `JSONB` format,
-// for compatibility with previous `JSON` string.
-fn is_jsonb(value: &[u8]) -> bool {
-    if let Some(v) = value.first() {
-        if matches!(*v, ARRAY_PREFIX | OBJECT_PREFIX | SCALAR_PREFIX) {
-            return true;
-        }
-    }
-    false
 }

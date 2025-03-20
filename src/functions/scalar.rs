@@ -16,12 +16,10 @@
 
 use std::borrow::Cow;
 
-use crate::constants::*;
+use crate::core::JsonbItemType;
 use crate::error::*;
-use crate::functions::core::read_u32;
-use crate::jentry::JEntry;
+use crate::from_raw_jsonb;
 use crate::number::Number;
-
 use crate::RawJsonb;
 
 impl RawJsonb<'_> {
@@ -29,11 +27,15 @@ impl RawJsonb<'_> {
     ///
     /// This function determines whether the JSONB value represents a JSON `null`.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
     /// # Returns
     ///
     /// * `Ok(true)` if the value is null.
     /// * `Ok(false)` if the value is not null.
-    /// * `Err(Error)` if an error occurred during decoding (e.g., invalid JSONB data).
+    /// * `Err(Error)` - If the input JSONB data is invalid.
     ///
     /// # Examples
     ///
@@ -48,14 +50,14 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = obj_jsonb.as_raw();
     /// assert!(!raw_jsonb.is_null().unwrap());
     /// ```
-    pub fn is_null(&self) -> Result<bool, Error> {
-        self.as_null().map(|v| v.is_some())
+    pub fn is_null(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Null))
     }
 
-    /// Checks if the JSONB value is null.
+    /// Extracts a null value from a JSONB value.
     ///
-    /// This function checks if the JSONB value represents a JSON `null` value.
-    /// It returns `Some(())` if the value is null and `None` otherwise.
+    /// This function returns `Some(())` if the value is null and `None` otherwise.
     /// Note that this function only checks for the specific JSON `null` type; it doesn't check for empty objects or arrays.
     ///
     /// # Arguments
@@ -105,20 +107,12 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_null();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_null(&self) -> Result<Option<()>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    NULL_TAG => Ok(Some(())),
-                    STRING_TAG | NUMBER_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_null(&self) -> Result<Option<()>> {
+        let res: Result<()> = from_raw_jsonb(self);
+        match res {
+            Ok(_) => Ok(Some(())),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
@@ -173,13 +167,15 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_boolean();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_boolean(&self) -> Result<bool, Error> {
-        self.as_bool().map(|v| v.is_some())
+    pub fn is_boolean(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Boolean))
     }
 
     /// Extracts a boolean value from a JSONB value.
     ///
-    /// This function attempts to extract a boolean value (`true` or `false`) from the JSONB value.  If the JSONB value is a boolean, the corresponding boolean value is returned.  If the JSONB value is not a boolean (e.g., a number, string, null, array, or object), `None` is returned.
+    /// This function attempts to extract a boolean value (`true` or `false`) from the JSONB value.
+    /// If the JSONB value is a boolean, the corresponding boolean value is returned, and return `None` otherwise.
     ///
     /// # Arguments
     ///
@@ -189,7 +185,7 @@ impl RawJsonb<'_> {
     ///
     /// * `Ok(Some(true))` - If the value is JSON `true`.
     /// * `Ok(Some(false))` - If the value is JSON `false`.
-    /// * `Ok(None)` - If the value is not a boolean (number, string, null, array, object).
+    /// * `Ok(None)` - If the value is not a boolean.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -229,27 +225,19 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_bool();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_bool(&self) -> Result<Option<bool>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    FALSE_TAG => Ok(Some(false)),
-                    TRUE_TAG => Ok(Some(true)),
-                    NULL_TAG | STRING_TAG | NUMBER_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_bool(&self) -> Result<Option<bool>> {
+        let res: Result<bool> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// Converts a JSONB value to a boolean.
     ///
-    /// This function attempts to convert a JSONB value to a boolean. It prioritizes extracting a boolean value directly if possible. If the value is a string, it converts the string to lowercase and checks if it's "true" or "false".  Otherwise, it returns an error.
+    /// This function attempts to convert a JSONB value to a boolean. It prioritizes extracting a boolean value directly if possible.
+    /// If the value is a string, it converts the string to lowercase and checks if it's "true" or "false". Otherwise, it returns an error.
     ///
     /// # Arguments
     ///
@@ -259,7 +247,7 @@ impl RawJsonb<'_> {
     ///
     /// * `Ok(true)` - If the value is JSON `true` or a string that is "true" (case-insensitive).
     /// * `Ok(false)` - If the value is JSON `false` or a string that is "false" (case-insensitive).
-    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to a boolean (e.g., it's a number, null, array, or object, or a string that's not "true" or "false").
+    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to a boolean.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -311,7 +299,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_bool();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_bool(&self) -> Result<bool, Error> {
+    pub fn to_bool(&self) -> Result<bool> {
         if let Some(v) = self.as_bool()? {
             return Ok(v);
         } else if let Some(v) = self.as_str()? {
@@ -383,13 +371,15 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_number();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_number(&self) -> Result<bool, Error> {
-        self.as_number().map(|v| v.is_some())
+    pub fn is_number(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Number))
     }
 
     /// Extracts a number from a JSONB value.
     ///
-    /// This function attempts to extract a number from the JSONB value. If the JSONB value is a number, it returns the number; otherwise, it returns `None`.
+    /// This function attempts to extract a number from the JSONB value.
+    /// If the JSONB value is a number, it returns the number; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -398,13 +388,15 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(Some(Number))` - If the value is a number, the extracted number.
-    /// * `Ok(None)` - If the value is not a number (boolean, string, null, array, object).
+    /// * `Ok(None)` - If the value is not a number.
     /// * `Err(Error)` - If the JSONB data is invalid or if the number cannot be decoded.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use jsonb::{Number, OwnedJsonb, RawJsonb};
+    /// use jsonb::Number;
+    /// use jsonb::OwnedJsonb;
+    /// use jsonb::RawJsonb;
     ///
     /// // Number value
     /// let num_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
@@ -446,26 +438,17 @@ impl RawJsonb<'_> {
     /// let corrupted_num_jsonb = OwnedJsonb::new(vec![10, 0, 0, 0, 16, 0, 0, 0, 0, 1]);
     /// let corrupted_raw_num_jsonb = corrupted_num_jsonb.as_raw();
     /// let result = corrupted_raw_num_jsonb.as_number();
-    /// assert!(result.is_err()); //Decodes should return Err
+    /// assert!(result.is_err()); // Decodes should return Err
     /// ```
-    pub fn as_number(&self) -> Result<Option<Number>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    NUMBER_TAG => {
-                        let length = jentry.length as usize;
-                        let num = Number::decode(&self.data[8..8 + length])?;
-                        Ok(Some(num))
-                    }
-                    NULL_TAG | STRING_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_number(&self) -> Result<Option<Number>> {
+        if let Some(v) = self.as_u64()? {
+            Ok(Some(Number::UInt64(v)))
+        } else if let Some(v) = self.as_i64()? {
+            Ok(Some(Number::Int64(v)))
+        } else if let Some(v) = self.as_f64()? {
+            Ok(Some(Number::Float64(v)))
+        } else {
+            Ok(None)
         }
     }
 
@@ -512,13 +495,15 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_i64(&self) -> Result<bool, Error> {
+    pub fn is_i64(&self) -> Result<bool> {
         self.as_i64().map(|v| v.is_some())
     }
 
     /// Extracts an i64 integer from a JSONB value.
     ///
-    /// This function attempts to extract an `i64` integer from the JSONB value. If the JSONB value is a number and can be represented as an `i64` without loss of information, the integer value is returned. Otherwise, `None` is returned.
+    /// This function attempts to extract an `i64` integer from the JSONB value.
+    /// If the JSONB value is a number and can be represented as an `i64` without loss of information, the integer value is returned.
+    /// Otherwise, `None` is returned.
     ///
     /// # Arguments
     ///
@@ -527,7 +512,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(Some(i64))` - If the value is an integer that can be represented as an `i64`.
-    /// * `Ok(None)` - If the value is not an integer or cannot be represented as an `i64` (e.g., it's a floating-point number, a boolean, string, null, array, or object).
+    /// * `Ok(None)` - If the value is not an integer or cannot be represented as an `i64`.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -563,16 +548,22 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_i64(&self) -> Result<Option<i64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_i64()),
-            None => Ok(None),
+    pub fn as_i64(&self) -> Result<Option<i64>> {
+        let res: Result<i64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// Converts a JSONB value to an i64 integer.
     ///
-    /// This function attempts to convert a JSONB value to an `i64` integer. It prioritizes direct conversion from a number if possible.  If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`). If the value is a string that can be parsed as an `i64`, that parsed value is returned. Otherwise, an error is returned.
+    /// This function attempts to convert a JSONB value to an `i64` integer.
+    /// It prioritizes direct conversion from a number if possible.
+    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
+    /// If the value is a string that can be parsed as an `i64`, that parsed value is returned.
+    /// Otherwise, an error is returned.
     ///
     /// # Arguments
     ///
@@ -581,7 +572,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(i64)` - The `i64` representation of the JSONB value.
-    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `i64` (e.g., it's a floating-point number, an array, an object, or a string that is not a valid integer).
+    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `i64`.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -634,7 +625,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_i64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_i64(&self) -> Result<i64, Error> {
+    pub fn to_i64(&self) -> Result<i64> {
         if let Some(v) = self.as_i64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -653,7 +644,7 @@ impl RawJsonb<'_> {
 
     /// Checks if the JSONB value is an unsigned integer that can be represented as a u64.
     ///
-    /// This function checks if the JSONB value is a number and can be converted to a `u64` without loss of information.  Negative numbers will always return `false`.
+    /// This function checks if the JSONB value is a number and can be converted to a `u64` without loss of information.
     ///
     /// # Arguments
     ///
@@ -714,13 +705,15 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_u64(&self) -> Result<bool, Error> {
+    pub fn is_u64(&self) -> Result<bool> {
         self.as_u64().map(|v| v.is_some())
     }
 
     /// Extracts a u64 unsigned integer from a JSONB value.
     ///
-    /// This function attempts to extract a `u64` unsigned integer from the JSONB value. If the JSONB value is a number and can be represented as a `u64` without loss of information (i.e., it's a non-negative integer within the `u64` range), the unsigned integer value is returned. Otherwise, `None` is returned.
+    /// This function attempts to extract a `u64` unsigned integer from the JSONB value.
+    /// If the JSONB value is a number and can be represented as a `u64` without loss of information (i.e., it's a non-negative integer within the `u64` range),
+    /// the unsigned integer value is returned. Otherwise, `None` is returned.
     ///
     /// # Arguments
     ///
@@ -729,7 +722,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(Some(u64))` - If the value is an unsigned integer that can be represented as a `u64`.
-    /// * `Ok(None)` - If the value is not an unsigned integer or cannot be represented as a `u64` (e.g., it's a floating-point number, a negative number, a boolean, string, null, array, or object).
+    /// * `Ok(None)` - If the value is not an unsigned integer or cannot be represented as a `u64`.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -777,16 +770,22 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_u64(&self) -> Result<Option<u64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_u64()),
-            None => Ok(None),
+    pub fn as_u64(&self) -> Result<Option<u64>> {
+        let res: Result<u64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// Converts a JSONB value to a u64 unsigned integer.
     ///
-    /// This function attempts to convert a JSONB value to a `u64` unsigned integer. It prioritizes direct conversion from a number if possible. If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`). If the value is a string that can be parsed as a `u64`, that parsed value is returned. Otherwise, an error is returned.  Note that negative numbers cannot be converted to `u64`.
+    /// This function attempts to convert a JSONB value to a `u64` unsigned integer.
+    /// It prioritizes direct conversion from a number if possible.
+    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
+    /// If the value is a string that can be parsed as a `u64`, that parsed value is returned.
+    /// Otherwise, an error is returned.
     ///
     /// # Arguments
     ///
@@ -852,7 +851,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_u64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_u64(&self) -> Result<u64, Error> {
+    pub fn to_u64(&self) -> Result<u64> {
         if let Some(v) = self.as_u64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -871,7 +870,8 @@ impl RawJsonb<'_> {
 
     /// Checks if the JSONB value is a floating-point number that can be represented as an f64.
     ///
-    /// This function checks if the JSONB value is a number and can be converted to an `f64` without loss of information (this is generally always true for numbers in JSONB).
+    /// This function checks if the JSONB value is a number and can be converted to an `f64` without loss of information
+    /// (this is generally always true for numbers in JSONB).
     ///
     /// # Arguments
     ///
@@ -880,7 +880,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(true)` - If the value is a number.
-    /// * `Ok(false)` - If the value is not a number (boolean, string, null, array, object).
+    /// * `Ok(false)` - If the value is not a number.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -928,13 +928,14 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_f64(&self) -> Result<bool, Error> {
+    pub fn is_f64(&self) -> Result<bool> {
         self.as_f64().map(|v| v.is_some())
     }
 
     /// Extracts an f64 floating-point number from a JSONB value.
     ///
-    /// This function attempts to extract an `f64` floating-point number from the JSONB value. If the JSONB value is a number, it's converted to an `f64` and returned. Otherwise, `None` is returned.
+    /// This function attempts to extract an `f64` floating-point number from the JSONB value.
+    /// If the JSONB value is a number, it's converted to an `f64` and returned. Otherwise, `None` is returned.
     ///
     /// # Arguments
     ///
@@ -943,7 +944,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(Some(f64))` - If the value is a number, the extracted `f64` value.
-    /// * `Ok(None)` - If the value is not a number (boolean, string, null, array, object).
+    /// * `Ok(None)` - If the value is not a number.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -987,16 +988,22 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_f64(&self) -> Result<Option<f64>, Error> {
-        match self.as_number()? {
-            Some(num) => Ok(num.as_f64()),
-            None => Ok(None),
+    pub fn as_f64(&self) -> Result<Option<f64>> {
+        let res: Result<f64> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// Converts a JSONB value to an f64 floating-point number.
     ///
-    /// This function attempts to convert a JSONB value to an `f64` floating-point number. It prioritizes direct conversion from a number if possible. If the value is a boolean, it's converted to 1.0 (for `true`) or 0.0 (for `false`). If the value is a string that can be parsed as an `f64`, that parsed value is returned. Otherwise, an error is returned.
+    /// This function attempts to convert a JSONB value to an `f64` floating-point number.
+    /// It prioritizes direct conversion from a number if possible.
+    /// If the value is a boolean, it's converted to 1.0 (for `true`) or 0.0 (for `false`).
+    /// If the value is a string that can be parsed as an `f64`, that parsed value is returned.
+    /// Otherwise, an error is returned.
     ///
     /// # Arguments
     ///
@@ -1005,7 +1012,8 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(f64)` - The `f64` representation of the JSONB value.
-    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `f64` (e.g., it's an array, an object, a string that is not a valid number, or a null value).
+    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `f64`
+    ///   (e.g., it's an array, an object, a string that is not a valid number, or a null value).
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -1054,7 +1062,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_f64();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_f64(&self) -> Result<f64, Error> {
+    pub fn to_f64(&self) -> Result<f64> {
         if let Some(v) = self.as_f64()? {
             return Ok(v);
         } else if let Some(v) = self.as_bool()? {
@@ -1122,13 +1130,16 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_string();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_string(&self) -> Result<bool, Error> {
-        self.as_str().map(|v| v.is_some())
+    pub fn is_string(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::String))
     }
 
     /// Extracts a string from a JSONB value.
     ///
-    /// This function attempts to extract a string from the JSONB value. If the JSONB value is a string, it returns the string as a `Cow<'_, str>`. Otherwise, it returns `None`.
+    /// This function attempts to extract a string from the JSONB value.
+    /// If the JSONB value is a string, it returns the string as a `Cow<'_, str>`.
+    /// Otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -1184,30 +1195,21 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_utf8_jsonb.as_str();
     /// assert!(result.is_err());
     /// ```
-    pub fn as_str(&self) -> Result<Option<Cow<'_, str>>, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            SCALAR_CONTAINER_TAG => {
-                let jentry_encoded = read_u32(self.data, 4)?;
-                let jentry = JEntry::decode_jentry(jentry_encoded);
-                match jentry.type_code {
-                    STRING_TAG => {
-                        let length = jentry.length as usize;
-                        let s = unsafe { std::str::from_utf8_unchecked(&self.data[8..8 + length]) };
-                        Ok(Some(Cow::Borrowed(s)))
-                    }
-                    NULL_TAG | NUMBER_TAG | FALSE_TAG | TRUE_TAG | CONTAINER_TAG => Ok(None),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
+    pub fn as_str(&self) -> Result<Option<Cow<'_, str>>> {
+        let res: Result<String> = from_raw_jsonb(self);
+        match res {
+            Ok(v) => Ok(Some(Cow::Owned(v))),
+            Err(Error::UnexpectedType) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// Converts a JSONB value to a String.
     ///
-    /// This function attempts to convert a JSONB value to a string representation.  It prioritizes direct conversion from strings.  Booleans are converted to "true" or "false", and numbers are converted to their string representations.  Other types (arrays, objects, null) will result in an error.
+    /// This function attempts to convert a JSONB value to a string representation.
+    /// It prioritizes direct conversion from strings.
+    /// Booleans are converted to "true" or "false", and numbers are converted to their string representations.
+    /// Other types (arrays, objects, null) will result in an error.
     ///
     /// # Arguments
     ///
@@ -1258,7 +1260,7 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.to_str();
     /// assert!(result.is_err());
     /// ```
-    pub fn to_str(&self) -> Result<String, Error> {
+    pub fn to_str(&self) -> Result<String> {
         if let Some(v) = self.as_str()? {
             return Ok(v.to_string());
         } else if let Some(v) = self.as_bool()? {
@@ -1284,7 +1286,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(true)` - If the value is an array.
-    /// * `Ok(false)` - If the value is not an array (number, string, boolean, null, object).
+    /// * `Ok(false)` - If the value is not an array.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -1324,13 +1326,9 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_array();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_array(&self) -> Result<bool, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => Ok(true),
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(false),
-            _ => Err(Error::InvalidJsonb),
-        }
+    pub fn is_array(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Array(_)))
     }
 
     /// Checks if the JSONB value is an object.
@@ -1344,7 +1342,7 @@ impl RawJsonb<'_> {
     /// # Returns
     ///
     /// * `Ok(true)` - If the value is an object.
-    /// * `Ok(false)` - If the value is not an object (number, string, boolean, null, array).
+    /// * `Ok(false)` - If the value is not an object.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -1384,12 +1382,8 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.is_object();
     /// assert!(result.is_err());
     /// ```
-    pub fn is_object(&self) -> Result<bool, Error> {
-        let header = read_u32(self.data, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => Ok(true),
-            SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(false),
-            _ => Err(Error::InvalidJsonb),
-        }
+    pub fn is_object(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Object(_)))
     }
 }

@@ -12,24 +12,39 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nom::{
-    branch::alt,
-    bytes::complete::{tag, tag_no_case},
-    character::complete::{char, i32, i64, multispace0, u64},
-    combinator::{cond, map, map_res, opt, value},
-    error::{Error as NomError, ErrorKind},
-    multi::{many0, separated_list1},
-    number::complete::double,
-    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
-    IResult,
-};
+use std::borrow::Cow;
+
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::bytes::complete::tag_no_case;
+use nom::character::complete::char;
+use nom::character::complete::i32;
+use nom::character::complete::i64;
+use nom::character::complete::multispace0;
+use nom::character::complete::u64;
+use nom::combinator::cond;
+use nom::combinator::map;
+use nom::combinator::map_res;
+use nom::combinator::opt;
+use nom::combinator::value;
+use nom::error::Error as NomError;
+use nom::error::ErrorKind;
+use nom::multi::many0;
+use nom::multi::separated_list1;
+use nom::number::complete::double;
+use nom::sequence::delimited;
+use nom::sequence::pair;
+use nom::sequence::preceded;
+use nom::sequence::separated_pair;
+use nom::sequence::terminated;
+use nom::sequence::tuple;
+use nom::IResult;
 
 use crate::constants::UNICODE_LEN;
 use crate::error::Error;
 use crate::jsonpath::path::*;
 use crate::number::Number;
 use crate::util::parse_string;
-use std::borrow::Cow;
 
 /// Parsing the input string to JSON Path.
 pub fn parse_json_path(input: &[u8]) -> Result<JsonPath<'_>, Error> {

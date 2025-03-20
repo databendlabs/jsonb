@@ -14,23 +14,22 @@
 
 // This file contains functions that dealing with path-based access to JSONB data.
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
-use std::str::from_utf8_unchecked;
 
-use crate::builder::ArrayBuilder;
-use crate::builder::ObjectBuilder;
-use crate::constants::*;
+use crate::core::ArrayBuilder;
+use crate::core::ArrayIterator;
+use crate::core::JsonbItem;
+use crate::core::JsonbItemType;
+use crate::core::ObjectBuilder;
+use crate::core::ObjectIterator;
+use crate::core::ObjectKeyIterator;
 use crate::error::*;
-use crate::functions::core::extract_by_jentry;
-use crate::functions::core::read_u32;
-use crate::iterator::iterate_array;
-use crate::iterator::iterate_object_entries;
-use crate::jentry::JEntry;
+use crate::from_raw_jsonb;
 use crate::jsonpath::JsonPath;
-use crate::jsonpath::Mode;
 use crate::jsonpath::Selector;
 use crate::keypath::KeyPath;
-
 use crate::OwnedJsonb;
 use crate::RawJsonb;
 
@@ -43,6 +42,7 @@ impl RawJsonb<'_> {
     ///
     /// # Arguments
     ///
+    /// * `self` - The JSONB value.
     /// * `index` - The index of the desired element.
     ///
     /// # Returns
@@ -76,21 +76,16 @@ impl RawJsonb<'_> {
     /// let element = raw_jsonb.get_by_index(0).unwrap();
     /// assert!(element.is_none()); // Not an array
     /// ```
-    pub fn get_by_index(&self, index: usize) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                let val = get_jentry_by_index(value, 0, header, index)
-                    .map(|(jentry, encoded, val_offset)| {
-                        extract_by_jentry(&jentry, encoded, val_offset, value)
-                    })
-                    .map(OwnedJsonb::new);
-                Ok(val)
+    pub fn get_by_index(&self, index: usize) -> Result<Option<OwnedJsonb>> {
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        if let Some(mut array_iter) = array_iter_opt {
+            if let Some(item_result) = array_iter.nth(index) {
+                let item = item_result?;
+                let value = item.to_owned_jsonb()?;
+                return Ok(Some(value));
             }
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
         }
+        Ok(None)
     }
 
     /// Gets the value associated with a given key in a JSONB object.
@@ -103,6 +98,7 @@ impl RawJsonb<'_> {
     ///
     /// # Arguments
     ///
+    /// * `self` - The JSONB value.
     /// * `name` - The key to search for.
     /// * `ignore_case` - Whether the key search should be case-insensitive.
     ///
@@ -141,21 +137,36 @@ impl RawJsonb<'_> {
     /// let value = raw_jsonb.get_by_name("a", false).unwrap();
     /// assert!(value.is_none()); // Not an object
     /// ```
-    pub fn get_by_name(&self, name: &str, ignore_case: bool) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
-                let val = get_jentry_by_name(value, 0, header, name, ignore_case)
-                    .map(|(jentry, encoded, val_offset)| {
-                        extract_by_jentry(&jentry, encoded, val_offset, value)
-                    })
-                    .map(OwnedJsonb::new);
-                Ok(val)
+    pub fn get_by_name(&self, name: &str, ignore_case: bool) -> Result<Option<OwnedJsonb>> {
+        let object_iter_opt = ObjectIterator::new(*self)?;
+        if let Some(mut object_iter) = object_iter_opt {
+            if !ignore_case {
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    if key.eq(name) {
+                        let value = val_item.to_owned_jsonb()?;
+                        return Ok(Some(value));
+                    }
+                }
+            } else {
+                let mut item_map = BTreeMap::new();
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
+                    if key.eq(name) {
+                        let value = val_item.to_owned_jsonb()?;
+                        return Ok(Some(value));
+                    }
+                    item_map.insert(key, val_item);
+                }
+                for (key, val_item) in item_map.into_iter() {
+                    if name.eq_ignore_ascii_case(key) {
+                        let value = val_item.to_owned_jsonb()?;
+                        return Ok(Some(value));
+                    }
+                }
             }
-            SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(None),
-            _ => Err(Error::InvalidJsonb),
         }
+        Ok(None)
     }
 
     /// Gets the value at the specified key path in a JSONB value.
@@ -172,6 +183,7 @@ impl RawJsonb<'_> {
     ///
     /// # Arguments
     ///
+    /// * `self` - The JSONB value.
     /// * `keypaths` - An iterator of `KeyPath` elements representing the path to traverse.
     ///
     /// # Returns
@@ -225,191 +237,221 @@ impl RawJsonb<'_> {
     pub fn get_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
         &self,
         keypaths: I,
-    ) -> Result<Option<OwnedJsonb>, Error> {
-        let value = self.data;
-
-        let mut curr_val_offset = 0;
-        let mut curr_jentry_encoded = 0;
-        let mut curr_jentry: Option<JEntry> = None;
-
+    ) -> Result<Option<OwnedJsonb>> {
+        let mut current_item = JsonbItem::Raw(*self);
         for path in keypaths {
-            if let Some(ref jentry) = curr_jentry {
-                if jentry.type_code != CONTAINER_TAG {
+            let Some(current) = current_item.as_raw_jsonb() else {
+                return Ok(None);
+            };
+            let jsonb_item_type = current.jsonb_item_type()?;
+            match jsonb_item_type {
+                JsonbItemType::Array(_) => {
+                    if let KeyPath::Index(index) = path {
+                        let array_iter_opt = ArrayIterator::new(current)?;
+                        if let Some(mut array_iter) = array_iter_opt {
+                            let length = array_iter.len() as i32;
+                            if *index > length || length + *index < 0 {
+                                return Ok(None);
+                            }
+                            let index = if *index >= 0 {
+                                *index as usize
+                            } else {
+                                (length + *index) as usize
+                            };
+                            if let Some(item_result) = array_iter.nth(index) {
+                                let item = item_result?;
+                                current_item = item;
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(None);
+                }
+                JsonbItemType::Object(_) => {
+                    let name = match path {
+                        KeyPath::Index(index) => format!("{index}"),
+                        KeyPath::Name(name) | KeyPath::QuotedName(name) => format!("{name}"),
+                    };
+                    let object_iter_opt = ObjectIterator::new(current)?;
+                    if let Some(mut object_iter) = object_iter_opt {
+                        let mut matched = false;
+                        for result in &mut object_iter {
+                            let (key, val_item) = result?;
+                            if key.eq(&name) {
+                                matched = true;
+                                current_item = val_item;
+                                break;
+                            }
+                        }
+                        if matched {
+                            continue;
+                        }
+                    }
+                    return Ok(None);
+                }
+                _ => {
                     return Ok(None);
                 }
             }
-            let header = read_u32(value, curr_val_offset)?;
-            let length = (header & CONTAINER_HEADER_LEN_MASK) as i32;
-            match (path, header & CONTAINER_HEADER_TYPE_MASK) {
-                (KeyPath::QuotedName(name) | KeyPath::Name(name), OBJECT_CONTAINER_TAG) => {
-                    match get_jentry_by_name(value, curr_val_offset, header, name, false) {
-                        Some((jentry, encoded, value_offset)) => {
-                            curr_jentry_encoded = encoded;
-                            curr_jentry = Some(jentry);
-                            curr_val_offset = value_offset;
-                        }
-                        None => return Ok(None),
-                    };
-                }
-                (KeyPath::Index(idx), ARRAY_CONTAINER_TAG) => {
-                    if *idx > length || length + *idx < 0 {
-                        return Ok(None);
-                    } else {
-                        let idx = if *idx >= 0 {
-                            *idx as usize
-                        } else {
-                            (length + *idx) as usize
-                        };
-                        match get_jentry_by_index(value, curr_val_offset, header, idx) {
-                            Some((jentry, encoded, value_offset)) => {
-                                curr_jentry_encoded = encoded;
-                                curr_jentry = Some(jentry);
-                                curr_val_offset = value_offset;
-                            }
-                            None => return Ok(None),
-                        }
-                    }
-                }
-                (_, _) => return Ok(None),
-            }
         }
-        // If the key paths is empty, return original value.
-        if curr_val_offset == 0 {
-            return Ok(Some(OwnedJsonb::new(value.to_vec())));
-        }
-        let val = curr_jentry.map(|jentry| {
-            let val_data = extract_by_jentry(&jentry, curr_jentry_encoded, curr_val_offset, value);
-            OwnedJsonb::new(val_data)
-        });
-        Ok(val)
+        Ok(Some(current_item.to_owned_jsonb()?))
     }
 
-    /// Extracts values from a JSONB structure using a JSONPath expression. Handles multiple matches as a Vec<OwnedJsonb>.
+    /// Selects elements from the `RawJsonb` by the given `JsonPath`.
     ///
-    /// This function uses the `jsonpath` crate to select values from the JSONB data based on the provided JSONPath expression.
-    /// This function always returns a `Vec<OwnedJsonb>`, even for a single match. This allows for consistent handling of multiple matches.
+    /// This function returns all matching elements as a `Vec<OwnedJsonb>`.
     ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
     /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
-    /// * `mode` - The selection mode (`Mode::First`, `Mode::All`, `Mode::Mixed`, or `Mode::Array`) from the `jsonpath` crate.
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<OwnedJsonb>)` - A vector containing the selected values.  If the path does not match any values, an empty vector `Vec::new()` is returned.
-    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation (e.g., an invalid JSONPath expression).
+    /// * `Ok(Vec<OwnedJsonb>)` - A vector containing the selected `OwnedJsonb` values.
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use jsonb::OwnedJsonb;
-    /// use jsonb::jsonpath::{parse_json_path, Mode};
+    /// use jsonb::jsonpath::parse_json_path;
     ///
     /// let jsonb_value = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = jsonb_value.as_raw();
     ///
-    /// // Mode::All (return all matches as a vector)
     /// let path = parse_json_path("$.a.b[*]".as_bytes()).unwrap();
-    /// let result = raw_jsonb.get_by_path(&path, Mode::All).unwrap();
+    /// let result = raw_jsonb.select_by_path(&path).unwrap();
     /// assert_eq!(result.len(), 3);
     /// assert_eq!(result[0].to_string(), "1");
     /// assert_eq!(result[1].to_string(), "2");
     /// assert_eq!(result[2].to_string(), "3");
-    ///
-    /// // Mode::First (return first value as a vector)
-    /// let result = raw_jsonb.get_by_path(&path, Mode::First).unwrap();
-    /// assert_eq!(result.len(), 1);
-    /// assert_eq!(result[0].to_string(), "1");
-    ///
-    /// // Mode::Array (return a JSONB array as a vector)
-    /// let result = raw_jsonb.get_by_path(&path, Mode::Array).unwrap();
-    /// assert_eq!(result.len(), 1);
-    /// assert_eq!(result[0].to_string(), "[1,2,3]");
-    ///
-    /// // Mode::Mixed (return a JSONB value as a vector)
-    /// let result = raw_jsonb.get_by_path(&path, Mode::Mixed).unwrap();
-    /// assert_eq!(result.len(), 1);
-    /// assert_eq!(result[0].to_string(), "[1,2,3]");
-    ///
-    /// // Path that does not exist
-    /// let path = parse_json_path("$.x".as_bytes()).unwrap();
-    /// let result = raw_jsonb.get_by_path(&path, Mode::All).unwrap();
-    /// assert!(result.is_empty());
     /// ```
-    pub fn get_by_path<'a>(
-        &self,
-        json_path: &'a JsonPath<'a>,
-        mode: Mode,
-    ) -> Result<Vec<OwnedJsonb>, Error> {
-        let selector = Selector::new(json_path, mode);
-        selector.select(*self)
+    pub fn select_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Vec<OwnedJsonb>> {
+        let mut selector = Selector::new(*self);
+        selector.execute(json_path)?;
+        selector.build()
     }
 
-    /// Extracts a value from a JSONB structure using a JSONPath expression. Handles single or first match.
+    /// Selects elements from the `RawJsonb` by the given `JsonPath` and wraps them in a JSON array.
     ///
-    /// This function uses the `jsonpath` crate to select a value from the JSONB data based on the provided JSONPath expression.
-    /// This function returns an `Option<OwnedJsonb>`, suitable for cases where you expect a single or first match.
-    /// Note: if the mode is `Mode::All`, behavior is same as `Mode::Mixed`.
+    /// This function returns all matching elements as a single `OwnedJsonb` representing a JSON array.
     ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
     /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
-    /// * `mode` - The selection mode (`Mode::First`, `Mode::Mixed`) from the `jsonpath` crate.  `Mode::All` and `Mode::Array` are not supported by this function.
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(OwnedJsonb))` - If the path matches at least one value, the first matched value.
-    /// * `Ok(None)` - If the path does not match any values.
-    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation (e.g., an invalid JSONPath expression).
+    /// * `Ok(OwnedJsonb)` - A single `OwnedJsonb` (a JSON array) containing the selected values.
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use jsonb::OwnedJsonb;
-    /// use jsonb::jsonpath::{parse_json_path, Mode};
+    /// use jsonb::jsonpath::parse_json_path;
     ///
     /// let jsonb_value = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = jsonb_value.as_raw();
-    /// let path = parse_json_path("$.a.b[*]".as_bytes()).unwrap();
     ///
-    /// // Mode::First (return the first value)
-    /// let result = raw_jsonb.get_by_path_opt(&path, Mode::First).unwrap();
-    /// assert!(result.is_some());
+    /// let path = parse_json_path("$.a.b[*]".as_bytes()).unwrap();
+    /// let result = raw_jsonb.select_array_by_path(&path).unwrap();
+    /// assert_eq!(result.to_string(), "[1,2,3]");
+    /// ```
+    pub fn select_array_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<OwnedJsonb> {
+        let mut selector = Selector::new(*self);
+        selector.execute(json_path)?;
+        selector.build_array()
+    }
+
+    /// Selects the first matching element from the `RawJsonb` by the given `JsonPath`.
+    ///
+    /// This function returns the first matched element wrapped in `Some`, or `None` if no element matches the path.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(OwnedJsonb))` - A single `OwnedJsonb` containing the first matched value.
+    /// * `Ok(None)` - The path does not match any values.
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    /// use jsonb::jsonpath::parse_json_path;
+    ///
+    /// let jsonb_value = r#"{"a": [{"b": 1}, {"b": 2}], "c": 3}"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = jsonb_value.as_raw();
+    ///
+    /// let path = parse_json_path("$.a[0].b".as_bytes()).unwrap(); // Matches multiple values.
+    /// let result = raw_jsonb.select_first_by_path(&path).unwrap();
     /// assert_eq!(result.unwrap().to_string(), "1");
     ///
-    /// // Mode::Array (return a JSONB array)
-    /// let result = raw_jsonb.get_by_path_opt(&path, Mode::Array).unwrap();
-    /// assert!(result.is_some());
-    /// assert_eq!(result.unwrap().to_string(), "[1,2,3]");
-    ///
-    /// // Mode::Mixed (return a JSONB value)
-    /// let result = raw_jsonb.get_by_path_opt(&path, Mode::Mixed).unwrap();
-    /// assert!(result.is_some());
-    /// assert_eq!(result.unwrap().to_string(), "[1,2,3]");
-    ///
-    /// // Path that does not exist
-    /// let path = parse_json_path("$.x".as_bytes()).unwrap();
-    /// let result = raw_jsonb.get_by_path_opt(&path, Mode::First).unwrap();
+    /// let path = parse_json_path("$.d".as_bytes()).unwrap(); // No match.
+    /// let result = raw_jsonb.select_first_by_path(&path).unwrap();
     /// assert!(result.is_none());
     /// ```
-    pub fn get_by_path_opt<'a>(
+    pub fn select_first_by_path<'a>(
         &self,
         json_path: &'a JsonPath<'a>,
-        mode: Mode,
-    ) -> Result<Option<OwnedJsonb>, Error> {
-        let selector = if mode == Mode::All {
-            Selector::new(json_path, Mode::Mixed)
-        } else {
-            Selector::new(json_path, mode)
-        };
-        let mut owned_jsonbs = selector.select(*self)?;
-        if owned_jsonbs.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(owned_jsonbs.remove(0)))
-        }
+    ) -> Result<Option<OwnedJsonb>> {
+        let mut selector = Selector::new(*self);
+        selector.execute(json_path)?;
+        selector.build_first()
+    }
+
+    /// Selects a value (or an array of values) from the `RawJsonb` by the given `JsonPath`.
+    ///
+    /// If exactly one element matches, it is returned directly (wrapped in `Some`).
+    /// If multiple elements match, they are returned as a JSON array (wrapped in `Some`).
+    /// If no elements match, `None` is returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(OwnedJsonb))` - A single `OwnedJsonb` containing the matched values.
+    /// * `Ok(None)` - The path does not match any values.
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    /// use jsonb::jsonpath::parse_json_path;
+    ///
+    /// let jsonb_value = r#"{"a": [{"b": 1}, {"b": 2}], "c": 3}"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = jsonb_value.as_raw();
+    ///
+    /// let path = parse_json_path("$.c".as_bytes()).unwrap(); // Matches a single value.
+    /// let result = raw_jsonb.select_value_by_path(&path).unwrap();
+    /// assert_eq!(result.unwrap().to_string(), "3");
+    ///
+    /// let path = parse_json_path("$.a[*].b".as_bytes()).unwrap(); // Matches multiple values.
+    /// let result = raw_jsonb.select_value_by_path(&path).unwrap();
+    /// assert_eq!(result.unwrap().to_string(), "[1,2]");
+    ///
+    /// let path = parse_json_path("$.x".as_bytes()).unwrap(); // No match.
+    /// let result = raw_jsonb.select_value_by_path(&path).unwrap();
+    /// assert!(result.is_none());
+    /// ```
+    pub fn select_value_by_path<'a>(
+        &self,
+        json_path: &'a JsonPath<'a>,
+    ) -> Result<Option<OwnedJsonb>> {
+        let mut selector = Selector::new(*self);
+        selector.execute(json_path)?;
+        selector.build_value()
     }
 
     /// Checks if a JSON path exists within the JSONB value.
@@ -425,13 +467,15 @@ impl RawJsonb<'_> {
     ///
     /// * `Ok(true)` - If the JSON path exists.
     /// * `Ok(false)` - If the JSON path does not exist.
-    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.  This could also indicate issues with the `json_path` itself.
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation.
+    ///   This could also indicate issues with the `json_path` itself.
     ///
     /// # Examples
     ///
     /// ```rust
+    /// use jsonb::jsonpath::parse_json_path;
+    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
-    /// use jsonb::jsonpath::{parse_json_path, Mode};
     ///
     /// let jsonb_value = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = jsonb_value.as_raw();
@@ -447,9 +491,9 @@ impl RawJsonb<'_> {
     /// let path3 = parse_json_path("$.a.x".as_bytes()).unwrap(); // "x" does not exist
     /// assert!(!raw_jsonb.path_exists(&path3).unwrap());
     /// ```
-    pub fn path_exists<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool, Error> {
-        let selector = Selector::new(json_path, Mode::Mixed);
-        selector.exists(*self)
+    pub fn path_exists<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+        let mut selector = Selector::new(*self);
+        selector.exists(json_path)
     }
 
     /// Checks if a JSON path matches the JSONB value using a predicate.
@@ -460,25 +504,31 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSON path with a predicate (from the `jsonpath` crate).  The predicate is specified within the `json_path` using the standard JSONPath syntax. For example, `$.store.book[?(@.price < 10)]` selects books with a price less than 10.
+    /// * `json_path` - The JSON path with a predicate (from the `jsonpath` crate).
+    ///   The predicate is specified within the `json_path` using the standard JSONPath syntax.
+    ///   For example, `$.store.book[?(@.price < 10)]` selects books with a price less than 10.
     ///
     /// # Returns
     ///
     /// * `Ok(true)` - If the JSON path with its predicate matches at least one value in the JSONB data.
     /// * `Ok(false)` - If the JSON path with its predicate does not match any values.
-    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking. This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
+    /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking.
+    ///   This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
     ///
     /// # Examples
     ///
     /// ```rust
+    /// use jsonb::jsonpath::parse_json_path;
+    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
-    /// use jsonb::jsonpath::{parse_json_path, Mode};
     ///
     /// let jsonb_value = r#"[
     ///     {"price": 12, "title": "Book A"},
     ///     {"price": 8, "title": "Book B"},
     ///     {"price": 5, "title": "Book C"}
-    /// ]"#.parse::<OwnedJsonb>().unwrap();
+    /// ]"#
+    /// .parse::<OwnedJsonb>()
+    /// .unwrap();
     /// let raw_jsonb = jsonb_value.as_raw();
     ///
     /// // Path with predicate (select books with price < 10)
@@ -489,9 +539,9 @@ impl RawJsonb<'_> {
     /// let path = parse_json_path("$[*].title == \"Book D\"".as_bytes()).unwrap();
     /// assert!(!raw_jsonb.path_match(&path).unwrap()); // False because no book has this title.
     /// ```
-    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool, Error> {
-        let selector = Selector::new(json_path, Mode::First);
-        selector.predicate_match(*self)
+    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+        let mut selector = Selector::new(*self);
+        selector.predicate_match(json_path)
     }
 
     /// Deletes the element at the specified index from a JSONB array.
@@ -544,33 +594,27 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = obj_jsonb.as_raw();
     /// let result = raw_jsonb.delete_by_index(0);
     /// assert!(result.is_err()); // Error because input is not an array
-    pub fn delete_by_index(&self, index: i32) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                let len = (header & CONTAINER_HEADER_LEN_MASK) as i32;
-                let index = if index < 0 { len - index.abs() } else { index };
-                if index < 0 || index >= len {
-                    buf.extend_from_slice(value);
-                } else {
-                    let mut builder =
-                        ArrayBuilder::new((header & CONTAINER_HEADER_LEN_MASK) as usize);
-                    let index = index as usize;
-                    for (i, entry) in iterate_array(value, header).enumerate() {
-                        if i != index {
-                            builder.push_raw(entry.0, entry.1);
-                        }
+    pub fn delete_by_index(&self, index: i32) -> Result<OwnedJsonb> {
+        let array_iter_opt = ArrayIterator::new(*self)?;
+        if let Some(array_iter) = array_iter_opt {
+            let len = array_iter.len() as i32;
+            let index = if index < 0 { len - index.abs() } else { index };
+            if index < 0 || index >= len {
+                Ok(self.to_owned())
+            } else {
+                let index = index as usize;
+                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
+                for (i, item_result) in &mut array_iter.enumerate() {
+                    let item = item_result?;
+                    if i != index {
+                        builder.push_jsonb_item(item);
                     }
-                    builder.build_into(&mut buf);
                 }
+                Ok(builder.build()?)
             }
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => return Err(Error::InvalidJsonType),
-            _ => return Err(Error::InvalidJsonb),
+        } else {
+            Err(Error::InvalidJsonType)
         }
-        Ok(OwnedJsonb::new(buf))
     }
 
     /// Deletes a key-value pair from a JSONB object or an element from a JSONB array.
@@ -623,50 +667,50 @@ impl RawJsonb<'_> {
     /// let result = raw_jsonb.delete_by_name("a");
     /// assert!(result.is_err()); // Returns an error
     /// ```
-    pub fn delete_by_name(&self, name: &str) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            OBJECT_CONTAINER_TAG => {
+    pub fn delete_by_name(&self, name: &str) -> Result<OwnedJsonb> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Object(_) => {
+                let mut object_iter = ObjectIterator::new(*self)?.unwrap();
                 let mut builder = ObjectBuilder::new();
-                for (key, jentry, item) in iterate_object_entries(value, header) {
+                for result in &mut object_iter {
+                    let (key, val_item) = result?;
                     if !key.eq(name) {
-                        builder.push_raw(key, jentry, item);
+                        builder.push_jsonb_item(key, val_item)?;
                     }
                 }
-                builder.build_into(&mut buf);
+                Ok(builder.build()?)
             }
-            ARRAY_CONTAINER_TAG => {
-                let mut builder = ArrayBuilder::new((header & CONTAINER_HEADER_LEN_MASK) as usize);
-                for (jentry, item) in iterate_array(value, header) {
-                    let matches = match jentry.type_code {
-                        STRING_TAG => {
-                            let v = unsafe { from_utf8_unchecked(item) };
-                            v.eq(name)
+            JsonbItemType::Array(_) => {
+                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
+                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
+                for item_result in &mut array_iter {
+                    let item = item_result?;
+                    if let Some(s) = item.as_str() {
+                        if s.eq(name) {
+                            continue;
                         }
-                        _ => false,
-                    };
-                    if !matches {
-                        builder.push_raw(jentry, item);
                     }
+                    builder.push_jsonb_item(item);
                 }
-                builder.build_into(&mut buf);
+                Ok(builder.build()?)
             }
-            SCALAR_CONTAINER_TAG => return Err(Error::InvalidJsonType),
-            _ => return Err(Error::InvalidJsonb),
+            _ => Err(Error::InvalidJsonType),
         }
-        Ok(OwnedJsonb::new(buf))
     }
 
     /// Deletes a value from a JSONB array or object based on a key path.
     ///
-    /// This function removes a value from a JSONB array or object using a key path.  The key path is an iterator of `KeyPath` elements specifying the path to the element to delete.
+    /// This function removes a value from a JSONB array or object using a key path.
+    /// The key path is an iterator of `KeyPath` elements specifying the path to the element to delete.
     ///
-    /// * **Array:** If the JSONB value is an array, the key path must consist of array indices (`KeyPath::Index`).  A negative index counts from the end of the array (e.g., -1 is the last element).  If the index is out of bounds, the original JSONB value is returned unchanged.
-    /// * **Object:** If the JSONB value is an object, the key path can be a mix of object keys (`KeyPath::Name` or `KeyPath::QuotedName`) and array indices.  If any part of the path is invalid (e.g., trying to access an index in a non-array or a key in a non-object), the original JSONB value is returned unchanged.
-    /// * **Invalid input:** If the input is neither an array nor an object, or if the JSONB data is otherwise invalid, an error (`Error::InvalidJsonType` or `Error::InvalidJsonb`) is returned.
+    /// * **Array:** If the JSONB value is an array, the key path must consist of array indices (`KeyPath::Index`).
+    ///   A negative index counts from the end of the array (e.g., -1 is the last element).
+    ///   If the index is out of bounds, the original JSONB value is returned unchanged.
+    /// * **Object:** If the JSONB value is an object, the key path can be a mix of object keys (`KeyPath::Name` or `KeyPath::QuotedName`) and array indices.
+    ///   If any part of the path is invalid (e.g., trying to access an index in a non-array or a key in a non-object), the original JSONB value is returned unchanged.
+    /// * **Invalid input:** If the input is neither an array nor an object, or if the JSONB data is otherwise invalid,
+    ///   an error (`Error::InvalidJsonType` or `Error::InvalidJsonb`) is returned.
     ///
     /// # Arguments
     ///
@@ -681,9 +725,10 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
+    /// use std::borrow::Cow;
+    ///
     /// use jsonb::keypath::KeyPath;
     /// use jsonb::OwnedJsonb;
-    /// use std::borrow::Cow;
     ///
     /// // Deleting from an array
     /// let arr_jsonb = r#"[1, 2, 3]"#.parse::<OwnedJsonb>().unwrap();
@@ -699,7 +744,11 @@ impl RawJsonb<'_> {
     /// // Deleting from an object
     /// let obj_jsonb = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = obj_jsonb.as_raw();
-    /// let keypath = [KeyPath::Name(Cow::Borrowed("a")), KeyPath::Name(Cow::Borrowed("b")), KeyPath::Index(1)];
+    /// let keypath = [
+    ///     KeyPath::Name(Cow::Borrowed("a")),
+    ///     KeyPath::Name(Cow::Borrowed("b")),
+    ///     KeyPath::Index(1),
+    /// ];
     /// let deleted = raw_jsonb.delete_by_keypath(keypath.iter()).unwrap();
     /// assert_eq!(deleted.to_string(), r#"{"a":{"b":[1,3]},"c":4}"#);
     ///
@@ -709,7 +758,10 @@ impl RawJsonb<'_> {
     /// assert_eq!(deleted.to_string(), r#"{"a":{"b":[1,2,3]},"c":4}"#); // Original value returned
     ///
     /// // Invalid keypath (wrong type)
-    /// let keypath = [KeyPath::Name(Cow::Borrowed("a")), KeyPath::Name(Cow::Borrowed("x"))]; // "x" doesn't exist under "a"
+    /// let keypath = [
+    ///     KeyPath::Name(Cow::Borrowed("a")),
+    ///     KeyPath::Name(Cow::Borrowed("x")),
+    /// ]; // "x" doesn't exist under "a"
     /// let deleted = raw_jsonb.delete_by_keypath(keypath.iter()).unwrap();
     /// assert_eq!(deleted.to_string(), r#"{"a":{"b":[1,2,3]},"c":4}"#); // Original value returned
     ///
@@ -721,221 +773,299 @@ impl RawJsonb<'_> {
     /// ```
     pub fn delete_by_keypath<'a, I: Iterator<Item = &'a KeyPath<'a>>>(
         &self,
-        keypath: I,
-    ) -> Result<OwnedJsonb, Error> {
-        let mut buf = Vec::new();
-        let mut keypath: VecDeque<_> = keypath.collect();
-        let value = self.data;
-        let header = read_u32(value, 0)?;
-        match header & CONTAINER_HEADER_TYPE_MASK {
-            ARRAY_CONTAINER_TAG => {
-                match self.delete_array_by_keypath(value, header, &mut keypath)? {
-                    Some(builder) => {
-                        builder.build_into(&mut buf);
+        keypaths: I,
+    ) -> Result<OwnedJsonb> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        if matches!(
+            jsonb_item_type,
+            JsonbItemType::Null
+                | JsonbItemType::Boolean
+                | JsonbItemType::Number
+                | JsonbItemType::String
+        ) {
+            return Err(Error::InvalidJsonType);
+        }
+        // collect item indics need to delete in each object or array.
+        let root_item = JsonbItem::Raw(*self);
+        let mut items = VecDeque::new();
+        items.push_back((root_item, 0));
+        for path in keypaths {
+            let Some((current_item, _)) = items.back() else {
+                items.clear();
+                break;
+            };
+            let Some(current) = current_item.as_raw_jsonb() else {
+                items.clear();
+                break;
+            };
+
+            let jsonb_item_type = current.jsonb_item_type()?;
+            match jsonb_item_type {
+                JsonbItemType::Array(_) => {
+                    if let KeyPath::Index(index) = path {
+                        let array_iter_opt = ArrayIterator::new(current)?;
+                        if let Some(mut array_iter) = array_iter_opt {
+                            let length = array_iter.len() as i32;
+                            if *index > length || length + *index < 0 {
+                                items.clear();
+                                break;
+                            }
+                            let index = if *index >= 0 {
+                                *index as usize
+                            } else {
+                                (length + *index) as usize
+                            };
+                            if let Some(item_result) = array_iter.nth(index) {
+                                let item = item_result?;
+                                items.push_back((item, index));
+                                continue;
+                            }
+                        }
                     }
-                    None => {
-                        buf.extend_from_slice(value);
+                    items.clear();
+                    break;
+                }
+                JsonbItemType::Object(_) => {
+                    let name = match path {
+                        KeyPath::Index(index) => format!("{index}"),
+                        KeyPath::Name(name) | KeyPath::QuotedName(name) => format!("{name}"),
+                    };
+                    let object_iter_opt = ObjectIterator::new(current)?;
+                    if let Some(object_iter) = object_iter_opt {
+                        let mut matched = false;
+                        for (index, result) in &mut object_iter.enumerate() {
+                            let (key, val_item) = result?;
+                            if key.eq(&name) {
+                                matched = true;
+                                items.push_back((val_item, index));
+                                break;
+                            }
+                        }
+                        if matched {
+                            continue;
+                        }
                     }
-                };
-            }
-            OBJECT_CONTAINER_TAG => {
-                match self.delete_object_by_keypath(value, header, &mut keypath)? {
-                    Some(builder) => {
-                        builder.build_into(&mut buf);
-                    }
-                    None => {
-                        buf.extend_from_slice(value);
-                    }
+                    items.clear();
+                    break;
+                }
+                _ => {
+                    items.clear();
+                    break;
                 }
             }
-            _ => return Err(Error::InvalidJsonType),
         }
-        Ok(OwnedJsonb::new(buf))
+        if items.len() <= 1 {
+            return Ok(self.to_owned());
+        }
+
+        let mut child_jsonb: Option<OwnedJsonb> = None;
+        let (_, mut del_index) = items.pop_back().unwrap();
+
+        // Recursively builds an array or object for paths, and remove elements that need to be deleted.
+        while let Some((current_item, next_del_index)) = items.pop_back() {
+            let current_raw_jsonb = current_item.as_raw_jsonb().unwrap();
+
+            let jsonb_item_type = current_raw_jsonb.jsonb_item_type()?;
+            let current_del_jsonb = match jsonb_item_type {
+                JsonbItemType::Array(_) => {
+                    let array_iter = ArrayIterator::new(current_raw_jsonb)?.unwrap();
+                    let mut builder = ArrayBuilder::with_capacity(array_iter.len());
+                    for (i, item_result) in &mut array_iter.enumerate() {
+                        let item = item_result?;
+                        if i != del_index {
+                            builder.push_jsonb_item(item);
+                        } else if let Some(ref child_jsonb) = child_jsonb {
+                            builder.push_owned_jsonb(child_jsonb.clone());
+                        }
+                    }
+                    builder.build()?
+                }
+                JsonbItemType::Object(_) => {
+                    let object_iter = ObjectIterator::new(current_raw_jsonb)?.unwrap();
+                    let mut builder = ObjectBuilder::new();
+                    for (i, result) in &mut object_iter.enumerate() {
+                        let (key, val_item) = result?;
+                        if i != del_index {
+                            let _ = builder.push_jsonb_item(key, val_item);
+                        } else if let Some(ref child_jsonb) = child_jsonb {
+                            let _ = builder.push_owned_jsonb(key, child_jsonb.clone());
+                        }
+                    }
+                    builder.build()?
+                }
+                _ => unreachable!(),
+            };
+            child_jsonb = Some(current_del_jsonb);
+            del_index = next_del_index;
+        }
+        Ok(child_jsonb.unwrap())
     }
 
-    fn delete_array_by_keypath<'a, 'b>(
-        &self,
-        value: &'b [u8],
-        header: u32,
-        keypath: &mut VecDeque<&'a KeyPath<'a>>,
-    ) -> Result<Option<ArrayBuilder<'b>>, Error> {
-        let len = (header & CONTAINER_HEADER_LEN_MASK) as i32;
-        match keypath.pop_front() {
-            Some(KeyPath::Index(idx)) => {
-                let idx = if *idx < 0 { len - idx.abs() } else { *idx };
-                if idx < 0 || idx >= len {
-                    return Ok(None);
+    /// Checks if all specified keys exist in a JSONB.
+    ///
+    /// This function checks if a JSONB value contains *all* of the keys provided in the `keys` iterator.
+    /// If JSONB is an object, check the keys of the object, if it is an array, check the value of type string in the array,
+    /// and if it is a scalar, check the value of type string.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    /// * `keys` - An iterator of keys to check for.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If all keys exist in the JSONB.
+    /// * `Ok(false)` - If any of the keys do not exist.
+    /// * `Err(Error)` - If the input JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    ///
+    /// let obj_jsonb = r#"{"a": 1, "b": 2, "c": 3}"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = obj_jsonb.as_raw();
+    ///
+    /// let keys = ["a", "b", "c"];
+    /// assert!(raw_jsonb.exists_all_keys(keys.into_iter()).unwrap());
+    ///
+    /// let keys = ["a", "b", "d"];
+    /// assert!(!raw_jsonb.exists_all_keys(keys.into_iter()).unwrap()); // "d" does not exist
+    ///
+    /// let arr_jsonb = r#"["a","b","c"]"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = arr_jsonb.as_raw();
+    /// let keys = ["a", "b"];
+    /// assert!(raw_jsonb.exists_all_keys(keys.into_iter()).unwrap());
+    ///
+    /// let str_jsonb = r#""a""#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = str_jsonb.as_raw();
+    /// let keys = ["b"];
+    /// assert!(!raw_jsonb.exists_all_keys(keys.into_iter()).unwrap());
+    /// ```
+    pub fn exists_all_keys<'a, I: Iterator<Item = &'a str>>(&self, keys: I) -> Result<bool> {
+        let mut self_keys = BTreeSet::new();
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Object(_) => {
+                let mut object_key_iter = ObjectKeyIterator::new(*self)?.unwrap();
+                for result in &mut object_key_iter {
+                    let item = result?;
+                    if let Some(obj_key) = item.as_str() {
+                        self_keys.insert(obj_key);
+                    }
                 }
-                let mut builder = ArrayBuilder::new(len as usize);
-                let idx = idx as usize;
-                for (i, entry) in iterate_array(value, header).enumerate() {
-                    if i != idx {
-                        builder.push_raw(entry.0, entry.1);
-                    } else if !keypath.is_empty() {
-                        let item_value = entry.1;
-                        match entry.0.type_code {
-                            CONTAINER_TAG => {
-                                let item_header = read_u32(item_value, 0)?;
-                                match item_header & CONTAINER_HEADER_TYPE_MASK {
-                                    ARRAY_CONTAINER_TAG => {
-                                        match self.delete_array_by_keypath(
-                                            item_value,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => builder.push_array(item_builder),
-                                            None => return Ok(None),
-                                        }
-                                    }
-                                    OBJECT_CONTAINER_TAG => {
-                                        match self.delete_object_by_keypath(
-                                            item_value,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => builder.push_object(item_builder),
-                                            None => return Ok(None),
-                                        }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            _ => return Ok(None),
+            }
+            JsonbItemType::Array(_) => {
+                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
+                for result in &mut array_iter {
+                    let item = result?;
+                    if let Some(arr_key) = item.as_str() {
+                        self_keys.insert(arr_key);
+                    }
+                }
+            }
+            JsonbItemType::String => {
+                let res: Result<String> = from_raw_jsonb(self);
+                if let Ok(self_key) = res {
+                    for key in keys {
+                        if self_key != key {
+                            return Ok(false);
                         }
                     }
                 }
-                Ok(Some(builder))
+                return Ok(true);
             }
-            _ => Ok(None),
+            _ => {}
         }
+        for key in keys {
+            if !self_keys.contains(key) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
-    fn delete_object_by_keypath<'a, 'b>(
-        &self,
-        value: &'b [u8],
-        header: u32,
-        keypath: &mut VecDeque<&'a KeyPath<'a>>,
-    ) -> Result<Option<ObjectBuilder<'b>>, Error> {
-        match keypath.pop_front() {
-            Some(KeyPath::QuotedName(name) | KeyPath::Name(name)) => {
-                let mut builder = ObjectBuilder::new();
-                for (key, jentry, item) in iterate_object_entries(value, header) {
-                    if !key.eq(name) {
-                        builder.push_raw(key, jentry, item);
-                    } else if !keypath.is_empty() {
-                        match jentry.type_code {
-                            CONTAINER_TAG => {
-                                let item_header = read_u32(item, 0)?;
-                                match item_header & CONTAINER_HEADER_TYPE_MASK {
-                                    ARRAY_CONTAINER_TAG => {
-                                        match self.delete_array_by_keypath(
-                                            item,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => {
-                                                builder.push_array(key, item_builder)
-                                            }
-                                            None => return Ok(None),
-                                        }
-                                    }
-                                    OBJECT_CONTAINER_TAG => {
-                                        match self.delete_object_by_keypath(
-                                            item,
-                                            item_header,
-                                            keypath,
-                                        )? {
-                                            Some(item_builder) => {
-                                                builder.push_object(key, item_builder)
-                                            }
-                                            None => return Ok(None),
-                                        }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            _ => return Ok(None),
+    /// Checks if any of the specified keys exist in a JSONB.
+    ///
+    /// This function checks if a JSONB value contains *any* of the keys provided in the `keys` iterator.
+    /// If JSONB is an object, check the keys of the object, if it is an array, check the value of type string in the array,
+    /// and if it is a scalar, check the value of type string.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    /// * `keys` - An iterator of keys to check for.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If any of the keys exist in the JSONB.
+    /// * `Ok(false)` - If none of the keys exist.
+    /// * `Err(Error)` - If the input JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    ///
+    /// let obj_jsonb = r#"{"a": 1, "b": 2, "c": 3}"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = obj_jsonb.as_raw();
+    ///
+    /// let keys = ["a", "d", "e"];
+    /// assert!(raw_jsonb.exists_any_keys(keys.into_iter()).unwrap()); // "a" exists
+    ///
+    /// let keys = ["d", "e", "f"];
+    /// assert!(!raw_jsonb.exists_any_keys(keys.into_iter()).unwrap()); // None of the keys exist
+    ///
+    /// let arr_jsonb = r#"["a","b","c"]"#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = arr_jsonb.as_raw();
+    /// let keys = ["a", "b"];
+    /// assert!(raw_jsonb.exists_any_keys(keys.into_iter()).unwrap());
+    ///
+    /// let str_jsonb = r#""a""#.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = str_jsonb.as_raw();
+    /// let keys = ["b"];
+    /// assert!(!raw_jsonb.exists_any_keys(keys.into_iter()).unwrap());
+    /// ```
+    pub fn exists_any_keys<'a, I: Iterator<Item = &'a str>>(&self, keys: I) -> Result<bool> {
+        let mut self_keys = BTreeSet::new();
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Object(_) => {
+                let mut object_key_iter = ObjectKeyIterator::new(*self)?.unwrap();
+                for result in &mut object_key_iter {
+                    let item = result?;
+                    if let Some(obj_key) = item.as_str() {
+                        self_keys.insert(obj_key);
+                    }
+                }
+            }
+            JsonbItemType::Array(_) => {
+                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
+                for result in &mut array_iter {
+                    let item = result?;
+                    if let Some(arr_key) = item.as_str() {
+                        self_keys.insert(arr_key);
+                    }
+                }
+            }
+            JsonbItemType::String => {
+                let res: Result<String> = from_raw_jsonb(self);
+                if let Ok(self_key) = res {
+                    for key in keys {
+                        if self_key == key {
+                            return Ok(true);
                         }
                     }
                 }
-                Ok(Some(builder))
+                return Ok(false);
             }
-            _ => Ok(None),
+            _ => {}
         }
-    }
-}
-
-pub(crate) fn get_jentry_by_name(
-    value: &[u8],
-    offset: usize,
-    header: u32,
-    name: &str,
-    ignore_case: bool,
-) -> Option<(JEntry, u32, usize)> {
-    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-    let mut jentry_offset = offset + 4;
-    let mut val_offset = offset + 8 * length + 4;
-
-    let mut key_jentries: VecDeque<JEntry> = VecDeque::with_capacity(length);
-    for _ in 0..length {
-        let encoded = read_u32(value, jentry_offset).ok()?;
-        let key_jentry = JEntry::decode_jentry(encoded);
-
-        jentry_offset += 4;
-        val_offset += key_jentry.length as usize;
-        key_jentries.push_back(key_jentry);
-    }
-
-    let mut result = None;
-    let mut key_offset = offset + 8 * length + 4;
-
-    while let Some(key_jentry) = key_jentries.pop_front() {
-        let prev_key_offset = key_offset;
-        key_offset += key_jentry.length as usize;
-        let key = unsafe { std::str::from_utf8_unchecked(&value[prev_key_offset..key_offset]) };
-
-        let val_encoded = read_u32(value, jentry_offset).ok()?;
-        let val_jentry = JEntry::decode_jentry(val_encoded);
-        let val_length = val_jentry.length as usize;
-
-        // first match the value with the same name, if not found,
-        // then match the value with the ignoring case name.
-        if name.eq(key) {
-            result = Some((val_jentry, val_encoded, val_offset));
-            break;
-        } else if ignore_case && name.eq_ignore_ascii_case(key) && result.is_none() {
-            result = Some((val_jentry, val_encoded, val_offset));
+        for key in keys {
+            if self_keys.contains(key) {
+                return Ok(true);
+            }
         }
-
-        jentry_offset += 4;
-        val_offset += val_length;
+        Ok(false)
     }
-    result
-}
-
-pub(crate) fn get_jentry_by_index(
-    value: &[u8],
-    offset: usize,
-    header: u32,
-    index: usize,
-) -> Option<(JEntry, u32, usize)> {
-    let length = (header & CONTAINER_HEADER_LEN_MASK) as usize;
-    if index >= length {
-        return None;
-    }
-    let mut jentry_offset = offset + 4;
-    let mut val_offset = offset + 4 * length + 4;
-
-    for i in 0..length {
-        let encoded = read_u32(value, jentry_offset).ok()?;
-        let jentry = JEntry::decode_jentry(encoded);
-        let val_length = jentry.length as usize;
-        if i < index {
-            jentry_offset += 4;
-            val_offset += val_length;
-            continue;
-        }
-        return Some((jentry, encoded, val_offset));
-    }
-    None
 }

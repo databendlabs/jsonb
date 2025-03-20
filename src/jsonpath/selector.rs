@@ -12,19 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use byteorder::BigEndian;
-use byteorder::WriteBytesExt;
-
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
-use crate::constants::*;
+use crate::core::ArrayBuilder;
+use crate::core::ArrayIterator;
+use crate::core::JsonbItem;
+use crate::core::JsonbItemType;
+use crate::core::ObjectIterator;
+use crate::error::Result;
 use crate::jsonpath::ArrayIndex;
 use crate::jsonpath::BinaryOperator;
 use crate::jsonpath::Expr;
 use crate::jsonpath::FilterFunc;
-use crate::jsonpath::Index;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Path;
 use crate::jsonpath::PathValue;
@@ -32,19 +33,6 @@ use crate::number::Number;
 use crate::Error;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
-
-use nom::{
-    bytes::complete::take, combinator::map, multi::count, number::complete::be_u32, IResult,
-};
-
-/// The position of jsonb value.
-#[derive(Clone, Debug)]
-enum Position {
-    /// The offset and length of jsonb container value.
-    Container((usize, usize)),
-    /// The type, offset and length of jsonb scalar value.
-    Scalar((u32, usize, usize)),
-}
 
 #[derive(Debug)]
 enum ExprValue<'a> {
@@ -66,72 +54,98 @@ pub enum Mode {
     Mixed,
 }
 
-pub struct Selector<'a> {
-    json_path: &'a JsonPath<'a>,
-    mode: Mode,
+#[derive(Debug, Clone)]
+pub(crate) struct Selector<'a> {
+    root_jsonb: RawJsonb<'a>,
+    items: VecDeque<JsonbItem<'a>>,
 }
 
 impl<'a> Selector<'a> {
-    pub fn new(json_path: &'a JsonPath<'a>, mode: Mode) -> Self {
-        Self { json_path, mode }
-    }
-
-    pub fn select(&'a self, root: RawJsonb) -> Result<Vec<OwnedJsonb>, Error> {
-        let mut poses = self.find_positions(root, None, &self.json_path.paths)?;
-
-        if self.json_path.is_predicate() {
-            let owned_jsonbs = Self::build_predicate_result(&mut poses)?;
-            return Ok(owned_jsonbs);
+    pub(crate) fn new(root_jsonb: RawJsonb<'a>) -> Selector<'a> {
+        Self {
+            root_jsonb,
+            items: VecDeque::new(),
         }
-
-        let owned_jsonbs = match self.mode {
-            Mode::All => Self::build_values(root, &mut poses)?,
-            Mode::First => {
-                poses.truncate(1);
-                Self::build_values(root, &mut poses)?
-            }
-            Mode::Array => Self::build_scalar_array(root, &mut poses)?,
-            Mode::Mixed => {
-                if poses.len() > 1 {
-                    Self::build_scalar_array(root, &mut poses)?
-                } else {
-                    Self::build_values(root, &mut poses)?
-                }
-            }
-        };
-        Ok(owned_jsonbs)
     }
 
-    pub fn exists(&'a self, root: RawJsonb) -> Result<bool, Error> {
-        if self.json_path.is_predicate() {
+    pub(crate) fn execute(&mut self, json_path: &'a JsonPath<'a>) -> Result<()> {
+        // add root jsonb
+        let root_item = JsonbItem::Raw(self.root_jsonb);
+        self.items.clear();
+        self.items.push_front(root_item);
+
+        if json_path.paths.len() == 1 {
+            if let Path::Predicate(expr) = &json_path.paths[0] {
+                let root_item = self.items.pop_front().unwrap();
+                let res = self.filter_expr(root_item, expr)?;
+                let res_item = JsonbItem::Boolean(res);
+                self.items.push_back(res_item);
+                return Ok(());
+            }
+        }
+        self.select_by_paths(&json_path.paths)?;
+
+        Ok(())
+    }
+
+    pub(crate) fn build(&mut self) -> Result<Vec<OwnedJsonb>> {
+        let mut values = Vec::with_capacity(self.items.len());
+        while let Some(item) = self.items.pop_front() {
+            let value = item.to_owned_jsonb()?;
+            values.push(value);
+        }
+        Ok(values)
+    }
+
+    pub(crate) fn build_array(&mut self) -> Result<OwnedJsonb> {
+        let mut builder = ArrayBuilder::with_capacity(self.items.len());
+        while let Some(item) = self.items.pop_front() {
+            builder.push_jsonb_item(item);
+        }
+        builder.build()
+    }
+
+    pub(crate) fn build_first(&mut self) -> Result<Option<OwnedJsonb>> {
+        if let Some(item) = self.items.pop_front() {
+            let value = item.to_owned_jsonb()?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn build_value(&mut self) -> Result<Option<OwnedJsonb>> {
+        if self.items.len() > 1 {
+            let array = self.build_array()?;
+            Ok(Some(array))
+        } else {
+            self.build_first()
+        }
+    }
+
+    pub(crate) fn exists(&mut self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+        if json_path.is_predicate() {
             return Ok(true);
         }
-        let poses = self.find_positions(root, None, &self.json_path.paths)?;
-        Ok(!poses.is_empty())
+        self.execute(json_path)?;
+        Ok(!self.items.is_empty())
     }
 
-    pub fn predicate_match(&'a self, root: RawJsonb) -> Result<bool, Error> {
-        if !self.json_path.is_predicate() {
+    pub(crate) fn predicate_match(&mut self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+        if !json_path.is_predicate() {
             return Err(Error::InvalidJsonPathPredicate);
         }
-        let poses = self.find_positions(root, None, &self.json_path.paths)?;
-        Ok(!poses.is_empty())
+        self.execute(json_path)?;
+        if let Some(JsonbItem::Boolean(v)) = self.items.pop_front() {
+            return Ok(v);
+        }
+        Err(Error::InvalidJsonPathPredicate)
     }
 
-    fn find_positions(
-        &'a self,
-        root: RawJsonb,
-        current: Option<&Position>,
-        paths: &[Path<'a>],
-    ) -> Result<VecDeque<Position>, Error> {
-        let mut poses = VecDeque::new();
-
-        let start_pos = if let Some(Path::Current) = paths.first() {
-            current.expect("missing current position").clone()
-        } else {
-            Position::Container((0, root.len()))
-        };
-        poses.push_back(start_pos);
+    fn select_by_paths(&mut self, paths: &'a [Path<'a>]) -> Result<()> {
+        if let Some(Path::Current) = paths.first() {
+            return Err(Error::InvalidJsonPath);
+        }
 
         for path in paths.iter() {
             match path {
@@ -139,440 +153,250 @@ impl<'a> Selector<'a> {
                     continue;
                 }
                 Path::FilterExpr(expr) | Path::Predicate(expr) => {
-                    let len = poses.len();
+                    let len = self.items.len();
                     for _ in 0..len {
-                        let pos = poses.pop_front().unwrap();
-                        let res = self.filter_expr(root, &pos, expr)?;
+                        let item = self.items.pop_front().unwrap();
+                        let res = self.filter_expr(item.clone(), expr)?;
                         if res {
-                            poses.push_back(pos);
+                            self.items.push_back(item);
                         }
                     }
                 }
                 _ => {
-                    let len = poses.len();
-                    for _ in 0..len {
-                        let pos = poses.pop_front().unwrap();
-                        match pos {
-                            Position::Container((offset, length)) => {
-                                self.select_path(root, offset, length, path, &mut poses)?;
-                            }
-                            Position::Scalar(_) => {
-                                // In lax mode, bracket wildcard allow Scalar value.
-                                if path == &Path::BracketWildcard {
-                                    poses.push_back(pos);
-                                }
-                            }
-                        }
-                    }
+                    self.select_by_path(path)?;
                 }
             }
         }
-        Ok(poses)
+        Ok(())
     }
 
-    fn select_path(
-        &'a self,
-        root: RawJsonb,
-        offset: usize,
-        length: usize,
-        path: &Path<'a>,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<(), Error> {
-        match path {
-            Path::DotWildcard => {
-                self.select_object_values(root, offset, poses)?;
+    pub(crate) fn select_by_path(&mut self, path: &'a Path<'a>) -> Result<bool> {
+        if self.items.is_empty() {
+            return Ok(false);
+        }
+
+        let len = self.items.len();
+        for _ in 0..len {
+            let item = self.items.pop_front().unwrap();
+
+            match path {
+                Path::DotWildcard => {
+                    self.select_object_values(item)?;
+                }
+                Path::BracketWildcard => {
+                    self.select_array_values(item)?;
+                }
+                Path::ColonField(name) | Path::DotField(name) | Path::ObjectField(name) => {
+                    self.select_object_values_by_name(item, name)?;
+                }
+                Path::ArrayIndices(array_indices) => {
+                    self.select_array_values_by_indices(item, array_indices)?;
+                }
+                _ => todo!(),
             }
-            Path::BracketWildcard => {
-                self.select_array_values(root, offset, length, poses)?;
+        }
+        Ok(true)
+    }
+
+    fn select_object_values(&mut self, parent_item: JsonbItem<'a>) -> Result<()> {
+        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
+            return Ok(());
+        };
+
+        let object_iter_opt = ObjectIterator::new(curr_raw_jsonb)?;
+        if let Some(mut object_iter) = object_iter_opt {
+            for result in &mut object_iter {
+                let (_, val_item) = result?;
+                self.items.push_back(val_item);
             }
-            Path::ColonField(name) | Path::DotField(name) | Path::ObjectField(name) => {
-                self.select_by_name(root, offset, name, poses)?;
-            }
-            Path::ArrayIndices(indices) => {
-                self.select_by_indices(root, offset, indices, poses)?;
-            }
-            _ => unreachable!(),
         }
         Ok(())
     }
 
-    // select all values in an Object.
-    fn select_object_values(
-        &'a self,
-        root: RawJsonb,
-        root_offset: usize,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
-        if ty != OBJECT_CONTAINER_TAG || length == 0 {
+    fn select_object_values_by_name(
+        &mut self,
+        parent_item: JsonbItem<'a>,
+        name: &'a str,
+    ) -> Result<()> {
+        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
             return Ok(());
-        }
-        let (rest, key_jentries) = decode_jentries(rest, length)?;
-        let (_, val_jentries) = decode_jentries(rest, length)?;
-        let mut offset = root_offset + 4 + length * 8;
-        for (_, length) in key_jentries.iter() {
-            offset += length;
-        }
-        for (jty, jlength) in val_jentries.iter() {
-            let pos = if *jty == CONTAINER_TAG {
-                Position::Container((offset, *jlength))
-            } else {
-                Position::Scalar((*jty, offset, *jlength))
-            };
-            poses.push_back(pos);
-            offset += jlength;
+        };
+
+        let object_iter_opt = ObjectIterator::new(curr_raw_jsonb)?;
+        if let Some(mut object_iter) = object_iter_opt {
+            for result in &mut object_iter {
+                let (key, val_item) = result?;
+                if key.eq(name) {
+                    self.items.push_back(val_item);
+                    break;
+                }
+            }
         }
         Ok(())
     }
 
-    // select all values in an Array.
-    fn select_array_values(
-        &'a self,
-        root: RawJsonb,
-        root_offset: usize,
-        root_length: usize,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
-        if ty != ARRAY_CONTAINER_TAG {
-            // In lax mode, bracket wildcard allow Scalar value.
-            poses.push_back(Position::Container((root_offset, root_length)));
+    fn select_array_values(&mut self, parent_item: JsonbItem<'a>) -> Result<()> {
+        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
+            // In lax mode, bracket wildcard allow Scalar and Object value.
+            self.items.push_back(parent_item);
             return Ok(());
-        }
-        let (_, val_jentries) = decode_jentries(rest, length)?;
-        let mut offset = root_offset + 4 + length * 4;
-        for (jty, jlength) in val_jentries.iter() {
-            let pos = if *jty == CONTAINER_TAG {
-                Position::Container((offset, *jlength))
-            } else {
-                Position::Scalar((*jty, offset, *jlength))
-            };
-            poses.push_back(pos);
-            offset += jlength;
+        };
+
+        let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
+        if let Some(mut array_iter) = array_iter_opt {
+            for item_result in &mut array_iter {
+                let item = item_result?;
+                self.items.push_back(item);
+            }
+        } else {
+            // In lax mode, bracket wildcard allow Scalar and Object value.
+            self.items.push_back(parent_item);
         }
         Ok(())
     }
 
-    // select value in an Object by key name.
-    fn select_by_name(
-        &'a self,
-        root: RawJsonb,
-        root_offset: usize,
-        name: &str,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
-        if ty != OBJECT_CONTAINER_TAG || length == 0 {
+    fn select_array_values_by_indices(
+        &mut self,
+        parent_item: JsonbItem<'a>,
+        array_indices: &Vec<ArrayIndex>,
+    ) -> Result<()> {
+        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
             return Ok(());
-        }
-        let (rest, key_jentries) = decode_jentries(rest, length)?;
-        let (_, val_jentries) = decode_jentries(rest, length)?;
-        let mut idx = 0;
-        let mut offset = root_offset + 4 + length * 8;
-        let mut found = false;
-        for (i, (_, jlength)) in key_jentries.iter().enumerate() {
-            if name.len() != *jlength || found {
-                offset += jlength;
+        };
+
+        let jsonb_item_type = curr_raw_jsonb.jsonb_item_type()?;
+        let JsonbItemType::Array(arr_len) = jsonb_item_type else {
+            return Ok(());
+        };
+        for array_index in array_indices {
+            let indices = array_index.to_indices(arr_len);
+            if indices.is_empty() {
                 continue;
             }
-            let (_, key) = decode_string(&root.data[offset..], *jlength)?;
-            if name == unsafe { std::str::from_utf8_unchecked(key) } {
-                found = true;
-                idx = i;
+            let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
+            if let Some(array_iter) = array_iter_opt {
+                for (i, item_result) in &mut array_iter.enumerate() {
+                    let item = item_result?;
+                    if indices.contains(&i) {
+                        self.items.push_back(item);
+                    }
+                }
             }
-            offset += jlength;
-        }
-        if !found {
-            return Ok(());
-        }
-        for (i, (jty, jlength)) in val_jentries.iter().enumerate() {
-            if i != idx {
-                offset += jlength;
-                continue;
-            }
-            let pos = if *jty == CONTAINER_TAG {
-                Position::Container((offset, *jlength))
-            } else {
-                Position::Scalar((*jty, offset, *jlength))
-            };
-            poses.push_back(pos);
-            break;
         }
         Ok(())
     }
 
-    // select values in an Array by indices.
-    fn select_by_indices(
-        &'a self,
-        root: RawJsonb,
-        root_offset: usize,
-        indices: &Vec<ArrayIndex>,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<(), Error> {
-        let (rest, (ty, length)) = decode_header(&root.data[root_offset..])?;
-        if ty != ARRAY_CONTAINER_TAG || length == 0 {
-            return Ok(());
-        }
-        let mut val_indices = Vec::new();
-        for index in indices {
-            match index {
-                ArrayIndex::Index(idx) => {
-                    if let Some(idx) = Self::convert_index(idx, length as i32) {
-                        val_indices.push(idx);
-                    }
-                }
-                ArrayIndex::Slice((start, end)) => {
-                    if let Some(mut idxes) = Self::convert_slice(start, end, length as i32) {
-                        val_indices.append(&mut idxes);
-                    }
-                }
-            }
-        }
-        if val_indices.is_empty() {
-            return Ok(());
-        }
-        let (_, jentries) = decode_jentries(rest, length)?;
-        let mut offset = root_offset + 4 + length * 4;
-        let mut offsets = Vec::with_capacity(jentries.len());
-        for (_, jlength) in jentries.iter() {
-            offsets.push(offset);
-            offset += jlength;
-        }
-        for i in val_indices {
-            let offset = offsets[i];
-            let (jty, jlength) = jentries[i];
-            let pos = if jty == CONTAINER_TAG {
-                Position::Container((offset, jlength))
-            } else {
-                Position::Scalar((jty, offset, jlength))
-            };
-            poses.push_back(pos);
-        }
-        Ok(())
-    }
-
-    fn build_predicate_result(poses: &mut VecDeque<Position>) -> Result<Vec<OwnedJsonb>, Error> {
-        let jentry = match poses.pop_front() {
-            Some(_) => TRUE_TAG,
-            None => FALSE_TAG,
-        };
-        let mut data = Vec::with_capacity(8);
-        data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-        data.write_u32::<BigEndian>(jentry)?;
-        Ok(vec![OwnedJsonb::new(data)])
-    }
-
-    fn build_values(
-        root: RawJsonb,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<Vec<OwnedJsonb>, Error> {
-        let mut owned_jsonbs = Vec::with_capacity(poses.len());
-        while let Some(pos) = poses.pop_front() {
-            let mut data = Vec::new();
-            match pos {
-                Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root.data[offset..offset + length]);
-                }
-                Position::Scalar((ty, offset, length)) => {
-                    data.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-                    let jentry = ty | length as u32;
-                    data.write_u32::<BigEndian>(jentry)?;
-                    if length > 0 {
-                        data.extend_from_slice(&root.data[offset..offset + length]);
-                    }
-                }
-            }
-            owned_jsonbs.push(OwnedJsonb::new(data));
-        }
-        Ok(owned_jsonbs)
-    }
-
-    fn build_scalar_array(
-        root: RawJsonb,
-        poses: &mut VecDeque<Position>,
-    ) -> Result<Vec<OwnedJsonb>, Error> {
-        let mut data = Vec::new();
-        let len = poses.len();
-        let header = ARRAY_CONTAINER_TAG | len as u32;
-        // write header.
-        data.write_u32::<BigEndian>(header)?;
-        let mut jentry_offset = data.len();
-        // reserve space for jentry.
-        data.resize(jentry_offset + 4 * len, 0);
-        while let Some(pos) = poses.pop_front() {
-            let jentry = match pos {
-                Position::Container((offset, length)) => {
-                    data.extend_from_slice(&root.data[offset..offset + length]);
-                    CONTAINER_TAG | length as u32
-                }
-                Position::Scalar((ty, offset, length)) => {
-                    if length > 0 {
-                        data.extend_from_slice(&root.data[offset..offset + length]);
-                    }
-                    ty | length as u32
-                }
-            };
-            for (i, b) in jentry.to_be_bytes().iter().enumerate() {
-                data[jentry_offset + i] = *b;
-            }
-            jentry_offset += 4;
-        }
-        Ok(vec![OwnedJsonb::new(data)])
-    }
-
-    // check and convert index to Array index.
-    fn convert_index(index: &Index, length: i32) -> Option<usize> {
-        let idx = match index {
-            Index::Index(idx) => *idx,
-            Index::LastIndex(idx) => length + *idx - 1,
-        };
-        if idx >= 0 && idx < length {
-            Some(idx as usize)
-        } else {
-            None
-        }
-    }
-
-    // check and convert slice to Array indices.
-    fn convert_slice(start: &Index, end: &Index, length: i32) -> Option<Vec<usize>> {
-        let start = match start {
-            Index::Index(idx) => *idx,
-            Index::LastIndex(idx) => length + *idx - 1,
-        };
-        let end = match end {
-            Index::Index(idx) => *idx,
-            Index::LastIndex(idx) => length + *idx - 1,
-        };
-        if start > end || start >= length || end < 0 {
-            None
-        } else {
-            let start = if start < 0 { 0 } else { start as usize };
-            let end = if end >= length {
-                (length - 1) as usize
-            } else {
-                end as usize
-            };
-            Some((start..=end).collect())
-        }
-    }
-
-    fn filter_expr(
-        &'a self,
-        root: RawJsonb,
-        pos: &Position,
-        expr: &Expr<'a>,
-    ) -> Result<bool, Error> {
+    // fn filter_expr(&'a self, raw_jsonb: RawJsonb<'a>, item: JsonbItem<'a>, expr: &Expr<'a>) -> Result<bool> {
+    fn filter_expr(&mut self, item: JsonbItem<'a>, expr: &'a Expr<'a>) -> Result<bool> {
         match expr {
             Expr::BinaryOp { op, left, right } => match op {
                 BinaryOperator::Or => {
-                    let lhs = self.filter_expr(root, pos, left)?;
-                    let rhs = self.filter_expr(root, pos, right)?;
+                    let lhs = self.filter_expr(item.clone(), left)?;
+                    let rhs = self.filter_expr(item.clone(), right)?;
                     Ok(lhs || rhs)
                 }
                 BinaryOperator::And => {
-                    let lhs = self.filter_expr(root, pos, left)?;
-                    let rhs = self.filter_expr(root, pos, right)?;
+                    let lhs = self.filter_expr(item.clone(), left)?;
+                    let rhs = self.filter_expr(item.clone(), right)?;
                     Ok(lhs && rhs)
                 }
                 _ => {
-                    let lhs = self.convert_expr_val(root, pos, *left.clone())?;
-                    let rhs = self.convert_expr_val(root, pos, *right.clone())?;
+                    let lhs = self.convert_expr_val(item.clone(), left)?;
+                    let rhs = self.convert_expr_val(item.clone(), right)?;
                     let res = self.compare(op, &lhs, &rhs);
                     Ok(res)
                 }
             },
             Expr::FilterFunc(filter_expr) => match filter_expr {
-                FilterFunc::Exists(paths) => self.eval_exists(root, pos, paths),
-                FilterFunc::StartsWith(prefix) => self.eval_starts_with(root, pos, prefix),
+                FilterFunc::Exists(paths) => self.eval_exists(item, paths),
+                FilterFunc::StartsWith(prefix) => self.eval_starts_with(item, prefix),
             },
             _ => todo!(),
         }
     }
 
-    fn eval_exists(
-        &'a self,
-        root: RawJsonb,
-        pos: &Position,
-        paths: &[Path<'a>],
-    ) -> Result<bool, Error> {
-        let poses = self.find_positions(root, Some(pos), paths)?;
-        let res = !poses.is_empty();
+    fn eval_exists(&mut self, item: JsonbItem<'a>, paths: &'a [Path<'a>]) -> Result<bool> {
+        let filter_items = self.select_by_filter_paths(item, paths)?;
+        let res = !filter_items.is_empty();
         Ok(res)
     }
 
-    fn eval_starts_with(
-        &'a self,
-        _root: RawJsonb,
-        _pos: &Position,
-        _prefix: &str,
-    ) -> Result<bool, Error> {
-        // todo
+    fn eval_starts_with(&mut self, item: JsonbItem<'a>, prefix: &str) -> Result<bool> {
+        if let JsonbItem::String(data) = item {
+            let val = unsafe { String::from_utf8_unchecked(data.to_vec()) };
+            let res = val.starts_with(prefix);
+            if res {
+                return Ok(true);
+            }
+        }
         Ok(false)
     }
 
-    fn convert_expr_val(
-        &'a self,
-        root: RawJsonb,
-        pos: &Position,
-        expr: Expr<'a>,
-    ) -> Result<ExprValue<'a>, Error> {
-        match expr {
-            Expr::Value(value) => Ok(ExprValue::Value(value.clone())),
-            Expr::Paths(paths) => {
-                // get value from path and convert to `ExprValue`.
-                let mut poses = VecDeque::new();
-                if let Some(Path::Current) = paths.first() {
-                    poses.push_back(pos.clone());
-                } else {
-                    poses.push_back(Position::Container((0, root.len())));
-                }
+    fn select_by_filter_paths(
+        &mut self,
+        item: JsonbItem<'a>,
+        paths: &'a [Path<'a>],
+    ) -> Result<VecDeque<JsonbItem<'a>>> {
+        let mut items = VecDeque::new();
+        if let Some(Path::Current) = paths.first() {
+            items.push_front(item.clone());
+        } else {
+            let root_item = JsonbItem::Raw(self.root_jsonb);
+            items.push_front(root_item);
+        }
+        std::mem::swap(&mut self.items, &mut items);
 
-                for path in paths.iter().skip(1) {
-                    match path {
-                        &Path::Root
-                        | &Path::Current
-                        | &Path::FilterExpr(_)
-                        | &Path::Predicate(_) => unreachable!(),
-                        _ => {
-                            let len = poses.len();
-                            for _ in 0..len {
-                                let pos = poses.pop_front().unwrap();
-                                match pos {
-                                    Position::Container((offset, length)) => {
-                                        self.select_path(root, offset, length, path, &mut poses)?;
-                                    }
-                                    Position::Scalar(_) => {
-                                        // In lax mode, bracket wildcard allow Scalar value.
-                                        if path == &Path::BracketWildcard {
-                                            poses.push_back(pos);
-                                        }
-                                    }
-                                }
-                            }
+        for path in paths.iter() {
+            match path {
+                &Path::Root | &Path::Current => {
+                    continue;
+                }
+                Path::FilterExpr(expr) | Path::Predicate(expr) => {
+                    let len = self.items.len();
+                    for _ in 0..len {
+                        let item = self.items.pop_front().unwrap();
+                        let res = self.filter_expr(item.clone(), expr)?;
+                        if res {
+                            self.items.push_back(item);
                         }
                     }
                 }
-                let mut values = Vec::with_capacity(poses.len());
-                while let Some(pos) = poses.pop_front() {
-                    if let Position::Scalar((ty, offset, length)) = pos {
-                        let value = match ty {
-                            NULL_TAG => PathValue::Null,
-                            TRUE_TAG => PathValue::Boolean(true),
-                            FALSE_TAG => PathValue::Boolean(false),
-                            NUMBER_TAG => {
-                                let n = Number::decode(&root.data[offset..offset + length])?;
-                                PathValue::Number(n)
-                            }
-                            STRING_TAG => {
-                                let v = &root.data[offset..offset + length];
-                                PathValue::String(Cow::Owned(unsafe {
-                                    String::from_utf8_unchecked(v.to_vec())
-                                }))
-                            }
-                            _ => unreachable!(),
-                        };
-                        values.push(value);
-                    }
+                _ => {
+                    self.select_by_path(path)?;
+                }
+            }
+        }
+        std::mem::swap(&mut self.items, &mut items);
+        Ok(items)
+    }
+
+    fn convert_expr_val(
+        &mut self,
+        item: JsonbItem<'a>,
+        expr: &'a Expr<'a>,
+    ) -> Result<ExprValue<'a>> {
+        match expr {
+            Expr::Value(value) => Ok(ExprValue::Value(value.clone())),
+            Expr::Paths(paths) => {
+                let mut filter_items = self.select_by_filter_paths(item, paths)?;
+
+                let mut values = Vec::with_capacity(filter_items.len());
+                while let Some(item) = filter_items.pop_front() {
+                    let value = match item {
+                        JsonbItem::Null => PathValue::Null,
+                        JsonbItem::Boolean(v) => PathValue::Boolean(v),
+                        JsonbItem::Number(data) => {
+                            let n = Number::decode(data)?;
+                            PathValue::Number(n)
+                        }
+                        JsonbItem::String(data) => PathValue::String(Cow::Owned(unsafe {
+                            String::from_utf8_unchecked(data.to_vec())
+                        })),
+                        _ => {
+                            continue;
+                        }
+                    };
+                    values.push(value);
                 }
                 Ok(ExprValue::Values(values))
             }
@@ -580,7 +404,7 @@ impl<'a> Selector<'a> {
         }
     }
 
-    fn compare(&'a self, op: &BinaryOperator, lhs: &ExprValue<'a>, rhs: &ExprValue<'a>) -> bool {
+    fn compare(&mut self, op: &BinaryOperator, lhs: &ExprValue<'a>, rhs: &ExprValue<'a>) -> bool {
         match (lhs, rhs) {
             (ExprValue::Value(lhs), ExprValue::Value(rhs)) => {
                 self.compare_value(op, *lhs.clone(), *rhs.clone())
@@ -615,7 +439,7 @@ impl<'a> Selector<'a> {
     }
 
     fn compare_value(
-        &'a self,
+        &mut self,
         op: &BinaryOperator,
         lhs: PathValue<'a>,
         rhs: PathValue<'a>,
@@ -635,30 +459,4 @@ impl<'a> Selector<'a> {
             false
         }
     }
-}
-
-fn decode_header(input: &[u8]) -> IResult<&[u8], (u32, usize)> {
-    map(be_u32, |header| {
-        (
-            header & CONTAINER_HEADER_TYPE_MASK,
-            (header & CONTAINER_HEADER_LEN_MASK) as usize,
-        )
-    })(input)
-}
-
-fn decode_jentry(input: &[u8]) -> IResult<&[u8], (u32, usize)> {
-    map(be_u32, |jentry| {
-        (
-            jentry & JENTRY_TYPE_MASK,
-            (jentry & JENTRY_OFF_LEN_MASK) as usize,
-        )
-    })(input)
-}
-
-fn decode_jentries(input: &[u8], length: usize) -> IResult<&[u8], Vec<(u32, usize)>> {
-    count(decode_jentry, length)(input)
-}
-
-fn decode_string(input: &[u8], length: usize) -> IResult<&[u8], &[u8]> {
-    take(length)(input)
 }

@@ -17,9 +17,9 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use jsonb::from_raw_jsonb;
 use jsonb::from_slice;
 use jsonb::jsonpath::parse_json_path;
-use jsonb::jsonpath::Mode;
 use jsonb::keypath::parse_key_paths;
 use jsonb::parse_value;
 use jsonb::Error;
@@ -207,11 +207,9 @@ fn test_path_exists_expr() {
     let raw_jsonb = owned_jsonb.as_raw();
     for (path, expected) in paths {
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = raw_jsonb.get_by_path_opt(&json_path, Mode::Array);
+        let res = raw_jsonb.select_array_by_path(&json_path);
         assert!(res.is_ok());
-        let owned_jsonb_opt = res.unwrap();
-        assert!(owned_jsonb_opt.is_some());
-        let owned_jsonb = owned_jsonb_opt.unwrap();
+        let owned_jsonb = res.unwrap();
         let expected_buf = parse_value(expected.as_bytes()).unwrap().to_vec();
 
         assert_eq!(owned_jsonb.to_vec(), expected_buf);
@@ -219,7 +217,7 @@ fn test_path_exists_expr() {
 }
 
 #[test]
-fn test_get_by_path() {
+fn test_select_by_path() {
     let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab"}"#;
 
     let paths = vec![
@@ -281,7 +279,7 @@ fn test_get_by_path() {
     let raw_jsonb = owned_jsonb.as_raw();
     for (path, expects) in paths {
         let json_path = parse_json_path(path.as_bytes()).unwrap();
-        let res = raw_jsonb.get_by_path(&json_path, Mode::All);
+        let res = raw_jsonb.select_by_path(&json_path);
         assert!(res.is_ok());
         let owned_jsonbs = res.unwrap();
         assert_eq!(owned_jsonbs.len(), expects.len());
@@ -991,6 +989,11 @@ fn test_get_by_keypath() {
         ),
         (r#"[10,20,["a","b","c"]]"#, "{2,a}", None),
         (
+            r#"{"1":{"2":"abc"}}"#,
+            "{1,2}",
+            Some(Value::String(std::borrow::Cow::Borrowed("abc"))),
+        ),
+        (
             r#"[10,20,[{"k1":[1,2,3],"k2":{"w":1,"z":2}},"b","c"]]"#,
             "{2,0,k2}",
             Some(init_object(vec![
@@ -1032,13 +1035,14 @@ fn test_exists_all_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "f", "a"], false),
+        (r#""a""#, vec!["c", "f", "a"], false),
+        (r#""b""#, vec!["b"], true),
     ];
     for (json, keys, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
         let raw_jsonb = owned_jsonb.as_raw();
 
-        let keys = keys.iter().map(|k| k.as_bytes());
-        let res = raw_jsonb.exists_all_keys(keys);
+        let res = raw_jsonb.exists_all_keys(keys.into_iter());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), expected);
     }
@@ -1057,13 +1061,14 @@ fn test_exists_any_keys() {
         (r#"{"a":1,"b":2,"c":3}"#, vec!["c", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["a", "b", "a"], true),
         (r#"{"a":1,"b":2,"c":3}"#, vec!["z", "f", "x"], false),
+        (r#""a""#, vec!["c", "f", "a"], true),
+        (r#""b""#, vec!["b"], true),
     ];
     for (json, keys, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();
         let raw_jsonb = owned_jsonb.as_raw();
 
-        let keys = keys.iter().map(|k| k.as_bytes());
-        let res = raw_jsonb.exists_any_keys(keys);
+        let res = raw_jsonb.exists_any_keys(keys.into_iter());
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), expected);
     }
@@ -1281,6 +1286,11 @@ fn test_delete_by_keypath() {
         ),
         (r#"{"a":1,"b":[1,2,3]}"#, "{b,20}", r#"{"a":1,"b":[1,2,3]}"#),
         (
+            r#"{"1":{"2":"abc","3":"def"}}"#,
+            "{1,2}",
+            r#"{"1":{"3":"def"}}"#,
+        ),
+        (
             r#"{"a":1,"b":[1,2,3]}"#,
             "{b,20,c,e}",
             r#"{"a":1,"b":[1,2,3]}"#,
@@ -1315,7 +1325,7 @@ fn test_array_insert() {
         let new_owned_jsonb = new_val.parse::<OwnedJsonb>().unwrap();
         let new_raw_jsonb = new_owned_jsonb.as_raw();
 
-        let res = raw_jsonb.array_insert(pos, new_raw_jsonb);
+        let res = raw_jsonb.array_insert(pos, &new_raw_jsonb);
         assert!(res.is_ok());
         let res_jsonb = res.unwrap();
         let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
@@ -1380,7 +1390,7 @@ fn test_array_intersection() {
         let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
         let right_raw_jsonb = right_owned_jsonb.as_raw();
 
-        let res = left_raw_jsonb.array_intersection(right_raw_jsonb);
+        let res = left_raw_jsonb.array_intersection(&right_raw_jsonb);
         assert!(res.is_ok());
         let res_jsonb = res.unwrap();
         let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
@@ -1424,7 +1434,7 @@ fn test_array_except() {
         let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
         let right_raw_jsonb = right_owned_jsonb.as_raw();
 
-        let res = left_raw_jsonb.array_except(right_raw_jsonb);
+        let res = left_raw_jsonb.array_except(&right_raw_jsonb);
         assert!(res.is_ok());
         let res_jsonb = res.unwrap();
         let expected_jsonb = expected.parse::<OwnedJsonb>().unwrap();
@@ -1456,7 +1466,7 @@ fn test_array_overlap() {
         let right_owned_jsonb = right.parse::<OwnedJsonb>().unwrap();
         let right_raw_jsonb = right_owned_jsonb.as_raw();
 
-        let res = left_raw_jsonb.array_overlap(right_raw_jsonb);
+        let res = left_raw_jsonb.array_overlap(&right_raw_jsonb);
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(res, expected);
@@ -1511,7 +1521,7 @@ fn test_object_insert() {
         let new_owned_jsonb = new_val.parse::<OwnedJsonb>().unwrap();
         let new_raw_jsonb = new_owned_jsonb.as_raw();
 
-        let res = raw_jsonb.object_insert(new_key, new_raw_jsonb, update_flag);
+        let res = raw_jsonb.object_insert(new_key, &new_raw_jsonb, update_flag);
         match expected {
             Some(expected) => {
                 assert!(res.is_ok());
@@ -1614,19 +1624,20 @@ fn test_to_serde_json() {
         let raw_jsonb = owned_jsonb.as_raw();
         let jsonb_val_str = raw_jsonb.to_string();
 
-        let serde_json_val = raw_jsonb.to_serde_json().unwrap();
+        let serde_json_val = from_raw_jsonb::<serde_json::Value>(&raw_jsonb).unwrap();
         let serde_json_val_str = serde_json_val.to_string();
         assert_eq!(jsonb_val_str, serde_json_val_str);
 
-        let serde_json_obj_val = raw_jsonb.to_serde_json_object().unwrap();
+        let serde_json_obj_val =
+            from_raw_jsonb::<serde_json::Map<String, serde_json::Value>>(&raw_jsonb);
         if raw_jsonb.is_object().unwrap() {
-            assert!(serde_json_obj_val.is_some());
+            assert!(serde_json_obj_val.is_ok());
             let serde_json_obj_val = serde_json_obj_val.unwrap();
             let serde_json_val = serde_json::Value::Object(serde_json_obj_val);
             let serde_json_obj_val_str = serde_json_val.to_string();
             assert_eq!(jsonb_val_str, serde_json_obj_val_str);
         } else {
-            assert!(serde_json_obj_val.is_none());
+            assert!(serde_json_obj_val.is_err());
         }
     }
 }

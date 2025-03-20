@@ -12,18 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nom::{
-    branch::alt,
-    character::complete::{char, i32, multispace0},
-    combinator::map,
-    multi::separated_list1,
-    sequence::{delimited, preceded, terminated},
-    IResult,
-};
-
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Formatter;
+
+use nom::branch::alt;
+use nom::character::complete::char;
+use nom::character::complete::i32;
+use nom::character::complete::multispace0;
+use nom::combinator::map;
+use nom::multi::separated_list1;
+use nom::sequence::delimited;
+use nom::sequence::preceded;
+use nom::sequence::terminated;
+use nom::IResult;
 
 use crate::jsonpath::raw_string;
 use crate::jsonpath::string;

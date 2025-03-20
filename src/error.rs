@@ -14,6 +14,9 @@
 
 use core::fmt::Display;
 
+use serde::de;
+use serde::ser;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParseErrorCode {
     InvalidEOF,
@@ -33,6 +36,8 @@ pub enum ParseErrorCode {
     InvalidSurrogateInHexEscape(u16),
     UnexpectedEndOfHexEscape,
 }
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 impl Display for ParseErrorCode {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -88,16 +93,44 @@ pub enum Error {
     InvalidJsonType,
     InvalidObject,
     ObjectDuplicateKey,
+    UnexpectedType,
 
+    Message(String),
     Syntax(ParseErrorCode, usize),
+}
+
+impl ser::Error for Error {
+    fn custom<T: Display>(msg: T) -> Self {
+        Error::Message(msg.to_string())
+    }
+}
+
+impl de::Error for Error {
+    fn custom<T: Display>(msg: T) -> Self {
+        Error::Message(msg.to_string())
+    }
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Error::Message(m) => write!(f, "{}", m),
             Error::Syntax(code, pos) => write!(f, "{}, pos {}", code, pos),
             _ => write!(f, "{:?}", self),
         }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // match self {
+        //    Error::JsonError(e) => Some(e),
+        //    Error::Json5Error(e) => Some(e),
+        //    Error::Io(e) => Some(e),
+        //    Error::Utf8(e) => Some(e),
+        //    _ => None,
+        //}
+        None
     }
 }
 
