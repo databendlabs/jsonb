@@ -21,7 +21,6 @@ use crate::core::Deserializer;
 use crate::core::JsonbItemType;
 use crate::core::ObjectIterator;
 use crate::error::*;
-use crate::Number;
 use crate::OwnedJsonb;
 
 /// Represents JSONB data wrapped around a raw, immutable slice of bytes.
@@ -270,26 +269,26 @@ impl PartialOrd for RawJsonb<'_> {
                 Some(self_len.cmp(&other_len))
             }
             (JsonbItemType::String, JsonbItemType::String) => {
-                let self_val: Result<String> = from_raw_jsonb(self);
-                let other_val: Result<String> = from_raw_jsonb(other);
+                let self_val = self.as_str();
+                let other_val = other.as_str();
                 match (self_val, other_val) {
-                    (Ok(self_val), Ok(other_val)) => self_val.partial_cmp(&other_val),
+                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
                     (_, _) => None,
                 }
             }
             (JsonbItemType::Number, JsonbItemType::Number) => {
-                let self_val: Result<Number> = from_raw_jsonb(self);
-                let other_val: Result<Number> = from_raw_jsonb(other);
+                let self_val = self.as_number();
+                let other_val = other.as_number();
                 match (self_val, other_val) {
-                    (Ok(self_val), Ok(other_val)) => self_val.partial_cmp(&other_val),
+                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
                     (_, _) => None,
                 }
             }
             (JsonbItemType::Boolean, JsonbItemType::Boolean) => {
-                let self_val: Result<bool> = from_raw_jsonb(self);
-                let other_val: Result<bool> = from_raw_jsonb(other);
+                let self_val = self.as_bool();
+                let other_val = other.as_bool();
                 match (self_val, other_val) {
-                    (Ok(self_val), Ok(other_val)) => self_val.partial_cmp(&other_val),
+                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
                     (_, _) => None,
                 }
             }

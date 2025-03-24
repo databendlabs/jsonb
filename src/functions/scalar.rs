@@ -16,9 +16,9 @@
 
 use std::borrow::Cow;
 
+use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::error::*;
-use crate::from_raw_jsonb;
 use crate::number::Number;
 use crate::RawJsonb;
 
@@ -108,11 +108,11 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_null(&self) -> Result<Option<()>> {
-        let res: Result<()> = from_raw_jsonb(self);
-        match res {
-            Ok(_) => Ok(Some(())),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item_type = self.jsonb_item_type()?;
+        if matches!(jsonb_item_type, JsonbItemType::Null) {
+            Ok(Some(()))
+        } else {
+            Ok(None)
         }
     }
 
@@ -226,11 +226,10 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_bool(&self) -> Result<Option<bool>> {
-        let res: Result<bool> = from_raw_jsonb(self);
-        match res {
-            Ok(v) => Ok(Some(v)),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => Ok(Some(v)),
+            _ => Ok(None),
         }
     }
 
@@ -300,14 +299,20 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_bool(&self) -> Result<bool> {
-        if let Some(v) = self.as_bool()? {
-            return Ok(v);
-        } else if let Some(v) = self.as_str()? {
-            if &v.to_lowercase() == "true" {
-                return Ok(true);
-            } else if &v.to_lowercase() == "false" {
-                return Ok(false);
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => {
+                return Ok(v);
             }
+            JsonbItem::String(data) => {
+                let s = String::from_utf8_lossy(data);
+                if &s.to_lowercase() == "true" {
+                    return Ok(true);
+                } else if &s.to_lowercase() == "false" {
+                    return Ok(false);
+                }
+            }
+            _ => {}
         }
         Err(Error::InvalidCast)
     }
@@ -441,14 +446,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err()); // Decodes should return Err
     /// ```
     pub fn as_number(&self) -> Result<Option<Number>> {
-        if let Some(v) = self.as_u64()? {
-            Ok(Some(Number::UInt64(v)))
-        } else if let Some(v) = self.as_i64()? {
-            Ok(Some(Number::Int64(v)))
-        } else if let Some(v) = self.as_f64()? {
-            Ok(Some(Number::Float64(v)))
-        } else {
-            Ok(None)
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                Ok(Some(num))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -549,11 +553,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_i64(&self) -> Result<Option<i64>> {
-        let res: Result<i64> = from_raw_jsonb(self);
-        match res {
-            Ok(v) => Ok(Some(v)),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                Ok(num.as_i64())
+            }
+            _ => Ok(None),
         }
     }
 
@@ -626,18 +632,28 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_i64(&self) -> Result<i64> {
-        if let Some(v) = self.as_i64()? {
-            return Ok(v);
-        } else if let Some(v) = self.as_bool()? {
-            if v {
-                return Ok(1_i64);
-            } else {
-                return Ok(0_i64);
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => {
+                if v {
+                    return Ok(1_i64);
+                } else {
+                    return Ok(0_i64);
+                }
             }
-        } else if let Some(v) = self.as_str()? {
-            if let Ok(v) = v.parse::<i64>() {
-                return Ok(v);
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                if let Some(v) = num.as_i64() {
+                    return Ok(v);
+                }
             }
+            JsonbItem::String(data) => {
+                let s = String::from_utf8_lossy(data);
+                if let Ok(v) = s.parse::<i64>() {
+                    return Ok(v);
+                }
+            }
+            _ => {}
         }
         Err(Error::InvalidCast)
     }
@@ -771,11 +787,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_u64(&self) -> Result<Option<u64>> {
-        let res: Result<u64> = from_raw_jsonb(self);
-        match res {
-            Ok(v) => Ok(Some(v)),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                Ok(num.as_u64())
+            }
+            _ => Ok(None),
         }
     }
 
@@ -852,18 +870,28 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_u64(&self) -> Result<u64> {
-        if let Some(v) = self.as_u64()? {
-            return Ok(v);
-        } else if let Some(v) = self.as_bool()? {
-            if v {
-                return Ok(1_u64);
-            } else {
-                return Ok(0_u64);
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => {
+                if v {
+                    return Ok(1_u64);
+                } else {
+                    return Ok(0_u64);
+                }
             }
-        } else if let Some(v) = self.as_str()? {
-            if let Ok(v) = v.parse::<u64>() {
-                return Ok(v);
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                if let Some(v) = num.as_u64() {
+                    return Ok(v);
+                }
             }
+            JsonbItem::String(data) => {
+                let s = String::from_utf8_lossy(data);
+                if let Ok(v) = s.parse::<u64>() {
+                    return Ok(v);
+                }
+            }
+            _ => {}
         }
         Err(Error::InvalidCast)
     }
@@ -989,11 +1017,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_f64(&self) -> Result<Option<f64>> {
-        let res: Result<f64> = from_raw_jsonb(self);
-        match res {
-            Ok(v) => Ok(Some(v)),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                Ok(num.as_f64())
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1063,18 +1093,28 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_f64(&self) -> Result<f64> {
-        if let Some(v) = self.as_f64()? {
-            return Ok(v);
-        } else if let Some(v) = self.as_bool()? {
-            if v {
-                return Ok(1_f64);
-            } else {
-                return Ok(0_f64);
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => {
+                if v {
+                    return Ok(1_f64);
+                } else {
+                    return Ok(0_f64);
+                }
             }
-        } else if let Some(v) = self.as_str()? {
-            if let Ok(v) = v.parse::<f64>() {
-                return Ok(v);
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                if let Some(v) = num.as_f64() {
+                    return Ok(v);
+                }
             }
+            JsonbItem::String(data) => {
+                let s = String::from_utf8_lossy(data);
+                if let Ok(v) = s.parse::<f64>() {
+                    return Ok(v);
+                }
+            }
+            _ => {}
         }
         Err(Error::InvalidCast)
     }
@@ -1196,11 +1236,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn as_str(&self) -> Result<Option<Cow<'_, str>>> {
-        let res: Result<String> = from_raw_jsonb(self);
-        match res {
-            Ok(v) => Ok(Some(Cow::Owned(v))),
-            Err(Error::UnexpectedType) => Ok(None),
-            Err(e) => Err(e),
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::String(data) => {
+                let s = unsafe { std::str::from_utf8_unchecked(data) };
+                Ok(Some(Cow::Borrowed(s)))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1261,18 +1303,25 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn to_str(&self) -> Result<String> {
-        if let Some(v) = self.as_str()? {
-            return Ok(v.to_string());
-        } else if let Some(v) = self.as_bool()? {
-            if v {
-                return Ok("true".to_string());
-            } else {
-                return Ok("false".to_string());
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Boolean(v) => {
+                if v {
+                    Ok("true".to_string())
+                } else {
+                    Ok("false".to_string())
+                }
             }
-        } else if let Some(v) = self.as_number()? {
-            return Ok(format!("{}", v));
+            JsonbItem::Number(data) => {
+                let num = Number::decode(data)?;
+                Ok(format!("{}", num))
+            }
+            JsonbItem::String(data) => {
+                let s = unsafe { String::from_utf8_unchecked(data.to_vec()) };
+                Ok(s)
+            }
+            _ => Err(Error::InvalidCast),
         }
-        Err(Error::InvalidCast)
     }
 
     /// Checks if the JSONB value is an array.

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::Range;
+use std::borrow::Cow;
 use std::io::Write;
 
 use byteorder::BigEndian;
@@ -78,6 +79,70 @@ impl<'a> RawJsonb<'a> {
             OBJECT_CONTAINER_TAG => Ok(JsonbItemType::Object(header_len as usize)),
             _ => Err(Error::InvalidJsonb),
         }
+    }
+
+    pub(crate) fn get_object_value_by_key_name(
+        &self,
+        key_name: &Cow<'a, str>,
+        eq_func: impl Fn(&[u8], &[u8]) -> bool,
+    ) -> Result<Option<JsonbItem<'a>>> {
+        let (header_type, header_len) = self.read_header(0)?;
+        if header_type != OBJECT_CONTAINER_TAG || header_len == 0 {
+            return Ok(None);
+        }
+        let length = header_len as usize;
+        let mut index = 0;
+        let mut jentry_offset = 4;
+        let mut item_offset = 4 + 8 * length;
+
+        let mut key_matched = false;
+        let name_len = key_name.len();
+        let name_bytes = key_name.as_bytes();
+        while index < length {
+            let key_jentry = self.read_jentry(jentry_offset)?;
+            let key_len = key_jentry.length as usize;
+
+            index += 1;
+            jentry_offset += 4;
+            item_offset += key_len;
+
+            // check if key match the name.
+            if name_len == key_len {
+                let key_range = Range {
+                    start: item_offset - key_len,
+                    end: item_offset,
+                };
+                let key_data = self.slice(key_range)?;
+                if eq_func(name_bytes, key_data) {
+                    key_matched = true;
+                    break;
+                }
+            }
+        }
+
+        if !key_matched {
+            return Ok(None);
+        }
+        let val_index = index - 1;
+        // skip unmatched keys and values.
+        while index < length + val_index {
+            let jentry = self.read_jentry(jentry_offset)?;
+            index += 1;
+            jentry_offset += 4;
+            item_offset += jentry.length as usize;
+        }
+
+        // read value item data
+        let value_jentry = self.read_jentry(jentry_offset)?;
+        let value_len = value_jentry.length as usize;
+
+        let value_range = Range {
+            start: item_offset,
+            end: item_offset + value_len,
+        };
+        let value_data = self.slice(value_range)?;
+        let value_item = jentry_to_jsonb_item(value_jentry, value_data);
+        Ok(Some(value_item))
     }
 
     pub(super) fn read_header(&self, index: usize) -> Result<(u32, u32)> {
@@ -264,5 +329,17 @@ impl Number {
             }
         };
         Ok(num)
+    }
+}
+
+pub(super) fn jentry_to_jsonb_item(jentry: JEntry, data: &[u8]) -> JsonbItem<'_> {
+    match jentry.type_code {
+        NULL_TAG => JsonbItem::Null,
+        TRUE_TAG => JsonbItem::Boolean(true),
+        FALSE_TAG => JsonbItem::Boolean(false),
+        NUMBER_TAG => JsonbItem::Number(data),
+        STRING_TAG => JsonbItem::String(data),
+        CONTAINER_TAG => JsonbItem::Raw(RawJsonb::new(data)),
+        _ => unreachable!(),
     }
 }
