@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use byteorder::BigEndian;
+use byteorder::WriteBytesExt;
 use core::ops::Range;
 use std::borrow::Cow;
 use std::io::Write;
-
-use byteorder::BigEndian;
-use byteorder::WriteBytesExt;
+use std::simd::cmp::SimdPartialEq;
+use std::simd::u32x8;
 
 use super::constants::*;
 use super::jentry::JEntry;
@@ -81,16 +82,130 @@ impl<'a> RawJsonb<'a> {
         }
     }
 
+    #[inline]
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn get_object_value_by_key_name_simd(
+        &self,
+        length: usize,
+        key_name: &Cow<'a, str>,
+        ignore_ascii_case: bool,
+    ) -> Result<Option<JsonbItem<'a>>> {
+        let mut item_offset = 4 + 8 * length;
+
+        let name_bytes = key_name.as_bytes();
+        let mut index = None;
+
+        for i in 0..length / 8 {
+            if index.is_some() {
+                break;
+            }
+            index =
+                self.find_matched_pos_simd_x8(i, name_bytes, &mut item_offset, ignore_ascii_case)?;
+        }
+        for i in length - length % 8..length {
+            if index.is_some() {
+                break;
+            }
+            let jentry = self.read_jentry((i + 1) * 4)?;
+            let key_len = jentry.length as usize;
+            item_offset += key_len;
+
+            if name_bytes.len() == key_len {
+                let key_range = Range {
+                    start: item_offset - key_len,
+                    end: item_offset,
+                };
+                let data = self.slice(key_range)?;
+                if Self::compare(data, name_bytes, ignore_ascii_case) {
+                    index = Some(i);
+                    break;
+                }
+            }
+        }
+        let Some(mut index) = index else {
+            return Ok(None);
+        };
+        let val_index = index;
+        index += 1;
+        // skip rest keys and values.
+        for i in index..(length + val_index) {
+            let jentry = self.read_jentry((i + 1) * 4)?;
+            item_offset += jentry.length as usize;
+        }
+        let jentry = self.read_jentry((length + val_index + 1) * 4)?;
+        let value_len = jentry.length as usize;
+
+        let value_range = Range {
+            start: item_offset,
+            end: item_offset + value_len,
+        };
+        let data = self.slice(value_range)?;
+        let value_item = jentry_to_jsonb_item(jentry, data);
+        Ok(Some(value_item))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn find_matched_pos_simd_x8(
+        &self,
+        group_i: usize,
+        target: &[u8],
+        offset: &mut usize,
+        ignore_ascii_case: bool,
+    ) -> Result<Option<usize>> {
+        let len_x8 = self.load_jentry_lens((group_i * 8 + 1) * 4)?;
+        let target_len = u32x8::splat(target.len() as u32);
+        let mask = len_x8.simd_eq(target_len);
+
+        for i in 0..8 {
+            let key_len = len_x8[i] as usize;
+            *offset += key_len;
+
+            if mask.test(i) {
+                let key_range = Range {
+                    start: *offset - key_len,
+                    end: *offset,
+                };
+                let data = self.slice(key_range)?;
+                if Self::compare(data, target, ignore_ascii_case) {
+                    return Ok(Some(i + group_i * 8));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn load_jentry_lens(&self, start: usize) -> Result<u32x8> {
+        let mut array = [0u32; 8];
+        for (i, len) in array.iter_mut().enumerate() {
+            *len = self.read_u32(start + i * 4)? & JENTRY_OFF_LEN_MASK;
+        }
+        Ok(u32x8::from(array))
+    }
+
+    #[inline]
+    fn compare(a: &[u8], b: &[u8], ignore_ascii_case: bool) -> bool {
+        if ignore_ascii_case {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a.eq(b)
+        }
+    }
+
     pub(crate) fn get_object_value_by_key_name(
         &self,
         key_name: &Cow<'a, str>,
-        eq_func: impl Fn(&[u8], &[u8]) -> bool,
+        ignore_ascii_case: bool,
     ) -> Result<Option<JsonbItem<'a>>> {
         let (header_type, header_len) = self.read_header(0)?;
         if header_type != OBJECT_CONTAINER_TAG || header_len == 0 {
             return Ok(None);
         }
         let length = header_len as usize;
+
+        #[cfg(target_arch = "x86_64")]
+        return self.get_object_value_by_key_name_simd(length, key_name, ignore_ascii_case);
         let mut index = 0;
         let mut jentry_offset = 4;
         let mut item_offset = 4 + 8 * length;
@@ -113,7 +228,7 @@ impl<'a> RawJsonb<'a> {
                     end: item_offset,
                 };
                 let key_data = self.slice(key_range)?;
-                if eq_func(name_bytes, key_data) {
+                if Self::compare(name_bytes, key_data, ignore_ascii_case) {
                     key_matched = true;
                     break;
                 }
