@@ -17,6 +17,7 @@ use std::ops::Range;
 
 use super::constants::*;
 use super::jentry::JEntry;
+use crate::core::databend::util::jentry_to_jsonb_item;
 use crate::core::JsonbItem;
 use crate::error::Result;
 use crate::RawJsonb;
@@ -86,7 +87,7 @@ impl<'a> Iterator for ArrayIterator<'a> {
 pub(crate) struct ObjectKeyIterator<'a> {
     raw_jsonb: RawJsonb<'a>,
     jentry_offset: usize,
-    key_offset: usize,
+    item_offset: usize,
     length: usize,
     index: usize,
 }
@@ -96,11 +97,11 @@ impl<'a> ObjectKeyIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
             let jentry_offset = 4;
-            let key_offset = 4 + 8 * header_len as usize;
+            let item_offset = 4 + 8 * header_len as usize;
             Ok(Some(Self {
                 raw_jsonb,
                 jentry_offset,
-                key_offset,
+                item_offset,
                 length: header_len as usize,
                 index: 0,
             }))
@@ -128,8 +129,8 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
 
         let key_length = jentry.length as usize;
         let key_range = Range {
-            start: self.key_offset,
-            end: self.key_offset + key_length,
+            start: self.item_offset,
+            end: self.item_offset + key_length,
         };
         let data = match self.raw_jsonb.slice(key_range) {
             Ok(data) => data,
@@ -139,7 +140,7 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
 
         self.index += 1;
         self.jentry_offset += 4;
-        self.key_offset += key_length;
+        self.item_offset += key_length;
 
         Some(Ok(key_item))
     }
@@ -228,17 +229,5 @@ impl<'a> Iterator for ObjectIterator<'a> {
             }
             None => None,
         }
-    }
-}
-
-fn jentry_to_jsonb_item(jentry: JEntry, data: &[u8]) -> JsonbItem<'_> {
-    match jentry.type_code {
-        NULL_TAG => JsonbItem::Null,
-        TRUE_TAG => JsonbItem::Boolean(true),
-        FALSE_TAG => JsonbItem::Boolean(false),
-        NUMBER_TAG => JsonbItem::Number(data),
-        STRING_TAG => JsonbItem::String(data),
-        CONTAINER_TAG => JsonbItem::Raw(RawJsonb::new(data)),
-        _ => unreachable!(),
     }
 }

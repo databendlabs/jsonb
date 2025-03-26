@@ -91,7 +91,7 @@ impl<'a> Selector<'a> {
     pub(crate) fn build(&mut self) -> Result<Vec<OwnedJsonb>> {
         let mut values = Vec::with_capacity(self.items.len());
         while let Some(item) = self.items.pop_front() {
-            let value = item.to_owned_jsonb()?;
+            let value = OwnedJsonb::from_item(item)?;
             values.push(value);
         }
         Ok(values)
@@ -107,7 +107,7 @@ impl<'a> Selector<'a> {
 
     pub(crate) fn build_first(&mut self) -> Result<Option<OwnedJsonb>> {
         if let Some(item) = self.items.pop_front() {
-            let value = item.to_owned_jsonb()?;
+            let value = OwnedJsonb::from_item(item)?;
             Ok(Some(value))
         } else {
             Ok(None)
@@ -222,15 +222,11 @@ impl<'a> Selector<'a> {
             return Ok(());
         };
 
-        let object_iter_opt = ObjectIterator::new(curr_raw_jsonb)?;
-        if let Some(mut object_iter) = object_iter_opt {
-            for result in &mut object_iter {
-                let (key, val_item) = result?;
-                if key.eq(name) {
-                    self.items.push_back(val_item);
-                    break;
-                }
-            }
+        let key_name = Cow::Borrowed(name);
+        if let Some(val_item) =
+            curr_raw_jsonb.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
+        {
+            self.items.push_back(val_item);
         }
         Ok(())
     }

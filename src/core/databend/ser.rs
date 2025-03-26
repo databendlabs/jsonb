@@ -26,7 +26,6 @@ use super::jentry::JEntry;
 use crate::core::ArrayBuilder;
 use crate::core::ObjectBuilder;
 use crate::error::*;
-use crate::from_raw_jsonb;
 use crate::number::Number;
 use crate::value::Object;
 use crate::value::Value;
@@ -329,7 +328,7 @@ impl ser::SerializeTuple for ArraySerializer<'_> {
 
 pub struct ObjectSerializer<'a> {
     buffer: &'a mut Vec<u8>,
-    keys: Vec<OwnedJsonb>,
+    keys: Vec<String>,
     values: Vec<OwnedJsonb>,
 }
 
@@ -356,7 +355,11 @@ impl ser::SerializeMap for ObjectSerializer<'_> {
         let mut serializer = Serializer::new();
         let res = key.serialize(&mut serializer);
         let key_jsonb = OwnedJsonb::new(serializer.buffer);
-        self.keys.push(key_jsonb);
+        let raw_jsonb = key_jsonb.as_raw();
+        let Ok(Some(key)) = raw_jsonb.as_str() else {
+            return Err(ser::Error::custom("Invalid object key".to_string()));
+        };
+        self.keys.push(key.to_string());
 
         res
     }
@@ -376,16 +379,8 @@ impl ser::SerializeMap for ObjectSerializer<'_> {
                 "Invalid object keys and values length".to_string(),
             ));
         }
-        let mut key_strs = Vec::with_capacity(self.keys.len());
-        for key in self.keys.into_iter() {
-            let key_str_res: Result<String> = from_raw_jsonb(&key.as_raw());
-            let Ok(key_str) = key_str_res else {
-                return Err(ser::Error::custom("Invalid object key".to_string()));
-            };
-            key_strs.push(key_str);
-        }
         let mut builder = ObjectBuilder::new();
-        for (key_str, value) in key_strs.iter().zip(self.values.into_iter()) {
+        for (key_str, value) in self.keys.iter().zip(self.values.into_iter()) {
             builder.push_owned_jsonb(key_str, value)?;
         }
         let object_jsonb = builder.build()?;
