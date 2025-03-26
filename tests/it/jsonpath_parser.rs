@@ -24,6 +24,8 @@ fn test_json_path() {
     let cases = &[
         r#"$"#,
         r#"$.*"#,
+        r#"$.**"#,
+        r#"$.**{2 to last}"#,
         r#"$[*]"#,
         r#"5 + 5"#,
         r#"10 - 5"#,
@@ -62,7 +64,12 @@ fn test_json_path() {
         // exists expression
         r#"$.store.book?(exists(@.price?(@ > 20)))"#,
         r#"$.store?(exists(@.book?(exists(@.category?(@ == "fiction")))))"#,
-        r#"$.store.book?(starts with "Nigel")"#,
+        r#"$.store.book?(@ starts with "Nigel")"#,
+        r#"$[*] ? (@.job == null) .name"#,
+        // arithmetic functions
+        r#"$.phones[0].number + 3"#,
+        r#"7 - $[0]"#,
+        r#"- $.phones[0].number"#,
     ];
 
     for case in cases {

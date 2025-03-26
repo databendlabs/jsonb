@@ -24,6 +24,43 @@ JsonPath {
 
 
 ---------- Input ----------
+$.**
+---------- Output ---------
+$.**
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        RecursiveDotWildcard(
+            None,
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.**{2 to last}
+---------- Output ---------
+$.**{2 to last}
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        RecursiveDotWildcard(
+            Some(
+                RecursiveLevel {
+                    start: 2,
+                    end: Some(
+                        Last,
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
 $[*]
 ---------- Output ---------
 $[*]
@@ -43,7 +80,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
                     op: Add,
@@ -75,7 +112,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
                     op: Subtract,
@@ -107,7 +144,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
                     op: Multiply,
@@ -139,7 +176,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
                     op: Divide,
@@ -171,10 +208,10 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
-                    op: Modulus,
+                    op: Modulo,
                     left: Value(
                         Number(
                             UInt64(
@@ -253,7 +290,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Unary {
                     op: Add,
@@ -294,7 +331,7 @@ JsonPath {
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Unary {
                     op: Subtract,
@@ -335,7 +372,7 @@ $.store.book[0].price + 5
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             ArithmeticFunc(
                 Binary {
                     op: Add,
@@ -957,7 +994,7 @@ $ > 1
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             BinaryOp {
                 op: Gt,
                 left: Paths(
@@ -985,7 +1022,7 @@ $.* == 0
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             BinaryOp {
                 op: Eq,
                 left: Paths(
@@ -1014,7 +1051,7 @@ $[*] > 1
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             BinaryOp {
                 op: Gt,
                 left: Paths(
@@ -1043,7 +1080,7 @@ $.a > $.b
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             BinaryOp {
                 op: Gt,
                 left: Paths(
@@ -1075,7 +1112,7 @@ $.price > 10 || $.category == "reference"
 ---------- AST ------------
 JsonPath {
     paths: [
-        Predicate(
+        Expr(
             BinaryOp {
                 op: Or,
                 left: BinaryOp {
@@ -1133,32 +1170,30 @@ JsonPath {
             "book",
         ),
         FilterExpr(
-            FilterFunc(
-                Exists(
-                    [
-                        Current,
-                        DotField(
-                            "price",
-                        ),
-                        FilterExpr(
-                            BinaryOp {
-                                op: Gt,
-                                left: Paths(
-                                    [
-                                        Current,
-                                    ],
-                                ),
-                                right: Value(
-                                    Number(
-                                        UInt64(
-                                            20,
-                                        ),
+            ExistsFunc(
+                [
+                    Current,
+                    DotField(
+                        "price",
+                    ),
+                    FilterExpr(
+                        BinaryOp {
+                            op: Gt,
+                            left: Paths(
+                                [
+                                    Current,
+                                ],
+                            ),
+                            right: Value(
+                                Number(
+                                    UInt64(
+                                        20,
                                     ),
                                 ),
-                            },
-                        ),
-                    ],
-                ),
+                            ),
+                        },
+                    ),
+                ],
             ),
         ),
     ],
@@ -1177,42 +1212,38 @@ JsonPath {
             "store",
         ),
         FilterExpr(
-            FilterFunc(
-                Exists(
-                    [
-                        Current,
-                        DotField(
-                            "book",
-                        ),
-                        FilterExpr(
-                            FilterFunc(
-                                Exists(
-                                    [
-                                        Current,
-                                        DotField(
-                                            "category",
-                                        ),
-                                        FilterExpr(
-                                            BinaryOp {
-                                                op: Eq,
-                                                left: Paths(
-                                                    [
-                                                        Current,
-                                                    ],
-                                                ),
-                                                right: Value(
-                                                    String(
-                                                        "fiction",
-                                                    ),
-                                                ),
-                                            },
-                                        ),
-                                    ],
+            ExistsFunc(
+                [
+                    Current,
+                    DotField(
+                        "book",
+                    ),
+                    FilterExpr(
+                        ExistsFunc(
+                            [
+                                Current,
+                                DotField(
+                                    "category",
                                 ),
-                            ),
+                                FilterExpr(
+                                    BinaryOp {
+                                        op: Eq,
+                                        left: Paths(
+                                            [
+                                                Current,
+                                            ],
+                                        ),
+                                        right: Value(
+                                            String(
+                                                "fiction",
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ],
                         ),
-                    ],
-                ),
+                    ),
+                ],
             ),
         ),
     ],
@@ -1220,9 +1251,9 @@ JsonPath {
 
 
 ---------- Input ----------
-$.store.book?(starts with "Nigel")
+$.store.book?(@ starts with "Nigel")
 ---------- Output ---------
-$.store.book?(starts with Nigel)
+$.store.book?(@ starts with "Nigel")
 ---------- AST ------------
 JsonPath {
     paths: [
@@ -1234,10 +1265,172 @@ JsonPath {
             "book",
         ),
         FilterExpr(
-            FilterFunc(
-                StartsWith(
-                    "Nigel",
+            BinaryOp {
+                op: StartsWith,
+                left: Paths(
+                    [
+                        Current,
+                    ],
                 ),
+                right: Value(
+                    String(
+                        "Nigel",
+                    ),
+                ),
+            },
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$[*] ? (@.job == null) .name
+---------- Output ---------
+$[*]?(@.job == null).name
+---------- AST ------------
+JsonPath {
+    paths: [
+        Root,
+        BracketWildcard,
+        FilterExpr(
+            BinaryOp {
+                op: Eq,
+                left: Paths(
+                    [
+                        Current,
+                        DotField(
+                            "job",
+                        ),
+                    ],
+                ),
+                right: Value(
+                    Null,
+                ),
+            },
+        ),
+        DotField(
+            "name",
+        ),
+    ],
+}
+
+
+---------- Input ----------
+$.phones[0].number + 3
+---------- Output ---------
+$.phones[0].number + 3
+---------- AST ------------
+JsonPath {
+    paths: [
+        Expr(
+            ArithmeticFunc(
+                Binary {
+                    op: Add,
+                    left: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "phones",
+                            ),
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            DotField(
+                                "number",
+                            ),
+                        ],
+                    ),
+                    right: Value(
+                        Number(
+                            UInt64(
+                                3,
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+7 - $[0]
+---------- Output ---------
+7 - $[0]
+---------- AST ------------
+JsonPath {
+    paths: [
+        Expr(
+            ArithmeticFunc(
+                Binary {
+                    op: Subtract,
+                    left: Value(
+                        Number(
+                            UInt64(
+                                7,
+                            ),
+                        ),
+                    ),
+                    right: Paths(
+                        [
+                            Root,
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                },
+            ),
+        ),
+    ],
+}
+
+
+---------- Input ----------
+- $.phones[0].number
+---------- Output ---------
+-$.phones[0].number
+---------- AST ------------
+JsonPath {
+    paths: [
+        Expr(
+            ArithmeticFunc(
+                Unary {
+                    op: Subtract,
+                    operand: Paths(
+                        [
+                            Root,
+                            DotField(
+                                "phones",
+                            ),
+                            ArrayIndices(
+                                [
+                                    Index(
+                                        Index(
+                                            0,
+                                        ),
+                                    ),
+                                ],
+                            ),
+                            DotField(
+                                "number",
+                            ),
+                        ],
+                    ),
+                },
             ),
         ),
     ],

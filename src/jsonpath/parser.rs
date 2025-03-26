@@ -22,6 +22,7 @@ use nom::character::complete::i32;
 use nom::character::complete::i64;
 use nom::character::complete::multispace0;
 use nom::character::complete::u64;
+use nom::character::complete::u8;
 use nom::combinator::cond;
 use nom::combinator::map;
 use nom::combinator::map_res;
@@ -62,7 +63,7 @@ pub fn parse_json_path(input: &[u8]) -> Result<JsonPath<'_>, Error> {
 
 fn json_path(input: &[u8]) -> IResult<&[u8], JsonPath<'_>> {
     map(
-        delimited(multispace0, predicate_or_paths, multispace0),
+        delimited(multispace0, expr_or_paths, multispace0),
         |paths| JsonPath { paths },
     )(input)
 }
@@ -179,6 +180,58 @@ fn bracket_wildcard(input: &[u8]) -> IResult<&[u8], ()> {
     )(input)
 }
 
+fn recursive_dot_wildcard(input: &[u8]) -> IResult<&[u8], Option<RecursiveLevel>> {
+    preceded(tag(".**"), opt(recursive_level))(input)
+}
+
+fn recursive_level(input: &[u8]) -> IResult<&[u8], RecursiveLevel> {
+    alt((
+        delimited(
+            char('{'),
+            delimited(multispace0, recursive_level_range, multispace0),
+            char('}'),
+        ),
+        map(
+            delimited(
+                char('{'),
+                delimited(multispace0, u8, multispace0),
+                char('}'),
+            ),
+            |s| RecursiveLevel {
+                start: s,
+                end: None,
+            },
+        ),
+    ))(input)
+}
+
+fn recursive_level_range(input: &[u8]) -> IResult<&[u8], RecursiveLevel> {
+    alt((
+        map(
+            separated_pair(
+                u8,
+                delimited(multispace0, tag_no_case("to"), multispace0),
+                u8,
+            ),
+            |(s, e)| RecursiveLevel {
+                start: s,
+                end: Some(RecursiveLevelEnd::Index(e)),
+            },
+        ),
+        map(
+            separated_pair(
+                u8,
+                delimited(multispace0, tag_no_case("to"), multispace0),
+                tag_no_case("last"),
+            ),
+            |(s, _)| RecursiveLevel {
+                start: s,
+                end: Some(RecursiveLevelEnd::Last),
+            },
+        ),
+    ))(input)
+}
+
 fn colon_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
     alt((preceded(char(':'), string), preceded(char(':'), raw_string)))(input)
 }
@@ -240,6 +293,7 @@ fn array_indices(input: &[u8]) -> IResult<&[u8], Vec<ArrayIndex>> {
 
 fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
     alt((
+        map(recursive_dot_wildcard, Path::RecursiveDotWildcard),
         value(Path::DotWildcard, tag(".*")),
         value(Path::BracketWildcard, bracket_wildcard),
         map(colon_field, Path::ColonField),
@@ -268,14 +322,14 @@ fn path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
     ))(input)
 }
 
-fn predicate_or_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
-    alt((predicate, paths))(input)
+fn expr_or_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+    alt((root_expr, paths))(input)
 }
 
-fn predicate(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
+fn root_expr(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     map(
         delimited(multispace0, |i| expr_or(i, true), multispace0),
-        |v| vec![Path::Predicate(Box::new(v))],
+        |v| vec![Path::Expr(Box::new(v))],
     )(input)
 }
 
@@ -291,9 +345,9 @@ fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     )(input)
 }
 
-fn expr_paths(input: &[u8], root_predicate: bool) -> IResult<&[u8], Vec<Path<'_>>> {
+fn expr_paths(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Vec<Path<'_>>> {
     let parse_current = map_res(
-        cond(!root_predicate, value(Path::Current, char('@'))),
+        cond(!is_root_expr, value(Path::Current, char('@'))),
         |res| match res {
             Some(v) => Ok(v),
             None => Err(NomError::new(input, ErrorKind::Char)),
@@ -331,6 +385,7 @@ fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
         value(BinaryOperator::Lt, char('<')),
         value(BinaryOperator::Gte, tag(">=")),
         value(BinaryOperator::Gt, char('>')),
+        value(BinaryOperator::StartsWith, tag("starts with")),
     ))(input)
 }
 
@@ -347,7 +402,7 @@ fn binary_arith_op(input: &[u8]) -> IResult<&[u8], BinaryArithmeticOperator> {
         value(BinaryArithmeticOperator::Subtract, char('-')),
         value(BinaryArithmeticOperator::Multiply, char('*')),
         value(BinaryArithmeticOperator::Divide, char('/')),
-        value(BinaryArithmeticOperator::Modulus, char('%')),
+        value(BinaryArithmeticOperator::Modulo, char('%')),
     ))(input)
 }
 
@@ -363,20 +418,20 @@ fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
     ))(input)
 }
 
-fn inner_expr(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
+fn inner_expr(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
-        map(|i| expr_paths(i, root_predicate), Expr::Paths),
+        map(|i| expr_paths(i, is_root_expr), Expr::Paths),
         map(path_value, |v| Expr::Value(Box::new(v))),
     ))(input)
 }
 
-fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
+fn expr_atom(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
         map(
             tuple((
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
                 binary_arith_op,
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
             )),
             |(left, op, right)| {
                 Expr::ArithmeticFunc(ArithmeticFunc::Binary {
@@ -389,7 +444,7 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
         map(
             tuple((
                 unary_arith_op,
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
             )),
             |(op, operand)| {
                 Expr::ArithmeticFunc(ArithmeticFunc::Unary {
@@ -400,9 +455,9 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
         ),
         map(
             tuple((
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
                 op,
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
             )),
             |(left, op, right)| Expr::BinaryOp {
                 op,
@@ -413,27 +468,23 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
         map(
             delimited(
                 terminated(char('('), multispace0),
-                |i| expr_or(i, root_predicate),
+                |i| expr_or(i, is_root_expr),
                 preceded(multispace0, char(')')),
             ),
             |expr| expr,
         ),
-        map(filter_func, Expr::FilterFunc),
+        map(exists_func, Expr::ExistsFunc),
     ))(input)
 }
 
-fn filter_func(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
-    alt((exists, starts_with))(input)
-}
-
-fn exists(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
+fn exists_func(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     preceded(
         tag("exists"),
         preceded(
             multispace0,
             delimited(
                 terminated(char('('), multispace0),
-                map(exists_paths, FilterFunc::Exists),
+                exists_paths,
                 preceded(multispace0, char(')')),
             ),
         ),
@@ -456,17 +507,10 @@ fn exists_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     )(input)
 }
 
-fn starts_with(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
-    preceded(
-        tag("starts with"),
-        preceded(multispace0, map(string, FilterFunc::StartsWith)),
-    )(input)
-}
-
-fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
+fn expr_and(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Expr<'_>> {
     map(
         separated_list1(delimited(multispace0, tag("&&"), multispace0), |i| {
-            expr_atom(i, root_predicate)
+            expr_atom(i, is_root_expr)
         }),
         |exprs| {
             let mut expr = exprs[0].clone();
@@ -482,10 +526,10 @@ fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     )(input)
 }
 
-fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
+fn expr_or(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Expr<'_>> {
     map(
         separated_list1(delimited(multispace0, tag("||"), multispace0), |i| {
-            expr_and(i, root_predicate)
+            expr_and(i, is_root_expr)
         }),
         |exprs| {
             let mut expr = exprs[0].clone();
@@ -499,19 +543,4 @@ fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             expr
         },
     )(input)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_starts_with() {
-        let input = r#"starts with "Nigel""#;
-        let res = starts_with(input.as_bytes()).unwrap();
-        assert_eq!(
-            res,
-            (&b""[..], FilterFunc::StartsWith(Cow::Borrowed("Nigel")))
-        );
-    }
 }

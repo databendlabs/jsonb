@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use crate::error::Result;
+use crate::Error;
 use ordered_float::OrderedFloat;
 use serde::de;
 use serde::de::Deserialize;
@@ -33,7 +36,7 @@ pub enum Number {
 }
 
 impl<'de> Deserialize<'de> for Number {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -46,21 +49,21 @@ impl<'de> Deserialize<'de> for Number {
                 formatter.write_str("a number (int64, uint64, or float64)")
             }
 
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E>
             where
                 E: de::Error,
             {
                 Ok(Number::Int64(v))
             }
 
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
             where
                 E: de::Error,
             {
                 Ok(Number::UInt64(v))
             }
 
-            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+            fn visit_f64<E>(self, v: f64) -> std::result::Result<Self::Value, E>
             where
                 E: de::Error,
             {
@@ -72,7 +75,7 @@ impl<'de> Deserialize<'de> for Number {
 }
 
 impl Serialize for Number {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -118,6 +121,212 @@ impl Number {
             Number::Int64(v) => Some(*v as f64),
             Number::UInt64(v) => Some(*v as f64),
             Number::Float64(v) => Some(*v),
+        }
+    }
+
+    pub fn neg(&self) -> Result<Number> {
+        match self {
+            Number::Int64(v) => v
+                .checked_neg()
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            Number::UInt64(v) => {
+                if let Ok(v) = i64::try_from(*v) {
+                    v.checked_neg()
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    Err(Error::Message("Int64 overflow".to_string()))
+                }
+            }
+            Number::Float64(v) => Ok(Number::Float64(*v * -1.0)),
+        }
+    }
+
+    pub fn add(&self, other: Number) -> Result<Number> {
+        match (self, other) {
+            (Number::Int64(a), Number::Int64(b)) => a
+                .checked_add(b)
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            (Number::UInt64(a), Number::UInt64(b)) => a
+                .checked_add(b)
+                .map(Number::UInt64)
+                .ok_or(Error::Message("UInt64 overflow".to_string())),
+            (Number::Int64(a), Number::UInt64(b)) => {
+                if *a < 0 {
+                    a.checked_add(b as i64)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    (*a as u64)
+                        .checked_add(b)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::UInt64(a), Number::Int64(b)) => {
+                if b < 0 {
+                    (*a as i64)
+                        .checked_add(b)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    a.checked_add(b as u64)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a + b)),
+            (a, b) => {
+                let a_float = a.as_f64().unwrap();
+                let b_float = b.as_f64().unwrap();
+                Ok(Number::Float64(a_float + b_float))
+            }
+        }
+    }
+
+    pub fn sub(&self, other: Number) -> Result<Number> {
+        match (self, other) {
+            (Number::Int64(a), Number::Int64(b)) => a
+                .checked_sub(b)
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            (Number::UInt64(a), Number::UInt64(b)) => (*a as i64)
+                .checked_sub(b as i64)
+                .map(Number::Int64)
+                .ok_or(Error::Message("UInt64 overflow".to_string())),
+            (Number::Int64(a), Number::UInt64(b)) => a
+                .checked_sub(b as i64)
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            (Number::UInt64(a), Number::Int64(b)) => (*a as i64)
+                .checked_sub(b)
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a - b)),
+            (a, b) => {
+                let a_float = a.as_f64().unwrap();
+                let b_float = b.as_f64().unwrap();
+                Ok(Number::Float64(a_float - b_float))
+            }
+        }
+    }
+
+    pub fn mul(&self, other: Number) -> Result<Number> {
+        match (self, other) {
+            (Number::Int64(a), Number::Int64(b)) => a
+                .checked_mul(b)
+                .map(Number::Int64)
+                .ok_or(Error::Message("Int64 overflow".to_string())),
+            (Number::UInt64(a), Number::UInt64(b)) => a
+                .checked_mul(b)
+                .map(Number::UInt64)
+                .ok_or(Error::Message("UInt64 overflow".to_string())),
+            (Number::Int64(a), Number::UInt64(b)) => {
+                if *a < 0 {
+                    a.checked_mul(b as i64)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    (*a as u64)
+                        .checked_mul(b)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::UInt64(a), Number::Int64(b)) => {
+                if b < 0 {
+                    (*a as i64)
+                        .checked_mul(b)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    a.checked_mul(b as u64)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a * b)),
+            (a, b) => {
+                let a_float = a.as_f64().unwrap();
+                let b_float = b.as_f64().unwrap();
+                Ok(Number::Float64(a_float * b_float))
+            }
+        }
+    }
+
+    pub fn div(&self, other: Number) -> Result<Number> {
+        let a_float = self.as_f64().unwrap();
+        let b_float = other.as_f64().unwrap();
+        if b_float == 0.0 {
+            return Err(Error::Message("Division by zero".to_string()));
+        }
+        Ok(Number::Float64(a_float / b_float))
+    }
+
+    pub fn rem(&self, other: Number) -> Result<Number> {
+        match (self, other) {
+            (Number::Int64(a), Number::Int64(b)) => {
+                if b == 0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                a.checked_rem(b)
+                    .map(Number::Int64)
+                    .ok_or(Error::Message("Int64 overflow".to_string()))
+            }
+            (Number::UInt64(a), Number::UInt64(b)) => {
+                if b == 0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                a.checked_rem(b)
+                    .map(Number::UInt64)
+                    .ok_or(Error::Message("UInt64 overflow".to_string()))
+            }
+            (Number::Int64(a), Number::UInt64(b)) => {
+                if b == 0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                if *a < 0 {
+                    a.checked_rem(b as i64)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    (*a as u64)
+                        .checked_rem(b)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::UInt64(a), Number::Int64(b)) => {
+                if b == 0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                if b < 0 {
+                    (*a as i64)
+                        .checked_rem(b)
+                        .map(Number::Int64)
+                        .ok_or(Error::Message("Int64 overflow".to_string()))
+                } else {
+                    a.checked_rem(b as u64)
+                        .map(Number::UInt64)
+                        .ok_or(Error::Message("UInt64 overflow".to_string()))
+                }
+            }
+            (Number::Float64(a), Number::Float64(b)) => {
+                if b == 0.0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                Ok(Number::Float64(a % b))
+            }
+            (a, b) => {
+                let a_float = a.as_f64().unwrap();
+                let b_float = b.as_f64().unwrap();
+                if b_float == 0.0 {
+                    return Err(Error::Message("Division by zero".to_string()));
+                }
+                Ok(Number::Float64(a_float % b_float))
+            }
         }
     }
 }

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::RawJsonb;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -28,7 +29,7 @@ pub struct JsonPath<'a> {
 
 impl JsonPath<'_> {
     pub fn is_predicate(&self) -> bool {
-        self.paths.len() == 1 && matches!(self.paths[0], Path::Predicate(_))
+        self.paths.len() == 1 && matches!(self.paths[0], Path::Expr(_))
     }
 }
 
@@ -41,6 +42,9 @@ pub enum Path<'a> {
     Current,
     /// `.*` represents selecting all elements in an Object.
     DotWildcard,
+    /// `.**` represents recursive selecting all elements in Array and Object.
+    /// The optional `RecursiveLevel` indicates the seleted levels.
+    RecursiveDotWildcard(Option<RecursiveLevel>),
     /// `[*]` represents selecting all elements in an Array.
     BracketWildcard,
     /// `.<name>` represents selecting element that matched the name in an Object, like `$.event`.
@@ -63,12 +67,11 @@ pub enum Path<'a> {
     /// There can be more than one index, e.g. `$[0, last-1 to last, 5]` represents the first,
     /// the last two, and the sixth element in an Array.
     ArrayIndices(Vec<ArrayIndex>),
-    /// `<expression>` standalone unary or binary arithmetic expression, like '-$.a[*]' or '$.a + 3'
-    ArithmeticExpr(Box<Expr<'a>>),
     /// `?(<expression>)` represents selecting all elements in an object or array that match the filter expression, like `$.book[?(@.price < 10)]`.
     FilterExpr(Box<Expr<'a>>),
-    /// `<expression>` standalone filter expression, like `$.book[*].price > 10`.
-    Predicate(Box<Expr<'a>>),
+    /// `<expression>` standalone filter expression, like `$.book[*].price > 10`,
+    /// and arithmetic expression, like `-$.a[*]` or `$.a + 3`
+    Expr(Box<Expr<'a>>),
 }
 
 /// Represents the single index in an Array.
@@ -90,6 +93,15 @@ pub enum ArrayIndex {
 }
 
 impl ArrayIndex {
+    /// Converts an `ArrayIndex` to a `HashSet` of indices that should be selected from an Array.
+    ///
+    /// # Arguments
+    ///
+    /// * `length` - The length of the array.
+    ///
+    /// # Returns
+    ///
+    /// A `HashSet<usize>` containing the indices to select.
     pub fn to_indices(&self, length: usize) -> HashSet<usize> {
         let length = length as i32;
 
@@ -127,6 +139,66 @@ impl ArrayIndex {
     }
 }
 
+/// Represents the end level in hierarchical structure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecursiveLevelEnd {
+    /// Specifies the end of the recursive level.
+    Index(u8),
+    /// Specifies that the recursion should continue to the last level.
+    Last,
+}
+
+/// Represents the selected levels in hierarchical structure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecursiveLevel {
+    /// The starting level of the recursive level.
+    pub start: u8,
+    /// The optional end of the recursive level. If None, the level applies only to the start level.
+    pub end: Option<RecursiveLevelEnd>,
+}
+
+impl RecursiveLevel {
+    /// Checks if the current level matches the recursive level.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The current level in hierarchical structure.
+    ///
+    /// # Returns
+    ///
+    /// A tuple (is_match, should_continue):
+    /// - is_match: Indicates whether the current level matches the level criteria.
+    /// - should_continue: Indicates whether to continue processing data at the next level.
+    pub fn check_recursive_level(&self, level: u8) -> (bool, bool) {
+        if let Some(end) = &self.end {
+            match end {
+                RecursiveLevelEnd::Index(end) => {
+                    if level < self.start && self.start <= *end {
+                        (false, true)
+                    } else if level >= self.start && level <= *end {
+                        (true, true)
+                    } else {
+                        (false, false)
+                    }
+                }
+                RecursiveLevelEnd::Last => {
+                    if level < self.start {
+                        (false, true)
+                    } else {
+                        (true, true)
+                    }
+                }
+            }
+        } else if level < self.start {
+            (false, true)
+        } else if level == self.start {
+            (true, false)
+        } else {
+            (false, false)
+        }
+    }
+}
+
 /// Represents a literal value used in filter expression.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum PathValue<'a> {
@@ -138,6 +210,8 @@ pub enum PathValue<'a> {
     Number(Number),
     /// UTF-8 string.
     String(Cow<'a, str>),
+    /// RawJsonb (Array or Object) value, can't be used for calculation.
+    Raw(RawJsonb<'a>),
 }
 
 /// Represents the operators used in filter expression.
@@ -159,6 +233,8 @@ pub enum BinaryOperator {
     Gt,
     /// `>=` represents left is greater than or equal to right.
     Gte,
+    /// `starts with` represents right is an initial substring of left.
+    StartsWith,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,8 +255,8 @@ pub enum BinaryArithmeticOperator {
     Multiply,
     /// `Divide` represents binary arithmetic / operation.
     Divide,
-    /// `Modulus` represents binary arithmetic % operation.
-    Modulus,
+    /// `Modulo` represents binary arithmetic % operation.
+    Modulo,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,14 +288,7 @@ pub enum Expr<'a> {
     /// Arithmetic expression that performs an arithmetic operation, returns a number value.
     ArithmeticFunc(ArithmeticFunc<'a>),
     /// Filter function, returns a boolean value.
-    FilterFunc(FilterFunc<'a>),
-}
-
-/// Represents filter function, returns a boolean value.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FilterFunc<'a> {
-    Exists(Vec<Path<'a>>),
-    StartsWith(Cow<'a, str>),
+    ExistsFunc(Vec<Path<'a>>),
 }
 
 impl Display for JsonPath<'_> {
@@ -268,6 +337,24 @@ impl Display for ArrayIndex {
     }
 }
 
+impl Display for RecursiveLevel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(end_index) = &self.end {
+            match end_index {
+                RecursiveLevelEnd::Index(end) => {
+                    write!(f, "{} to {}", self.start, end)?;
+                }
+                RecursiveLevelEnd::Last => {
+                    write!(f, "{} to last", self.start)?;
+                }
+            }
+        } else {
+            write!(f, "{}", self.start)?;
+        }
+        Ok(())
+    }
+}
+
 impl Display for Path<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -279,6 +366,14 @@ impl Display for Path<'_> {
             }
             Path::DotWildcard => {
                 write!(f, ".*")?;
+            }
+            Path::RecursiveDotWildcard(level_opt) => {
+                write!(f, ".**")?;
+                if let Some(level) = level_opt {
+                    write!(f, "{{")?;
+                    write!(f, "{level}")?;
+                    write!(f, "}}")?;
+                }
             }
             Path::BracketWildcard => {
                 write!(f, "[*]")?;
@@ -302,13 +397,10 @@ impl Display for Path<'_> {
                 }
                 write!(f, "]")?;
             }
-            Path::ArithmeticExpr(expr) => {
-                write!(f, "?({expr})")?;
-            }
             Path::FilterExpr(expr) => {
                 write!(f, "?({expr})")?;
             }
-            Path::Predicate(expr) => {
+            Path::Expr(expr) => {
                 write!(f, "{expr}")?;
             }
         }
@@ -334,6 +426,9 @@ impl Display for PathValue<'_> {
             }
             PathValue::String(v) => {
                 write!(f, "\"{v}\"")
+            }
+            PathValue::Raw(v) => {
+                write!(f, "{}", v.to_string())
             }
         }
     }
@@ -366,6 +461,9 @@ impl Display for BinaryOperator {
             BinaryOperator::Gte => {
                 write!(f, ">=")
             }
+            BinaryOperator::StartsWith => {
+                write!(f, "starts with")
+            }
         }
     }
 }
@@ -387,7 +485,7 @@ impl Display for BinaryArithmeticOperator {
             BinaryArithmeticOperator::Subtract => "-",
             BinaryArithmeticOperator::Multiply => "*",
             BinaryArithmeticOperator::Divide => "/",
-            BinaryArithmeticOperator::Modulus => "%",
+            BinaryArithmeticOperator::Modulo => "%",
         };
         write!(f, "{}", symbol)
     }
@@ -433,19 +531,13 @@ impl Display for Expr<'_> {
                     write!(f, "{} {} {}", left, op, right)?;
                 }
             },
-            Expr::FilterFunc(func) => match func {
-                FilterFunc::Exists(paths) => {
-                    f.write_str("exists(")?;
-                    for path in paths {
-                        write!(f, "{path}")?;
-                    }
-                    f.write_str(")")?;
+            Expr::ExistsFunc(paths) => {
+                f.write_str("exists(")?;
+                for path in paths {
+                    write!(f, "{path}")?;
                 }
-                FilterFunc::StartsWith(paths) => {
-                    f.write_str("starts with ")?;
-                    write!(f, "{paths}")?;
-                }
-            },
+                f.write_str(")")?;
+            }
         }
         Ok(())
     }
