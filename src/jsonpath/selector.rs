@@ -223,9 +223,7 @@ impl<'a> Selector<'a> {
         };
 
         let key_name = Cow::Borrowed(name);
-        if let Some(val_item) =
-            curr_raw_jsonb.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
-        {
+        if let Some(val_item) = curr_raw_jsonb.get_object_value_by_key_name(&key_name, false)? {
             self.items.push_back(val_item);
         }
         Ok(())

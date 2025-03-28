@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![feature(portable_simd)]
+
 //! `jsonb` is a binary format `JSON` representation inspired by [PostgreSQL](https://www.postgresql.org/docs/current/datatype-json.html) and [CockroachDB](https://www.cockroachlabs.com/docs/stable/jsonb). It provides a fast, lightweight and easy-to-use API for working with `JSON` data.
 //!
 //! ## Features
