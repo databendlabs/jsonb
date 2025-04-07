@@ -1147,19 +1147,25 @@ fn test_contains() {
 #[test]
 fn test_path_match() {
     let sources = vec![
-        (r#"{"a":1,"b":2}"#, r#"$.a == 1"#, true),
-        (r#"{"a":1,"b":2}"#, r#"$.a > 1"#, false),
-        (r#"{"a":1,"b":2}"#, r#"$.c > 0"#, false),
-        (r#"{"a":1,"b":2}"#, r#"$.b < 2"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] == 1"#, true),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] > 1"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3] == 0"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] >= 2"#, true),
+        (r#"{"a":1,"b":2}"#, r#"$.a == 1"#, Some(true)),
+        (r#"{"a":1,"b":2}"#, r#"$.a > 1"#, Some(false)),
+        (r#"{"a":1,"b":2}"#, r#"$.c > 0"#, Some(false)),
+        (r#"{"a":1,"b":2}"#, r#"$.b < 2"#, Some(false)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] == 1"#, Some(true)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] > 1"#, Some(false)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3] == 0"#, Some(false)),
+        (
+            r#"{"a":1,"b":[1,2,3]}"#,
+            r#"$.b[1 to last] >= 2"#,
+            Some(true),
+        ),
         (
             r#"{"a":1,"b":[1,2,3]}"#,
             r#"$.b[1 to last] == 2 || $.b[1 to last] == 3"#,
-            true,
+            Some(true),
         ),
+        (r#""b""#, r#"$[*] == "b""#, Some(true)),
+        (r#""b""#, r#"$[*] == 123"#, None),
     ];
     for (json, predicate, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();

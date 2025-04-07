@@ -347,9 +347,6 @@ impl<'a> Selector<'a> {
     ///
     /// * `RawJsonb::path_exists`.
     pub fn exists(&mut self, json_path: &'a JsonPath<'a>) -> Result<bool> {
-        if json_path.is_predicate() {
-            return Ok(true);
-        }
         self.execute(json_path)?;
         Ok(!self.items.is_empty())
     }
@@ -358,7 +355,7 @@ impl<'a> Selector<'a> {
     ///
     /// This function requires that the `JsonPath` represents a predicate expression
     /// (e.g., `$.c > 1`, `exists($.a)`). It executes the path and expects a single
-    /// boolean `JsonbItem` as the result.
+    /// boolean value as the result.
     ///
     /// # Arguments
     ///
@@ -367,8 +364,9 @@ impl<'a> Selector<'a> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the JSON path with its predicate matches at least one value in the JSONB data.
-    /// * `Ok(false)` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(Some(true))` - If the JSON path with its predicate matches at least one value in the JSONB data.
+    /// * `Ok(Some(false))` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(None)` - If the JSON path is not a predicate expr or predicate result is not a boolean value.
     /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking.
     ///   This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
     ///
@@ -391,25 +389,29 @@ impl<'a> Selector<'a> {
     ///
     /// // Path with predicate (select books with price < 10)
     /// let path = parse_json_path("$[*].price < 10".as_bytes()).unwrap();
-    /// assert!(selector.predicate_match(&path).unwrap()); // True because Book B and Book C match.
+    /// assert_eq!(selector.predicate_match(&path).unwrap(), Some(true)); // True because Book B and Book C match.
     ///
     /// // Path with predicate (select books with title "Book D")
     /// let path = parse_json_path("$[*].title == \"Book D\"".as_bytes()).unwrap();
-    /// assert!(!selector.predicate_match(&path).unwrap()); // False because no book has this title.
+    /// assert_eq!(selector.predicate_match(&path).unwrap(), Some(false)); // False because no book has this title.
+    ///
+    /// // Path is not a predicate expr
+    /// let path = parse_json_path("$[*].title".as_bytes()).unwrap();
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), None);
     /// ```
     ///
     /// # See Also
     ///
     /// * `RawJsonb::path_match`.
-    pub fn predicate_match(&mut self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+    pub fn predicate_match(&mut self, json_path: &'a JsonPath<'a>) -> Result<Option<bool>> {
         if !json_path.is_predicate() {
-            return Err(Error::InvalidJsonPathPredicate);
+            return Ok(None);
         }
         self.execute(json_path)?;
         if let Some(JsonbItem::Boolean(v)) = self.items.pop_front() {
-            return Ok(v);
+            return Ok(Some(v));
         }
-        Err(Error::InvalidJsonPathPredicate)
+        Ok(None)
     }
 
     fn execute(&mut self, json_path: &'a JsonPath<'a>) -> Result<()> {
@@ -574,7 +576,9 @@ impl<'a> Selector<'a> {
             }
         } else {
             // In lax mode, bracket wildcard allow Scalar and Object value.
-            self.items.push_back(parent_item);
+            // convert to Jsonb item to compare with other path values.
+            let item = JsonbItem::from_raw_jsonb(curr_raw_jsonb)?;
+            self.items.push_back(item);
         }
         Ok(())
     }
@@ -900,6 +904,7 @@ impl<'a> Selector<'a> {
             return res;
         }
         let order = lhs.partial_cmp(&rhs);
+        println!("lhs={:?} rhs={:?} order={:?}", lhs, rhs, order);
         if let Some(order) = order {
             let res = match op {
                 BinaryOperator::Eq => order == Ordering::Equal,

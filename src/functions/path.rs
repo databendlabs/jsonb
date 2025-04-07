@@ -481,8 +481,9 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the JSON path with its predicate matches at least one value in the JSONB data.
-    /// * `Ok(false)` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(Some(true))` - If the JSON path with its predicate matches at least one value in the JSONB data.
+    /// * `Ok(Some(false))` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(None)` - If the JSON path is not a predicate expr or predicate result is not a boolean value.
     /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking.
     ///   This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
     ///
@@ -503,13 +504,17 @@ impl RawJsonb<'_> {
     ///
     /// // Path with predicate (select books with price < 10)
     /// let path = parse_json_path("$[*].price < 10".as_bytes()).unwrap();
-    /// assert!(raw_jsonb.path_match(&path).unwrap()); // True because Book B and Book C match.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(true)); // True because Book B and Book C match.
     ///
     /// // Path with predicate (select books with title "Book D")
     /// let path = parse_json_path("$[*].title == \"Book D\"".as_bytes()).unwrap();
-    /// assert!(!raw_jsonb.path_match(&path).unwrap()); // False because no book has this title.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(false)); // False because no book has this title.
+    ///
+    /// // Path is not a predicate expr
+    /// let path = parse_json_path("$[*].title".as_bytes()).unwrap();
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), None);
     /// ```
-    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Option<bool>> {
         let mut selector = Selector::new(*self);
         selector.predicate_match(json_path)
     }

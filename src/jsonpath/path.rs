@@ -200,7 +200,7 @@ impl RecursiveLevel {
 }
 
 /// Represents a literal value used in filter expression.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 pub enum PathValue<'a> {
     /// Null value.
     Null,
@@ -212,6 +212,24 @@ pub enum PathValue<'a> {
     String(Cow<'a, str>),
     /// RawJsonb (Array or Object) value, can't be used for calculation.
     Raw(RawJsonb<'a>),
+}
+
+impl PartialOrd for PathValue<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (PathValue::Null, PathValue::Null) => Some(Ordering::Equal),
+            (PathValue::Boolean(l), PathValue::Boolean(r)) => l.partial_cmp(r),
+            (PathValue::Number(l), PathValue::Number(r)) => l.partial_cmp(r),
+            (PathValue::String(l), PathValue::String(r)) => l.partial_cmp(r),
+            (_, _) => None,
+        }
+    }
+}
+
+impl PartialEq for PathValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.partial_cmp(other) == Some(Ordering::Equal)
+    }
 }
 
 /// Represents the operators used in filter expression.
