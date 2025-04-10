@@ -146,6 +146,75 @@ impl<'a> Iterator for ObjectKeyIterator<'a> {
     }
 }
 
+pub(crate) struct ObjectValueIterator<'a> {
+    raw_jsonb: RawJsonb<'a>,
+    jentry_offset: usize,
+    item_offset: usize,
+    length: usize,
+    index: usize,
+}
+
+impl<'a> ObjectValueIterator<'a> {
+    pub(crate) fn new(raw_jsonb: RawJsonb<'a>) -> Result<Option<Self>> {
+        let (header_type, header_len) = raw_jsonb.read_header(0)?;
+        if header_type == OBJECT_CONTAINER_TAG {
+            let mut jentry_offset = 4;
+            let mut item_offset = 4 + 8 * header_len as usize;
+            for _ in 0..header_len {
+                let key_jentry = raw_jsonb.read_jentry(jentry_offset)?;
+                jentry_offset += 4;
+                item_offset += key_jentry.length as usize;
+            }
+
+            Ok(Some(Self {
+                raw_jsonb,
+                jentry_offset,
+                item_offset,
+                length: header_len as usize,
+                index: 0,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> usize {
+        self.length
+    }
+}
+
+impl<'a> Iterator for ObjectValueIterator<'a> {
+    type Item = Result<JsonbItem<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.length {
+            return None;
+        }
+        let jentry = match self.raw_jsonb.read_jentry(self.jentry_offset) {
+            Ok(jentry) => jentry,
+            Err(err) => return Some(Err(err)),
+        };
+
+        let val_length = jentry.length as usize;
+        let val_range = Range {
+            start: self.item_offset,
+            end: self.item_offset + val_length,
+        };
+        let data = match self.raw_jsonb.slice(val_range) {
+            Ok(data) => data,
+            Err(err) => return Some(Err(err)),
+        };
+        let val_item = jentry_to_jsonb_item(jentry, data);
+
+        self.index += 1;
+        self.jentry_offset += 4;
+        self.item_offset += val_length;
+
+        Some(Ok(val_item))
+    }
+}
+
 pub(crate) struct ObjectIterator<'a> {
     raw_jsonb: RawJsonb<'a>,
     key_jentries: VecDeque<JEntry>,

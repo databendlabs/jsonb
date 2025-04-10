@@ -218,7 +218,7 @@ fn test_path_exists_expr() {
 
 #[test]
 fn test_select_by_path() {
-    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab"}"#;
+    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab","numbers":[2,3,4]}"#;
 
     let paths = vec![
         (r#"$.name"#, vec![r#""Fred""#]),
@@ -232,6 +232,29 @@ fn test_select_by_path() {
             vec![
                 r#"{"type":"home","number":3720453}"#,
                 r#"{"type":"work","number":5062051}"#,
+            ],
+        ),
+        (
+            r#"$.phones.**"#,
+            vec![
+                r#"[{"type":"home","number":3720453},{"type":"work","number":5062051}]"#,
+                r#"{"type":"home","number":3720453}"#,
+                r#"3720453"#,
+                r#""home""#,
+                r#"{"type":"work","number":5062051}"#,
+                r#"5062051"#,
+                r#""work""#,
+            ],
+        ),
+        (
+            r#"$.phones.**{1 to last}"#,
+            vec![
+                r#"{"type":"home","number":3720453}"#,
+                r#"3720453"#,
+                r#""home""#,
+                r#"{"type":"work","number":5062051}"#,
+                r#"5062051"#,
+                r#""work""#,
             ],
         ),
         (r#"$.phones[0].*"#, vec![r#"3720453"#, r#""home""#]),
@@ -273,6 +296,17 @@ fn test_select_by_path() {
         (r#"$.phones[0 to last].number == 3720453"#, vec!["true"]),
         (r#"$.phones[0 to last].type == "workk""#, vec!["false"]),
         (r#"$.name == "Fred" && $.car_no == 123"#, vec!["true"]),
+        (
+            r#"$.phones[*] ? (@.type starts with "ho")"#,
+            vec![r#"{"type":"home","number":3720453}"#],
+        ),
+        // arithmetic functions
+        (r#"$.phones[0].number + 3"#, vec![r#"3720456"#]),
+        (r#"$.phones[0].number % 10"#, vec![r#"3"#]),
+        (r#"7 - $.phones[1].number"#, vec![r#"-5062044"#]),
+        (r#"+$.numbers"#, vec![r#"2"#, r#"3"#, r#"4"#]),
+        (r#"-$.numbers"#, vec![r#"-2"#, r#"-3"#, r#"-4"#]),
+        (r#"$.numbers[1] / 2"#, vec![r#"1.5"#]),
     ];
 
     let owned_jsonb = source.parse::<OwnedJsonb>().unwrap();
@@ -1113,19 +1147,25 @@ fn test_contains() {
 #[test]
 fn test_path_match() {
     let sources = vec![
-        (r#"{"a":1,"b":2}"#, r#"$.a == 1"#, true),
-        (r#"{"a":1,"b":2}"#, r#"$.a > 1"#, false),
-        (r#"{"a":1,"b":2}"#, r#"$.c > 0"#, false),
-        (r#"{"a":1,"b":2}"#, r#"$.b < 2"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] == 1"#, true),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] > 1"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3] == 0"#, false),
-        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[1 to last] >= 2"#, true),
+        (r#"{"a":1,"b":2}"#, r#"$.a == 1"#, Some(true)),
+        (r#"{"a":1,"b":2}"#, r#"$.a > 1"#, Some(false)),
+        (r#"{"a":1,"b":2}"#, r#"$.c > 0"#, Some(false)),
+        (r#"{"a":1,"b":2}"#, r#"$.b < 2"#, Some(false)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] == 1"#, Some(true)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0] > 1"#, Some(false)),
+        (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3] == 0"#, Some(false)),
+        (
+            r#"{"a":1,"b":[1,2,3]}"#,
+            r#"$.b[1 to last] >= 2"#,
+            Some(true),
+        ),
         (
             r#"{"a":1,"b":[1,2,3]}"#,
             r#"$.b[1 to last] == 2 || $.b[1 to last] == 3"#,
-            true,
+            Some(true),
         ),
+        (r#""b""#, r#"$[*] == "b""#, Some(true)),
+        (r#""b""#, r#"$[*] == 123"#, None),
     ];
     for (json, predicate, expected) in sources {
         let owned_jsonb = json.parse::<OwnedJsonb>().unwrap();

@@ -282,7 +282,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -307,8 +307,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn select_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Vec<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build()
+        selector.select_values(json_path)
     }
 
     /// Selects elements from the `RawJsonb` by the given `JsonPath` and wraps them in a JSON array.
@@ -318,7 +317,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -340,8 +339,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn select_array_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<OwnedJsonb> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_array()
+        selector.select_array(json_path)
     }
 
     /// Selects the first matching element from the `RawJsonb` by the given `JsonPath`.
@@ -351,7 +349,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -381,8 +379,7 @@ impl RawJsonb<'_> {
         json_path: &'a JsonPath<'a>,
     ) -> Result<Option<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_first()
+        selector.select_first(json_path)
     }
 
     /// Selects a value (or an array of values) from the `RawJsonb` by the given `JsonPath`.
@@ -394,7 +391,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -428,18 +425,15 @@ impl RawJsonb<'_> {
         json_path: &'a JsonPath<'a>,
     ) -> Result<Option<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_value()
+        selector.select_value(json_path)
     }
 
     /// Checks if a JSON path exists within the JSONB value.
     ///
-    /// This function uses the `jsonpath` crate to check if a given JSON path exists within the JSONB value.
-    ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSON path to check (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -452,7 +446,6 @@ impl RawJsonb<'_> {
     ///
     /// ```rust
     /// use jsonb::jsonpath::parse_json_path;
-    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
     ///
     /// let jsonb_value = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
@@ -476,20 +469,21 @@ impl RawJsonb<'_> {
 
     /// Checks if a JSON path matches the JSONB value using a predicate.
     ///
-    /// This function uses the `jsonpath` crate to check if a given JSON path, along with an associated predicate, matches the JSONB value.
+    /// This function checks if a given JSON Path, along with an associated predicate, matches the JSONB value.
     /// The predicate determines the conditions that the selected value(s) must satisfy for the match to be considered successful.
     ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSON path with a predicate (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression with a predicate.
     ///   The predicate is specified within the `json_path` using the standard JSONPath syntax.
     ///   For example, `$.store.book[?(@.price < 10)]` selects books with a price less than 10.
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the JSON path with its predicate matches at least one value in the JSONB data.
-    /// * `Ok(false)` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(Some(true))` - If the JSON path with its predicate matches at least one value in the JSONB data.
+    /// * `Ok(Some(false))` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(None)` - If the JSON path is not a predicate expr or predicate result is not a boolean value.
     /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking.
     ///   This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
     ///
@@ -497,7 +491,6 @@ impl RawJsonb<'_> {
     ///
     /// ```rust
     /// use jsonb::jsonpath::parse_json_path;
-    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
     ///
     /// let jsonb_value = r#"[
@@ -511,13 +504,17 @@ impl RawJsonb<'_> {
     ///
     /// // Path with predicate (select books with price < 10)
     /// let path = parse_json_path("$[*].price < 10".as_bytes()).unwrap();
-    /// assert!(raw_jsonb.path_match(&path).unwrap()); // True because Book B and Book C match.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(true)); // True because Book B and Book C match.
     ///
     /// // Path with predicate (select books with title "Book D")
     /// let path = parse_json_path("$[*].title == \"Book D\"".as_bytes()).unwrap();
-    /// assert!(!raw_jsonb.path_match(&path).unwrap()); // False because no book has this title.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(false)); // False because no book has this title.
+    ///
+    /// // Path is not a predicate expr
+    /// let path = parse_json_path("$[*].title".as_bytes()).unwrap();
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), None);
     /// ```
-    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Option<bool>> {
         let mut selector = Selector::new(*self);
         selector.predicate_match(json_path)
     }
