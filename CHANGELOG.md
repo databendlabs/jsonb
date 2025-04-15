@@ -1,3 +1,14 @@
+## [v0.5.0] - 2025-04-15
+
+### Added
+
+- Feat: json path support recursive wildcard member accessor `.**` syntax (#81)
+- Refactor: get object value by key name improve performance (#79)
+- Refactor: Implements serde trait for RawJsonb (#77)
+- Refactor JSONB functions: Improved API, Documentation, and Data Structures (#75)
+- Feat: add arithmatic expression support (#71)
+- Feat(expr): add filter expr `starts with` (#52)
+
 ## [v0.4.4] - 2024-11-16
 
 ### Fixed
@@ -114,6 +125,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.0]: https://github.com/databendlabs/jsonb/compare/v0.4.4...v0.5.0
 [v0.4.4]: https://github.com/databendlabs/jsonb/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/databendlabs/jsonb/compare/v0.4.2...v0.4.3
 [v0.4.2]: https://github.com/databendlabs/jsonb/compare/v0.4.1...v0.4.2
