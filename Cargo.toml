@@ -27,8 +27,10 @@ rust-version = "1.80"
 
 [dependencies]
 byteorder = "1.5.0"
+ethnum = "1.5.1"
 fast-float2 = "0.2.3"
 itoa = "1.0"
+jiff = "0.2.10"
 nom = "8.0.0"
 num-traits = "0.2.19"
 ordered-float = { version = "5.0", default-features = false }

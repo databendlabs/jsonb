@@ -19,7 +19,12 @@ use std::borrow::Cow;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::error::*;
+use crate::extension::Date;
+use crate::extension::Interval;
+use crate::extension::Timestamp;
+use crate::extension::TimestampTz;
 use crate::number::Number;
+use crate::ExtensionValue;
 use crate::RawJsonb;
 
 impl RawJsonb<'_> {
@@ -1434,5 +1439,448 @@ impl RawJsonb<'_> {
     pub fn is_object(&self) -> Result<bool> {
         let jsonb_item_type = self.jsonb_item_type()?;
         Ok(matches!(jsonb_item_type, JsonbItemType::Object(_)))
+    }
+
+    /// Checks if the JSONB value is a binary value.
+    ///
+    /// This function checks if the JSONB value represents a binary value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a binary value.
+    /// * `Ok(false)` - If the value is not a binary value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Binary value
+    /// let binary_value = Value::Binary(&[1,2,3]);
+    /// let buf = binary_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_binary().unwrap());
+    /// ```
+    pub fn is_binary(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::Binary(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a binary value from a JSONB value.
+    ///
+    /// This function attempts to extract a binary value from the JSONB value.
+    /// If the JSONB value is a binary value, it returns the binary; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(Vec<u8>))` - If the value is a binary value, the extracted binary value.
+    /// * `Ok(None)` - If the value is not a binary value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the binary value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Binary value
+    /// let binary_value = Value::Binary(&[1,2,3]);
+    /// let buf = binary_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_binary().unwrap(), Some(vec![1,2,3]));
+    /// ```
+    pub fn as_binary(&self) -> Result<Option<Vec<u8>>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                match val {
+                    ExtensionValue::Binary(v) => Ok(Some(v.to_vec())),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks if the JSONB value is a date value.
+    ///
+    /// This function checks if the JSONB value represents a date value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a date value.
+    /// * `Ok(false)` - If the value is not a date value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Date;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Date value
+    /// let date_value = Value::Date(Date { value: 20372 });
+    /// let buf = date_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_date().unwrap());
+    /// ```
+    pub fn is_date(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::Date(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a date value from a JSONB value.
+    ///
+    /// This function attempts to extract a date value from the JSONB value.
+    /// If the JSONB value is a date value, it returns the date; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(Date))` - If the value is a date value, the extracted date value.
+    /// * `Ok(None)` - If the value is not a date value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the date value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Date;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Date value
+    /// let date_value = Value::Date(Date { value: 20372 });
+    /// let buf = date_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_date().unwrap(), Some(Date { value: 20372 }));
+    /// ```
+    pub fn as_date(&self) -> Result<Option<Date>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                match val {
+                    ExtensionValue::Date(v) => Ok(Some(v)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks if the JSONB value is a timestamp value.
+    ///
+    /// This function checks if the JSONB value represents a timestamp value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a timestamp value.
+    /// * `Ok(false)` - If the value is not a timestamp value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Timestamp;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Timestamp value
+    /// let timestamp_value = Value::Timestamp(Timestamp { value: 1760140800000000 });
+    /// let buf = timestamp_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_timestamp().unwrap());
+    /// ```
+    pub fn is_timestamp(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::Timestamp(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a timestamp value from a JSONB value.
+    ///
+    /// This function attempts to extract a timestamp value from the JSONB value.
+    /// If the JSONB value is a timestamp value, it returns the timestamp; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(Timestamp))` - If the value is a timestamp value, the extracted timestamp value.
+    /// * `Ok(None)` - If the value is not a timestamp value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the timestamp value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Timestamp;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Timestamp value
+    /// let timestamp_value = Value::Timestamp(Timestamp { value: 1760140800000000 });
+    /// let buf = timestamp_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_timestamp().unwrap(), Some(Timestamp { value: 1760140800000000 }));
+    /// ```
+    pub fn as_timestamp(&self) -> Result<Option<Timestamp>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                match val {
+                    ExtensionValue::Timestamp(v) => Ok(Some(v)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks if the JSONB value is a timestamp tz value.
+    ///
+    /// This function checks if the JSONB value represents a timestamp tz value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a timestamp tz value.
+    /// * `Ok(false)` - If the value is not a timestamp tz value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::TimestampTz;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // TimestampTz value
+    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8, value: 1760140800000000 });
+    /// let buf = timestamp_tz_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_timestamp_tz().unwrap());
+    /// ```
+    pub fn is_timestamp_tz(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::TimestampTz(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a timestamp tz value from a JSONB value.
+    ///
+    /// This function attempts to extract a timestamp tz value from the JSONB value.
+    /// If the JSONB value is a timestamp tz value, it returns the timestamp tz; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(TimestampTz))` - If the value is a timestamp tz value, the extracted timestamp value.
+    /// * `Ok(None)` - If the value is not a timestamp tz value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the timestamp tz value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::TimestampTz;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // TimestampTz value
+    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8, value: 1760140800000000 });
+    /// let buf = timestamp_tz_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_timestamp_tz().unwrap(), Some(TimestampTz { offset: 8, value: 1760140800000000 }));
+    /// ```
+    pub fn as_timestamp_tz(&self) -> Result<Option<TimestampTz>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                match val {
+                    ExtensionValue::TimestampTz(v) => Ok(Some(v)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks if the JSONB value is a interval value.
+    ///
+    /// This function checks if the JSONB value represents a interval value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a interval value.
+    /// * `Ok(false)` - If the value is not a interval value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Interval;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Interval value
+    /// let interval_value = Value::Interval(Interval { months: 10, days: 20, micros: 300000000 });
+    /// let buf = interval_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_interval().unwrap());
+    /// ```
+    pub fn is_interval(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::Interval(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a interval value from a JSONB value.
+    ///
+    /// This function attempts to extract a interval value from the JSONB value.
+    /// If the JSONB value is a interval value, it returns the interval; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(Interval))` - If the value is a interval value, the extracted timestamp value.
+    /// * `Ok(None)` - If the value is not a interval value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the interval value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::Interval;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Interval value
+    /// let interval_value = Value::Interval(Interval { months: 10, days: 20, micros: 300000000 });
+    /// let buf = interval_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_interval().unwrap(), Some(Interval { months: 10, days: 20, micros: 300000000 }));
+    /// ```
+    pub fn as_interval(&self) -> Result<Option<Interval>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                match val {
+                    ExtensionValue::Interval(v) => Ok(Some(v)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
     }
 }

@@ -17,15 +17,23 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use ethnum::I256;
 use jsonb::from_raw_jsonb;
 use jsonb::from_slice;
 use jsonb::jsonpath::parse_json_path;
 use jsonb::keypath::parse_key_paths;
 use jsonb::parse_value;
+use jsonb::Date;
+use jsonb::Decimal128;
+use jsonb::Decimal256;
 use jsonb::Error;
+use jsonb::Interval;
 use jsonb::Number;
 use jsonb::Object;
 use jsonb::OwnedJsonb;
+use jsonb::RawJsonb;
+use jsonb::Timestamp;
+use jsonb::TimestampTz;
 use jsonb::Value;
 use nom::AsBytes;
 
@@ -807,6 +815,129 @@ fn test_to_string() {
         let res = raw_jsonb.to_string();
         assert_eq!(res, expect);
     }
+
+    let extension_sources = vec![
+        (Value::Binary(&[97, 98, 99]), r#""616263""#),
+        (Value::Date(Date { value: 90570 }), r#""2217-12-22""#),
+        (
+            Value::Timestamp(Timestamp {
+                value: 190390000000,
+            }),
+            r#""1970-01-03 04:53:10.000000""#,
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 8,
+                value: 190390000000,
+            }),
+            r#""1970-01-03 12:53:10.000000""#,
+        ),
+        (
+            Value::Interval(Interval {
+                months: 10,
+                days: 20,
+                micros: 300000000,
+            }),
+            r#""10 months 20 days 00:05:00""#,
+        ),
+        (
+            Value::Number(Number::Decimal128(Decimal128 {
+                precision: 38,
+                scale: 2,
+                value: 1234,
+            })),
+            r#"12.34"#,
+        ),
+        (
+            Value::Number(Number::Decimal256(Decimal256 {
+                precision: 76,
+                scale: 2,
+                value: I256::new(981724),
+            })),
+            r#"9817.24"#,
+        ),
+        (
+            Value::Array(vec![
+                Value::Binary(&[97, 98, 99]),
+                Value::Date(Date { value: 90570 }),
+                Value::Timestamp(Timestamp {
+                    value: 190390000000,
+                }),
+                Value::TimestampTz(TimestampTz {
+                    offset: 8,
+                    value: 190390000000,
+                }),
+                Value::Interval(Interval {
+                    months: 10,
+                    days: 20,
+                    micros: 300000000,
+                }),
+                Value::Number(Number::Decimal128(Decimal128 {
+                    precision: 38,
+                    scale: 2,
+                    value: 1234,
+                })),
+                Value::Number(Number::Decimal256(Decimal256 {
+                    precision: 76,
+                    scale: 2,
+                    value: I256::new(981724),
+                })),
+            ]),
+            r#"["616263","2217-12-22","1970-01-03 04:53:10.000000","1970-01-03 12:53:10.000000","10 months 20 days 00:05:00",12.34,9817.24]"#,
+        ),
+        (
+            Value::Object(BTreeMap::from([
+                ("k1".to_string(), Value::Binary(&[97, 98, 99])),
+                ("k2".to_string(), Value::Date(Date { value: 90570 })),
+                (
+                    "k3".to_string(),
+                    Value::Timestamp(Timestamp {
+                        value: 190390000000,
+                    }),
+                ),
+                (
+                    "k4".to_string(),
+                    Value::TimestampTz(TimestampTz {
+                        offset: 8,
+                        value: 190390000000,
+                    }),
+                ),
+                (
+                    "k5".to_string(),
+                    Value::Interval(Interval {
+                        months: 10,
+                        days: 20,
+                        micros: 300000000,
+                    }),
+                ),
+                (
+                    "k6".to_string(),
+                    Value::Number(Number::Decimal128(Decimal128 {
+                        precision: 38,
+                        scale: 2,
+                        value: 1234,
+                    })),
+                ),
+                (
+                    "k7".to_string(),
+                    Value::Number(Number::Decimal256(Decimal256 {
+                        precision: 76,
+                        scale: 2,
+                        value: I256::new(981724),
+                    })),
+                ),
+            ])),
+            r#"{"k1":"616263","k2":"2217-12-22","k3":"1970-01-03 04:53:10.000000","k4":"1970-01-03 12:53:10.000000","k5":"10 months 20 days 00:05:00","k6":12.34,"k7":9817.24}"#,
+        ),
+    ];
+
+    for (v, expect) in extension_sources {
+        let buf = v.to_vec();
+        let raw_jsonb = RawJsonb::new(&buf);
+
+        let res = raw_jsonb.to_string();
+        assert_eq!(res, expect);
+    }
 }
 
 #[test]
@@ -943,6 +1074,55 @@ fn test_type_of() {
     for (s, expect) in sources {
         let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
         let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.type_of();
+        assert_eq!(res, Ok(expect));
+    }
+
+    let extension_sources = vec![
+        (Value::Binary(&[97, 98, 99]), "binary"),
+        (Value::Date(Date { value: 90570 }), "date"),
+        (
+            Value::Timestamp(Timestamp {
+                value: 190390000000,
+            }),
+            "timestamp",
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 8,
+                value: 190390000000,
+            }),
+            "timestamp_tz",
+        ),
+        (
+            Value::Interval(Interval {
+                months: 10,
+                days: 20,
+                micros: 300000000,
+            }),
+            "interval",
+        ),
+        (
+            Value::Number(Number::Decimal128(Decimal128 {
+                precision: 38,
+                scale: 2,
+                value: 1234,
+            })),
+            "decimal",
+        ),
+        (
+            Value::Number(Number::Decimal256(Decimal256 {
+                precision: 76,
+                scale: 2,
+                value: I256::new(981724),
+            })),
+            "decimal",
+        ),
+    ];
+    for (v, expect) in extension_sources {
+        let buf = v.to_vec();
+        let raw_jsonb = RawJsonb::new(&buf);
 
         let res = raw_jsonb.type_of();
         assert_eq!(res, Ok(expect));

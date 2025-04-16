@@ -26,6 +26,7 @@ use super::jentry::JEntry;
 use crate::core::ArrayBuilder;
 use crate::core::ObjectBuilder;
 use crate::error::*;
+use crate::extension::ExtensionValue;
 use crate::number::Number;
 use crate::value::Object;
 use crate::value::Value;
@@ -477,14 +478,13 @@ impl Serialize for RawJsonb<'_> {
                     .map_err(|e| ser::Error::custom(format!("{e}")))?;
                 index += 4;
 
+                let payload_start = index;
+                let payload_end = index + jentry.length as usize;
                 match jentry.type_code {
                     NULL_TAG => serializer.serialize_unit(),
                     TRUE_TAG => serializer.serialize_bool(true),
                     FALSE_TAG => serializer.serialize_bool(false),
                     NUMBER_TAG => {
-                        let payload_start = index;
-                        let payload_end = index + jentry.length as usize;
-
                         let num = Number::decode(&self.data[payload_start..payload_end])
                             .map_err(|e| ser::Error::custom(format!("{e}")))?;
 
@@ -492,16 +492,27 @@ impl Serialize for RawJsonb<'_> {
                             Number::Int64(i) => serializer.serialize_i64(i),
                             Number::UInt64(i) => serializer.serialize_u64(i),
                             Number::Float64(i) => serializer.serialize_f64(i),
+                            Number::Decimal128(i) => {
+                                let v = i.to_float64();
+                                serializer.serialize_f64(v)
+                            }
+                            Number::Decimal256(i) => {
+                                let v = i.to_float64();
+                                serializer.serialize_f64(v)
+                            }
                         }
                     }
                     STRING_TAG => {
-                        let payload_start = index;
-                        let payload_end = index + jentry.length as usize;
-
                         let s = unsafe {
                             std::str::from_utf8_unchecked(&self.data[payload_start..payload_end])
                         };
                         serializer.serialize_str(s)
+                    }
+                    EXTENSION_TAG => {
+                        let val = ExtensionValue::decode(&self.data[payload_start..payload_end])
+                            .map_err(|e| ser::Error::custom(format!("{e}")))?;
+                        let s = format!("{}", val);
+                        serializer.serialize_str(&s)
                     }
                     CONTAINER_TAG => {
                         // Scalar header can't have contianer jentry tag
@@ -532,6 +543,14 @@ impl Serialize for RawJsonb<'_> {
                                 Number::Int64(i) => serialize_seq.serialize_element(&i)?,
                                 Number::UInt64(i) => serialize_seq.serialize_element(&i)?,
                                 Number::Float64(i) => serialize_seq.serialize_element(&i)?,
+                                Number::Decimal128(i) => {
+                                    let v = i.to_float64();
+                                    serialize_seq.serialize_element(&v)?
+                                }
+                                Number::Decimal256(i) => {
+                                    let v = i.to_float64();
+                                    serialize_seq.serialize_element(&v)?
+                                }
                             }
                         }
                         STRING_TAG => {
@@ -540,6 +559,13 @@ impl Serialize for RawJsonb<'_> {
                                     &self.data[payload_start..payload_end],
                                 )
                             };
+                            serialize_seq.serialize_element(&s)?;
+                        }
+                        EXTENSION_TAG => {
+                            let val =
+                                ExtensionValue::decode(&self.data[payload_start..payload_end])
+                                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
+                            let s = format!("{}", val);
                             serialize_seq.serialize_element(&s)?;
                         }
                         CONTAINER_TAG => {
@@ -602,6 +628,14 @@ impl Serialize for RawJsonb<'_> {
                                 Number::Int64(i) => serialize_map.serialize_entry(&k, &i)?,
                                 Number::UInt64(i) => serialize_map.serialize_entry(&k, &i)?,
                                 Number::Float64(i) => serialize_map.serialize_entry(&k, &i)?,
+                                Number::Decimal128(i) => {
+                                    let v = i.to_float64();
+                                    serialize_map.serialize_entry(&k, &v)?
+                                }
+                                Number::Decimal256(i) => {
+                                    let v = i.to_float64();
+                                    serialize_map.serialize_entry(&k, &v)?
+                                }
                             }
                         }
                         STRING_TAG => {
@@ -610,6 +644,13 @@ impl Serialize for RawJsonb<'_> {
                                     &self.data[payload_start..payload_end],
                                 )
                             };
+                            serialize_map.serialize_entry(&k, &s)?;
+                        }
+                        EXTENSION_TAG => {
+                            let val =
+                                ExtensionValue::decode(&self.data[payload_start..payload_end])
+                                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
+                            let s = format!("{}", val);
                             serialize_map.serialize_entry(&k, &s)?;
                         }
                         CONTAINER_TAG => {
@@ -754,6 +795,41 @@ impl<'a> Encoder<'a> {
                 let len = s.len();
                 self.buf.extend_from_slice(s.as_ref().as_bytes());
                 JEntry::make_string_jentry(len)
+            }
+            Value::Binary(v) => {
+                let old_off = self.buf.len();
+                let val = ExtensionValue::Binary(v);
+                let _ = val.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_extension_jentry(len)
+            }
+            Value::Date(v) => {
+                let old_off = self.buf.len();
+                let val = ExtensionValue::Date(v.clone());
+                let _ = val.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_extension_jentry(len)
+            }
+            Value::Timestamp(v) => {
+                let old_off = self.buf.len();
+                let val = ExtensionValue::Timestamp(v.clone());
+                let _ = val.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_extension_jentry(len)
+            }
+            Value::TimestampTz(v) => {
+                let old_off = self.buf.len();
+                let val = ExtensionValue::TimestampTz(v.clone());
+                let _ = val.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_extension_jentry(len)
+            }
+            Value::Interval(v) => {
+                let old_off = self.buf.len();
+                let val = ExtensionValue::Interval(v.clone());
+                let _ = val.compact_encode(&mut self.buf).unwrap();
+                let len = self.buf.len() - old_off;
+                JEntry::make_extension_jentry(len)
             }
             Value::Array(array) => {
                 let len = self.encode_array(array);

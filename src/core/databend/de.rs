@@ -28,6 +28,7 @@ use super::constants::*;
 use super::jentry::JEntry;
 use crate::error::Error;
 use crate::error::Result;
+use crate::extension::ExtensionValue;
 use crate::number::Number;
 use crate::value::Object;
 use crate::value::Value;
@@ -146,6 +147,14 @@ impl<'de> Deserializer<'de> {
         Ok(Cow::Borrowed(s))
     }
 
+    fn read_payload_extension(&mut self, length: usize) -> Result<ExtensionValue> {
+        let start = self.index;
+        let end = self.index + length;
+        let val = ExtensionValue::decode(&self.raw.data[start..end])?;
+        self.index = end;
+        Ok(val)
+    }
+
     fn read_null(&mut self) -> Result<()> {
         let jentry_res = self.read_scalar_jentry();
         if jentry_res == Err(Error::UnexpectedType) {
@@ -154,7 +163,7 @@ impl<'de> Deserializer<'de> {
         let jentry = jentry_res?;
         match jentry.type_code {
             NULL_TAG => Ok(()),
-            FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG => {
+            FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | EXTENSION_TAG => {
                 Err(Error::UnexpectedType)
             }
             _ => Err(Error::InvalidJsonb),
@@ -170,7 +179,9 @@ impl<'de> Deserializer<'de> {
         match jentry.type_code {
             FALSE_TAG => Ok(false),
             TRUE_TAG => Ok(true),
-            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG => Err(Error::UnexpectedType),
+            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | EXTENSION_TAG => {
+                Err(Error::UnexpectedType)
+            }
             _ => Err(Error::InvalidJsonb),
         }
     }
@@ -187,7 +198,7 @@ impl<'de> Deserializer<'de> {
                 let num = self.read_payload_number(length)?;
                 Ok(num)
             }
-            NULL_TAG | FALSE_TAG | TRUE_TAG | STRING_TAG | CONTAINER_TAG => {
+            NULL_TAG | FALSE_TAG | TRUE_TAG | STRING_TAG | CONTAINER_TAG | EXTENSION_TAG => {
                 Err(Error::UnexpectedType)
             }
             _ => Err(Error::InvalidJsonb),
@@ -202,7 +213,9 @@ impl<'de> Deserializer<'de> {
         match num {
             Number::Int64(n) => T::from_i64(n).ok_or(Error::UnexpectedType),
             Number::UInt64(n) => T::from_u64(n).ok_or(Error::UnexpectedType),
-            Number::Float64(_) => Err(Error::UnexpectedType),
+            Number::Float64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                Err(Error::UnexpectedType)
+            }
         }
     }
 
@@ -215,6 +228,14 @@ impl<'de> Deserializer<'de> {
             Number::Int64(n) => T::from_i64(n).ok_or(Error::UnexpectedType),
             Number::UInt64(n) => T::from_u64(n).ok_or(Error::UnexpectedType),
             Number::Float64(n) => T::from_f64(n).ok_or(Error::UnexpectedType),
+            Number::Decimal128(v) => {
+                let n = v.to_float64();
+                T::from_f64(n).ok_or(Error::UnexpectedType)
+            }
+            Number::Decimal256(v) => {
+                let n = v.to_float64();
+                T::from_f64(n).ok_or(Error::UnexpectedType)
+            }
         }
     }
 
@@ -229,6 +250,12 @@ impl<'de> Deserializer<'de> {
                 let length = jentry.length as usize;
                 let s = self.read_payload_str(length)?;
                 Ok(s)
+            }
+            EXTENSION_TAG => {
+                let length = jentry.length as usize;
+                let val = self.read_payload_extension(length)?;
+                let s = format!("{}", val);
+                Ok(Cow::Owned(s))
             }
             NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | CONTAINER_TAG => {
                 Err(Error::UnexpectedType)
@@ -290,7 +317,21 @@ impl<'de> Deserializer<'de> {
                         }
                     }
                     Number::Float64(i) => visitor.visit_f64(i),
+                    Number::Decimal128(i) => {
+                        let v = i.to_float64();
+                        visitor.visit_f64(v)
+                    }
+                    Number::Decimal256(i) => {
+                        let v = i.to_float64();
+                        visitor.visit_f64(v)
+                    }
                 }
+            }
+            EXTENSION_TAG => {
+                let length = jentry.length as usize;
+                let val = self.read_payload_extension(length)?;
+                let s = format!("{}", val);
+                visitor.visit_string(s)
             }
             CONTAINER_TAG => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
@@ -462,14 +503,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        visitor.visit_string(self.read_string()?)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        visitor.visit_string(self.read_string()?)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -921,6 +962,19 @@ impl<'a> Decoder<'a> {
                 let n = Number::decode(number)?;
                 self.buf = &self.buf[offset..];
                 Ok(Value::Number(n))
+            }
+            EXTENSION_TAG => {
+                let offset = jentry.length as usize;
+                let v = &self.buf.get(..offset).ok_or(Error::InvalidJsonbExtension)?;
+                let val = ExtensionValue::decode(v)?;
+                self.buf = &self.buf[offset..];
+                match val {
+                    ExtensionValue::Binary(v) => Ok(Value::Binary(v)),
+                    ExtensionValue::Date(v) => Ok(Value::Date(v)),
+                    ExtensionValue::Timestamp(v) => Ok(Value::Timestamp(v)),
+                    ExtensionValue::TimestampTz(v) => Ok(Value::TimestampTz(v)),
+                    ExtensionValue::Interval(v) => Ok(Value::Interval(v)),
+                }
             }
             CONTAINER_TAG => self.decode_jsonb(),
             _ => Err(Error::InvalidJsonbJEntry),

@@ -197,8 +197,37 @@ impl<'a> From<Value<'a>> for JsonValue {
                 Number::Int64(v) => JsonValue::Number(v.into()),
                 Number::UInt64(v) => JsonValue::Number(v.into()),
                 Number::Float64(v) => JsonValue::Number(JsonNumber::from_f64(v).unwrap()),
+                Number::Decimal128(v) => {
+                    JsonValue::Number(JsonNumber::from_f64(v.to_float64()).unwrap())
+                }
+                Number::Decimal256(v) => {
+                    JsonValue::Number(JsonNumber::from_f64(v.to_float64()).unwrap())
+                }
             },
             Value::String(v) => JsonValue::String(v.to_string()),
+            Value::Binary(v) => {
+                let mut s = String::new();
+                for c in v {
+                    s.push_str(&format!("{c:02X}"));
+                }
+                JsonValue::String(s)
+            }
+            Value::Date(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
+            Value::Timestamp(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
+            Value::TimestampTz(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
+            Value::Interval(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
             Value::Array(arr) => {
                 let mut vals: Vec<JsonValue> = Vec::with_capacity(arr.len());
                 for val in arr {

@@ -24,6 +24,10 @@ use rand::distr::SampleString;
 use rand::rng;
 use rand::Rng;
 
+use super::extension::Date;
+use super::extension::Interval;
+use super::extension::Timestamp;
+use super::extension::TimestampTz;
 use super::number::Number;
 use crate::core::Encoder;
 
@@ -37,6 +41,11 @@ pub enum Value<'a> {
     Bool(bool),
     String(Cow<'a, str>),
     Number(Number),
+    Binary(&'a [u8]),
+    Date(Date),
+    Timestamp(Timestamp),
+    TimestampTz(TimestampTz),
+    Interval(Interval),
     Array(Vec<Value<'a>>),
     Object(Object<'a>),
 }
@@ -48,6 +57,11 @@ impl Debug for Value<'_> {
             Value::Bool(v) => formatter.debug_tuple("Bool").field(&v).finish(),
             Value::Number(ref v) => Debug::fmt(v, formatter),
             Value::String(ref v) => formatter.debug_tuple("String").field(v).finish(),
+            Value::Binary(ref v) => formatter.debug_tuple("Binary").field(v).finish(),
+            Value::Date(ref v) => formatter.debug_tuple("Date").field(v).finish(),
+            Value::Timestamp(ref v) => formatter.debug_tuple("Timestamp").field(v).finish(),
+            Value::TimestampTz(ref v) => formatter.debug_tuple("TimestampTz").field(v).finish(),
+            Value::Interval(ref v) => formatter.debug_tuple("Interval").field(v).finish(),
             Value::Array(ref v) => {
                 formatter.write_str("Array(")?;
                 Debug::fmt(v, formatter)?;
@@ -77,26 +91,42 @@ impl Display for Value<'_> {
             Value::String(ref v) => {
                 write!(f, "{:?}", v)
             }
+            Value::Binary(v) => {
+                write!(f, "\"")?;
+                for c in *v {
+                    write!(f, "{c:02X}")?;
+                }
+                write!(f, "\"")?;
+                Ok(())
+            }
+            Value::Date(v) => {
+                write!(f, "\"{}\"", v)
+            }
+            Value::Timestamp(v) => {
+                write!(f, "\"{}\"", v)
+            }
+            Value::TimestampTz(v) => {
+                write!(f, "\"{}\"", v)
+            }
+            Value::Interval(v) => {
+                write!(f, "\"{}\"", v)
+            }
             Value::Array(ref vs) => {
-                let mut first = true;
                 write!(f, "[")?;
-                for v in vs.iter() {
-                    if !first {
+                for (i, v) in vs.iter().enumerate() {
+                    if i > 0 {
                         write!(f, ",")?;
                     }
-                    first = false;
                     write!(f, "{v}")?;
                 }
                 write!(f, "]")
             }
             Value::Object(ref vs) => {
-                let mut first = true;
                 write!(f, "{{")?;
-                for (k, v) in vs.iter() {
-                    if !first {
+                for (i, (k, v)) in vs.iter().enumerate() {
+                    if i > 0 {
                         write!(f, ",")?;
                     }
-                    first = false;
                     write!(f, "\"")?;
                     write!(f, "{k}")?;
                     write!(f, "\"")?;
@@ -115,7 +145,7 @@ impl<'a> Value<'a> {
     }
 
     pub fn is_object(&self) -> bool {
-        self.as_object().is_some()
+        matches!(self, Value::Object(_v))
     }
 
     pub fn as_object(&self) -> Option<&Object<'a>> {
@@ -126,7 +156,7 @@ impl<'a> Value<'a> {
     }
 
     pub fn is_array(&self) -> bool {
-        self.as_array().is_some()
+        matches!(self, Value::Array(_v))
     }
 
     pub fn as_array(&self) -> Option<&Vec<Value<'a>>> {
@@ -192,7 +222,7 @@ impl<'a> Value<'a> {
     }
 
     pub fn is_boolean(&self) -> bool {
-        self.as_bool().is_some()
+        matches!(self, Value::Bool(_v))
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -203,12 +233,67 @@ impl<'a> Value<'a> {
     }
 
     pub fn is_null(&self) -> bool {
-        self.as_null().is_some()
+        matches!(self, Value::Null)
     }
 
     pub fn as_null(&self) -> Option<()> {
         match self {
             Value::Null => Some(()),
+            _ => None,
+        }
+    }
+
+    pub fn is_binary(&self) -> bool {
+        matches!(self, Value::Binary(_v))
+    }
+
+    pub fn as_binary(&self) -> Option<&[u8]> {
+        match self {
+            Value::Binary(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn is_date(&self) -> bool {
+        matches!(self, Value::Date(_v))
+    }
+
+    pub fn as_date(&self) -> Option<&Date> {
+        match self {
+            Value::Date(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn is_timestamp(&self) -> bool {
+        matches!(self, Value::Timestamp(_v))
+    }
+
+    pub fn as_timestamp(&self) -> Option<&Timestamp> {
+        match self {
+            Value::Timestamp(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn is_timestamp_tz(&self) -> bool {
+        matches!(self, Value::TimestampTz(_v))
+    }
+
+    pub fn as_timestamp_tz(&self) -> Option<&TimestampTz> {
+        match self {
+            Value::TimestampTz(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn is_interval(&self) -> bool {
+        matches!(self, Value::Interval(_v))
+    }
+
+    pub fn as_interval(&self) -> Option<&Interval> {
+        match self {
+            Value::Interval(v) => Some(v),
             _ => None,
         }
     }

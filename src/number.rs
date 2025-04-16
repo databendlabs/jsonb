@@ -20,6 +20,8 @@ use std::fmt::Formatter;
 
 use crate::error::Result;
 use crate::Error;
+
+use ethnum::i256;
 use ordered_float::OrderedFloat;
 use serde::de;
 use serde::de::Deserialize;
@@ -29,10 +31,40 @@ use serde::ser::Serialize;
 use serde::ser::Serializer;
 
 #[derive(Debug, Clone)]
+pub struct Decimal128 {
+    pub precision: u8,
+    pub scale: u8,
+    pub value: i128,
+}
+
+impl Decimal128 {
+    pub fn to_float64(&self) -> f64 {
+        let div = 10_f64.powi(self.scale as i32);
+        self.value as f64 / div
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Decimal256 {
+    pub precision: u8,
+    pub scale: u8,
+    pub value: i256,
+}
+
+impl Decimal256 {
+    pub fn to_float64(&self) -> f64 {
+        let div = 10_f64.powi(self.scale as i32);
+        self.value.as_f64() / div
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Number {
     Int64(i64),
     UInt64(u64),
     Float64(f64),
+    Decimal128(Decimal128),
+    Decimal256(Decimal256),
 }
 
 impl<'de> Deserialize<'de> for Number {
@@ -83,6 +115,14 @@ impl Serialize for Number {
             Number::Int64(v) => serializer.serialize_i64(*v),
             Number::UInt64(v) => serializer.serialize_u64(*v),
             Number::Float64(v) => serializer.serialize_f64(*v),
+            Number::Decimal128(v) => {
+                let val = v.to_float64();
+                serializer.serialize_f64(val)
+            }
+            Number::Decimal256(v) => {
+                let val = v.to_float64();
+                serializer.serialize_f64(val)
+            }
         }
     }
 }
@@ -98,7 +138,7 @@ impl Number {
                     None
                 }
             }
-            Number::Float64(_) => None,
+            Number::Float64(_) | Number::Decimal128(_) | Number::Decimal256(_) => None,
         }
     }
 
@@ -112,7 +152,7 @@ impl Number {
                 }
             }
             Number::UInt64(v) => Some(*v),
-            Number::Float64(_) => None,
+            Number::Float64(_) | Number::Decimal128(_) | Number::Decimal256(_) => None,
         }
     }
 
@@ -121,6 +161,14 @@ impl Number {
             Number::Int64(v) => Some(*v as f64),
             Number::UInt64(v) => Some(*v as f64),
             Number::Float64(v) => Some(*v),
+            Number::Decimal128(v) => {
+                let val = v.to_float64();
+                Some(val)
+            }
+            Number::Decimal256(v) => {
+                let val = v.to_float64();
+                Some(val)
+            }
         }
     }
 
@@ -140,6 +188,25 @@ impl Number {
                 }
             }
             Number::Float64(v) => Ok(Number::Float64(*v * -1.0)),
+            Number::Decimal128(v) => {
+                let neg_dec = Decimal128 {
+                    precision: v.precision,
+                    scale: v.scale,
+                    value: -v.value,
+                };
+                Ok(Number::Decimal128(neg_dec))
+            }
+            Number::Decimal256(v) => {
+                let Some(neg_value) = v.value.checked_neg() else {
+                    return Err(Error::Message("Decimal256 overflow".to_string()));
+                };
+                let neg_dec = Decimal256 {
+                    precision: v.precision,
+                    scale: v.scale,
+                    value: neg_value,
+                };
+                Ok(Number::Decimal256(neg_dec))
+            }
         }
     }
 
@@ -428,6 +495,55 @@ impl Display for Number {
                 let mut buffer = ryu::Buffer::new();
                 let s = buffer.format(*v);
                 write!(f, "{}", s)
+            }
+            Number::Decimal128(v) => {
+                if v.scale == 0 {
+                    write!(f, "{}", v.value)
+                } else {
+                    let pow_scale = 10_i128.pow(v.scale as u32);
+                    if v.value >= 0 {
+                        write!(
+                            f,
+                            "{}.{:0>width$}",
+                            v.value / pow_scale,
+                            (v.value % pow_scale).abs(),
+                            width = v.scale as usize
+                        )
+                    } else {
+                        write!(
+                            f,
+                            "-{}.{:0>width$}",
+                            -v.value / pow_scale,
+                            (v.value % pow_scale).abs(),
+                            width = v.scale as usize
+                        )
+                    }
+                }
+            }
+            Number::Decimal256(v) => {
+                if v.scale == 0 {
+                    write!(f, "{}", v.value)
+                } else {
+                    let pow_scale = i256::from(10).pow(v.scale as u32);
+                    // -1/10 = 0
+                    if v.value >= i256::from(0) {
+                        write!(
+                            f,
+                            "{}.{:0>width$}",
+                            v.value / pow_scale,
+                            (v.value % pow_scale).abs(),
+                            width = v.scale as usize
+                        )
+                    } else {
+                        write!(
+                            f,
+                            "-{}.{:0>width$}",
+                            -v.value / pow_scale,
+                            (v.value % pow_scale).abs(),
+                            width = v.scale as usize
+                        )
+                    }
+                }
             }
         }
     }
