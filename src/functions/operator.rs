@@ -88,6 +88,7 @@ impl RawJsonb<'_> {
             JsonbItemType::Boolean => Ok(TYPE_BOOLEAN),
             JsonbItemType::Number => Ok(TYPE_NUMBER),
             JsonbItemType::String => Ok(TYPE_STRING),
+            JsonbItemType::Binary => Ok(TYPE_BINARY),
             JsonbItemType::Array(_) => Ok(TYPE_ARRAY),
             JsonbItemType::Object(_) => Ok(TYPE_OBJECT),
         }
@@ -666,6 +667,12 @@ impl RawJsonb<'_> {
             JsonbItem::String(data) => {
                 buf.push(depth);
                 buf.push(STRING_LEVEL);
+                buf.extend_from_slice(data);
+                buf.push(0);
+            }
+            JsonbItem::Binary(data) => {
+                buf.push(depth);
+                buf.push(BINARY_LEVEL);
                 buf.extend_from_slice(data);
                 buf.push(0);
             }

@@ -80,9 +80,11 @@ impl Display for Value<'_> {
                 write!(f, "{:?}", v)
             }
             Value::Binary(ref v) => {
+                write!(f, "\"")?;
                 for c in *v {
                     write!(f, "{c:02X}")?;
                 }
+                write!(f, "\"")?;
                 Ok(())
             }
             Value::Array(ref vs) => {

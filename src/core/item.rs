@@ -66,6 +66,10 @@ impl PartialOrd for JsonbItemType {
             (JsonbItemType::String, _) => Some(Ordering::Greater),
             (_, JsonbItemType::String) => Some(Ordering::Less),
 
+            (JsonbItemType::Binary, JsonbItemType::Binary) => None,
+            (JsonbItemType::Binary, _) => Some(Ordering::Greater),
+            (_, JsonbItemType::Binary) => Some(Ordering::Less),
+
             (JsonbItemType::Number, JsonbItemType::Number) => None,
             (JsonbItemType::Number, _) => Some(Ordering::Greater),
             (_, JsonbItemType::Number) => Some(Ordering::Less),

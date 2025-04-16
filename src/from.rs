@@ -199,7 +199,13 @@ impl<'a> From<Value<'a>> for JsonValue {
                 Number::Float64(v) => JsonValue::Number(JsonNumber::from_f64(v).unwrap()),
             },
             Value::String(v) => JsonValue::String(v.to_string()),
-            Value::Binary(v) => todo!(),
+            Value::Binary(v) => {
+                let mut s = String::new();
+                for c in v {
+                    s.push_str(&format!("{c:02X}"));
+                }
+                JsonValue::String(s)
+            }
             Value::Array(arr) => {
                 let mut vals: Vec<JsonValue> = Vec::with_capacity(arr.len());
                 for val in arr {

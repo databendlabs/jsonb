@@ -178,7 +178,9 @@ impl<'de> Deserializer<'de> {
         match jentry.type_code {
             FALSE_TAG => Ok(false),
             TRUE_TAG => Ok(true),
-            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | BINARY_TAG => Err(Error::UnexpectedType),
+            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | BINARY_TAG => {
+                Err(Error::UnexpectedType)
+            }
             _ => Err(Error::InvalidJsonb),
         }
     }

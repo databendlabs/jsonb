@@ -518,6 +518,17 @@ impl Serialize for RawJsonb<'_> {
                         };
                         serializer.serialize_str(s)
                     }
+                    BINARY_TAG => {
+                        let payload_start = index;
+                        let payload_end = index + jentry.length as usize;
+
+                        let v = &self.data[payload_start..payload_end];
+                        let mut s = String::new();
+                        for c in v {
+                            s.push_str(&format!("{c:02X}"));
+                        }
+                        serializer.serialize_str(&s)
+                    }
                     CONTAINER_TAG => {
                         // Scalar header can't have contianer jentry tag
                         Err(ser::Error::custom("Invalid jsonb".to_string()))
