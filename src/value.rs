@@ -37,6 +37,7 @@ pub enum Value<'a> {
     Bool(bool),
     String(Cow<'a, str>),
     Number(Number),
+    Binary(&'a [u8]),
     Array(Vec<Value<'a>>),
     Object(Object<'a>),
 }
@@ -48,6 +49,7 @@ impl Debug for Value<'_> {
             Value::Bool(v) => formatter.debug_tuple("Bool").field(&v).finish(),
             Value::Number(ref v) => Debug::fmt(v, formatter),
             Value::String(ref v) => formatter.debug_tuple("String").field(v).finish(),
+            Value::Binary(ref v) => formatter.debug_tuple("Binary").field(v).finish(),
             Value::Array(ref v) => {
                 formatter.write_str("Array(")?;
                 Debug::fmt(v, formatter)?;
@@ -76,6 +78,12 @@ impl Display for Value<'_> {
             Value::Number(ref v) => write!(f, "{}", v),
             Value::String(ref v) => {
                 write!(f, "{:?}", v)
+            }
+            Value::Binary(ref v) => {
+                for c in *v {
+                    write!(f, "{c:02X}")?;
+                }
+                Ok(())
             }
             Value::Array(ref vs) => {
                 let mut first = true;

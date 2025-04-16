@@ -101,6 +101,21 @@ impl Serializer {
         self.replace_jentry(jentry, &mut jentry_index);
         Ok(())
     }
+
+    fn write_binary(&mut self, v: &[u8]) -> Result<()> {
+        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
+        let mut jentry_index = self.buffer.len();
+        let payload_index = jentry_index + 4;
+        // resize buffer to keep space for jentry.
+        self.buffer.resize(payload_index, 0);
+
+        let len = v.len();
+        self.buffer.extend_from_slice(v);
+        let jentry = JEntry::make_binary_jentry(len);
+
+        self.replace_jentry(jentry, &mut jentry_index);
+        Ok(())
+    }
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
@@ -180,8 +195,8 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self.write_str(v)
     }
 
-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok> {
-        todo!()
+    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok> {
+        self.write_binary(v)
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
@@ -754,6 +769,11 @@ impl<'a> Encoder<'a> {
                 let len = s.len();
                 self.buf.extend_from_slice(s.as_ref().as_bytes());
                 JEntry::make_string_jentry(len)
+            }
+            Value::Binary(v) => {
+                let len = v.len();
+                self.buf.extend_from_slice(v);
+                JEntry::make_binary_jentry(len)
             }
             Value::Array(array) => {
                 let len = self.encode_array(array);

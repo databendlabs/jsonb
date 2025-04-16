@@ -69,6 +69,13 @@ impl JEntry {
         }
     }
 
+    pub(super) fn make_binary_jentry(length: usize) -> JEntry {
+        JEntry {
+            type_code: BINARY_TAG,
+            length: length as u32,
+        }
+    }
+
     pub(super) fn encoded(&self) -> u32 {
         self.type_code | self.length
     }
