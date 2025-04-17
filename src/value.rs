@@ -19,9 +19,9 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::mem::discriminant;
 
-use rand::distributions::Alphanumeric;
-use rand::distributions::DistString;
-use rand::thread_rng;
+use rand::distr::Alphanumeric;
+use rand::distr::SampleString;
+use rand::rng;
 use rand::Rng;
 
 use super::number::Number;
@@ -269,10 +269,10 @@ impl<'a> Value<'a> {
 
     /// generate random JSONB value
     pub fn rand_value() -> Value<'static> {
-        let mut rng = thread_rng();
-        let val = match rng.gen_range(0..=2) {
+        let mut rng = rng();
+        let val = match rng.random_range(0..=2) {
             0 => {
-                let len = rng.gen_range(0..=5);
+                let len = rng.random_range(0..=5);
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(Self::rand_scalar_value());
@@ -280,7 +280,7 @@ impl<'a> Value<'a> {
                 Value::Array(values)
             }
             1 => {
-                let len = rng.gen_range(0..=5);
+                let len = rng.random_range(0..=5);
                 let mut obj = Object::new();
                 for _ in 0..len {
                     let k = Alphanumeric.sample_string(&mut rng, 5);
@@ -295,27 +295,27 @@ impl<'a> Value<'a> {
     }
 
     fn rand_scalar_value() -> Value<'static> {
-        let mut rng = thread_rng();
-        let val = match rng.gen_range(0..=3) {
+        let mut rng = rng();
+        let val = match rng.random_range(0..=3) {
             0 => {
-                let v = rng.gen_bool(0.5);
+                let v = rng.random_bool(0.5);
                 Value::Bool(v)
             }
             1 => {
                 let s = Alphanumeric.sample_string(&mut rng, 5);
                 Value::String(Cow::from(s))
             }
-            2 => match rng.gen_range(0..=2) {
+            2 => match rng.random_range(0..=2) {
                 0 => {
-                    let n: u64 = rng.gen_range(0..=100000);
+                    let n: u64 = rng.random_range(0..=100000);
                     Value::Number(Number::UInt64(n))
                 }
                 1 => {
-                    let n: i64 = rng.gen_range(-100000..=100000);
+                    let n: i64 = rng.random_range(-100000..=100000);
                     Value::Number(Number::Int64(n))
                 }
                 _ => {
-                    let n: f64 = rng.gen_range(-4000.0..1.3e5);
+                    let n: f64 = rng.random_range(-4000.0..1.3e5);
                     Value::Number(Number::Float64(n))
                 }
             },

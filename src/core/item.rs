@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::error::*;
-use crate::from_raw_jsonb;
-use crate::to_owned_jsonb;
 use crate::Number;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
@@ -111,28 +110,6 @@ impl<'a> JsonbItem<'a> {
         }
     }
 
-    pub(crate) fn to_owned_jsonb(&self) -> Result<OwnedJsonb> {
-        let owned = match self {
-            JsonbItem::Null => to_owned_jsonb(&())?,
-            JsonbItem::Boolean(v) => to_owned_jsonb(&v)?,
-            JsonbItem::Number(data) => {
-                let n = Number::decode(data)?;
-                match n {
-                    Number::UInt64(v) => to_owned_jsonb(&v)?,
-                    Number::Int64(v) => to_owned_jsonb(&v)?,
-                    Number::Float64(v) => to_owned_jsonb(&v)?,
-                }
-            }
-            JsonbItem::String(data) => {
-                let s = unsafe { std::str::from_utf8_unchecked(data) };
-                to_owned_jsonb(&s)?
-            }
-            JsonbItem::Raw(raw) => raw.to_owned(),
-            JsonbItem::Owned(owned) => owned.clone(),
-        };
-        Ok(owned)
-    }
-
     pub(crate) fn as_raw_jsonb(&self) -> Option<RawJsonb<'a>> {
         match self {
             JsonbItem::Raw(raw_jsonb) => Some(*raw_jsonb),
@@ -201,16 +178,16 @@ impl PartialOrd for JsonbItem<'_> {
                 self_val.partial_cmp(other_val)
             }
             (JsonbItem::Raw(self_raw), JsonbItem::Boolean(other_val)) => {
-                let self_val: Result<bool> = from_raw_jsonb(self_raw);
-                if let Ok(self_val) = self_val {
+                let self_val = self_raw.as_bool();
+                if let Ok(Some(self_val)) = self_val {
                     self_val.partial_cmp(other_val)
                 } else {
                     None
                 }
             }
             (JsonbItem::Boolean(self_val), JsonbItem::Raw(other_raw)) => {
-                let other_val: Result<bool> = from_raw_jsonb(other_raw);
-                if let Ok(other_val) = other_val {
+                let other_val = other_raw.as_bool();
+                if let Ok(Some(other_val)) = other_val {
                     self_val.partial_cmp(&other_val)
                 } else {
                     None
@@ -223,9 +200,9 @@ impl PartialOrd for JsonbItem<'_> {
                 self_num.partial_cmp(&other_num)
             }
             (JsonbItem::Raw(self_raw), JsonbItem::Number(other_data)) => {
-                let self_num: Result<Number> = from_raw_jsonb(self_raw);
+                let self_num = self_raw.as_number();
                 let other_num = Number::decode(other_data).ok()?;
-                if let Ok(self_num) = self_num {
+                if let Ok(Some(self_num)) = self_num {
                     self_num.partial_cmp(&other_num)
                 } else {
                     None
@@ -233,8 +210,8 @@ impl PartialOrd for JsonbItem<'_> {
             }
             (JsonbItem::Number(self_data), JsonbItem::Raw(other_raw)) => {
                 let self_num = Number::decode(self_data).ok()?;
-                let other_num: Result<Number> = from_raw_jsonb(other_raw);
-                if let Ok(other_num) = other_num {
+                let other_num = other_raw.as_number();
+                if let Ok(Some(other_num)) = other_num {
                     self_num.partial_cmp(&other_num)
                 } else {
                     None
@@ -247,18 +224,18 @@ impl PartialOrd for JsonbItem<'_> {
                 self_str.partial_cmp(other_str)
             }
             (JsonbItem::Raw(self_raw), JsonbItem::String(other_data)) => {
-                let self_str: Result<String> = from_raw_jsonb(self_raw);
-                let other_str = unsafe { String::from_utf8_unchecked(other_data.to_vec()) };
-                if let Ok(self_str) = self_str {
+                let self_str = self_raw.as_str();
+                let other_str = Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(other_data) });
+                if let Ok(Some(self_str)) = self_str {
                     self_str.partial_cmp(&other_str)
                 } else {
                     None
                 }
             }
             (JsonbItem::String(self_data), JsonbItem::Raw(other_raw)) => {
-                let self_str = unsafe { String::from_utf8_unchecked(self_data.to_vec()) };
-                let other_str: Result<String> = from_raw_jsonb(other_raw);
-                if let Ok(other_str) = other_str {
+                let self_str = Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(self_data) });
+                let other_str = other_raw.as_str();
+                if let Ok(Some(other_str)) = other_str {
                     self_str.partial_cmp(&other_str)
                 } else {
                     None

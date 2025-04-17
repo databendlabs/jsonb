@@ -14,7 +14,7 @@
 
 // This file contains functions that dealing with path-based access to JSONB data.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 
@@ -26,7 +26,6 @@ use crate::core::ObjectBuilder;
 use crate::core::ObjectIterator;
 use crate::core::ObjectKeyIterator;
 use crate::error::*;
-use crate::from_raw_jsonb;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Selector;
 use crate::keypath::KeyPath;
@@ -81,7 +80,7 @@ impl RawJsonb<'_> {
         if let Some(mut array_iter) = array_iter_opt {
             if let Some(item_result) = array_iter.nth(index) {
                 let item = item_result?;
-                let value = item.to_owned_jsonb()?;
+                let value = OwnedJsonb::from_item(item)?;
                 return Ok(Some(value));
             }
         }
@@ -138,32 +137,19 @@ impl RawJsonb<'_> {
     /// assert!(value.is_none()); // Not an object
     /// ```
     pub fn get_by_name(&self, name: &str, ignore_case: bool) -> Result<Option<OwnedJsonb>> {
-        let object_iter_opt = ObjectIterator::new(*self)?;
-        if let Some(mut object_iter) = object_iter_opt {
-            if !ignore_case {
-                for result in &mut object_iter {
-                    let (key, val_item) = result?;
-                    if key.eq(name) {
-                        let value = val_item.to_owned_jsonb()?;
-                        return Ok(Some(value));
-                    }
-                }
-            } else {
-                let mut item_map = BTreeMap::new();
-                for result in &mut object_iter {
-                    let (key, val_item) = result?;
-                    if key.eq(name) {
-                        let value = val_item.to_owned_jsonb()?;
-                        return Ok(Some(value));
-                    }
-                    item_map.insert(key, val_item);
-                }
-                for (key, val_item) in item_map.into_iter() {
-                    if name.eq_ignore_ascii_case(key) {
-                        let value = val_item.to_owned_jsonb()?;
-                        return Ok(Some(value));
-                    }
-                }
+        let key_name = Cow::Borrowed(name);
+        if let Some(val_item) =
+            self.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
+        {
+            let value = OwnedJsonb::from_item(val_item)?;
+            return Ok(Some(value));
+        }
+        if ignore_case {
+            if let Some(val_item) = self.get_object_value_by_key_name(&key_name, |name, key| {
+                key.eq_ignore_ascii_case(name)
+            })? {
+                let value = OwnedJsonb::from_item(val_item)?;
+                return Ok(Some(value));
             }
         }
         Ok(None)
@@ -268,33 +254,25 @@ impl RawJsonb<'_> {
                     return Ok(None);
                 }
                 JsonbItemType::Object(_) => {
-                    let name = match path {
-                        KeyPath::Index(index) => format!("{index}"),
-                        KeyPath::Name(name) | KeyPath::QuotedName(name) => format!("{name}"),
+                    let name: Cow<'a, str> = match path {
+                        KeyPath::Index(index) => Cow::Owned(index.to_string()),
+                        KeyPath::Name(name) | KeyPath::QuotedName(name) => Cow::Borrowed(name),
                     };
-                    let object_iter_opt = ObjectIterator::new(current)?;
-                    if let Some(mut object_iter) = object_iter_opt {
-                        let mut matched = false;
-                        for result in &mut object_iter {
-                            let (key, val_item) = result?;
-                            if key.eq(&name) {
-                                matched = true;
-                                current_item = val_item;
-                                break;
-                            }
-                        }
-                        if matched {
-                            continue;
-                        }
+                    if let Some(val_item) =
+                        current.get_object_value_by_key_name(&name, |name, key| key.eq(name))?
+                    {
+                        current_item = val_item;
+                    } else {
+                        return Ok(None);
                     }
-                    return Ok(None);
                 }
                 _ => {
                     return Ok(None);
                 }
             }
         }
-        Ok(Some(current_item.to_owned_jsonb()?))
+        let value = OwnedJsonb::from_item(current_item)?;
+        Ok(Some(value))
     }
 
     /// Selects elements from the `RawJsonb` by the given `JsonPath`.
@@ -304,7 +282,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -329,8 +307,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn select_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Vec<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build()
+        selector.select_values(json_path)
     }
 
     /// Selects elements from the `RawJsonb` by the given `JsonPath` and wraps them in a JSON array.
@@ -340,7 +317,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -362,8 +339,7 @@ impl RawJsonb<'_> {
     /// ```
     pub fn select_array_by_path<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<OwnedJsonb> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_array()
+        selector.select_array(json_path)
     }
 
     /// Selects the first matching element from the `RawJsonb` by the given `JsonPath`.
@@ -373,7 +349,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -403,8 +379,7 @@ impl RawJsonb<'_> {
         json_path: &'a JsonPath<'a>,
     ) -> Result<Option<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_first()
+        selector.select_first(json_path)
     }
 
     /// Selects a value (or an array of values) from the `RawJsonb` by the given `JsonPath`.
@@ -416,7 +391,7 @@ impl RawJsonb<'_> {
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSONPath expression (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -450,18 +425,15 @@ impl RawJsonb<'_> {
         json_path: &'a JsonPath<'a>,
     ) -> Result<Option<OwnedJsonb>> {
         let mut selector = Selector::new(*self);
-        selector.execute(json_path)?;
-        selector.build_value()
+        selector.select_value(json_path)
     }
 
     /// Checks if a JSON path exists within the JSONB value.
     ///
-    /// This function uses the `jsonpath` crate to check if a given JSON path exists within the JSONB value.
-    ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSON path to check (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression.
     ///
     /// # Returns
     ///
@@ -474,7 +446,6 @@ impl RawJsonb<'_> {
     ///
     /// ```rust
     /// use jsonb::jsonpath::parse_json_path;
-    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
     ///
     /// let jsonb_value = r#"{"a": {"b": [1, 2, 3]}, "c": 4}"#.parse::<OwnedJsonb>().unwrap();
@@ -498,20 +469,21 @@ impl RawJsonb<'_> {
 
     /// Checks if a JSON path matches the JSONB value using a predicate.
     ///
-    /// This function uses the `jsonpath` crate to check if a given JSON path, along with an associated predicate, matches the JSONB value.
+    /// This function checks if a given JSON Path, along with an associated predicate, matches the JSONB value.
     /// The predicate determines the conditions that the selected value(s) must satisfy for the match to be considered successful.
     ///
     /// # Arguments
     ///
     /// * `self` - The JSONB value.
-    /// * `json_path` - The JSON path with a predicate (from the `jsonpath` crate).
+    /// * `json_path` - The JSONPath expression with a predicate.
     ///   The predicate is specified within the `json_path` using the standard JSONPath syntax.
     ///   For example, `$.store.book[?(@.price < 10)]` selects books with a price less than 10.
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the JSON path with its predicate matches at least one value in the JSONB data.
-    /// * `Ok(false)` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(Some(true))` - If the JSON path with its predicate matches at least one value in the JSONB data.
+    /// * `Ok(Some(false))` - If the JSON path with its predicate does not match any values.
+    /// * `Ok(None)` - If the JSON path is not a predicate expr or predicate result is not a boolean value.
     /// * `Err(Error)` - If the JSONB data is invalid or if an error occurs during path evaluation or predicate checking.
     ///   This could also indicate issues with the `json_path` itself (invalid syntax, etc.).
     ///
@@ -519,7 +491,6 @@ impl RawJsonb<'_> {
     ///
     /// ```rust
     /// use jsonb::jsonpath::parse_json_path;
-    /// use jsonb::jsonpath::Mode;
     /// use jsonb::OwnedJsonb;
     ///
     /// let jsonb_value = r#"[
@@ -533,13 +504,17 @@ impl RawJsonb<'_> {
     ///
     /// // Path with predicate (select books with price < 10)
     /// let path = parse_json_path("$[*].price < 10".as_bytes()).unwrap();
-    /// assert!(raw_jsonb.path_match(&path).unwrap()); // True because Book B and Book C match.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(true)); // True because Book B and Book C match.
     ///
     /// // Path with predicate (select books with title "Book D")
     /// let path = parse_json_path("$[*].title == \"Book D\"".as_bytes()).unwrap();
-    /// assert!(!raw_jsonb.path_match(&path).unwrap()); // False because no book has this title.
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), Some(false)); // False because no book has this title.
+    ///
+    /// // Path is not a predicate expr
+    /// let path = parse_json_path("$[*].title".as_bytes()).unwrap();
+    /// assert_eq!(raw_jsonb.path_match(&path).unwrap(), None);
     /// ```
-    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<bool> {
+    pub fn path_match<'a>(&self, json_path: &'a JsonPath<'a>) -> Result<Option<bool>> {
         let mut selector = Selector::new(*self);
         selector.predicate_match(json_path)
     }
@@ -965,8 +940,7 @@ impl RawJsonb<'_> {
                 }
             }
             JsonbItemType::String => {
-                let res: Result<String> = from_raw_jsonb(self);
-                if let Ok(self_key) = res {
+                if let Some(self_key) = self.as_str()? {
                     for key in keys {
                         if self_key != key {
                             return Ok(false);
@@ -1049,8 +1023,7 @@ impl RawJsonb<'_> {
                 }
             }
             JsonbItemType::String => {
-                let res: Result<String> = from_raw_jsonb(self);
-                if let Ok(self_key) = res {
+                if let Some(self_key) = self.as_str()? {
                     for key in keys {
                         if self_key == key {
                             return Ok(true);
