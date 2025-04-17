@@ -401,25 +401,19 @@ fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
         value(BinaryOperator::Gte, tag(">=")),
         value(BinaryOperator::Gt, char('>')),
         value(BinaryOperator::StartsWith, tag("starts with")),
+        value(BinaryOperator::Add, char('+')),
+        value(BinaryOperator::Subtract, char('-')),
+        value(BinaryOperator::Multiply, char('*')),
+        value(BinaryOperator::Divide, char('/')),
+        value(BinaryOperator::Modulo, char('%')),
     ))
     .parse(input)
 }
 
-fn unary_arith_op(input: &[u8]) -> IResult<&[u8], UnaryArithmeticOperator> {
+fn unary_arith_op(input: &[u8]) -> IResult<&[u8], UnaryOperator> {
     alt((
-        value(UnaryArithmeticOperator::Add, char('+')),
-        value(UnaryArithmeticOperator::Subtract, char('-')),
-    ))
-    .parse(input)
-}
-
-fn binary_arith_op(input: &[u8]) -> IResult<&[u8], BinaryArithmeticOperator> {
-    alt((
-        value(BinaryArithmeticOperator::Add, char('+')),
-        value(BinaryArithmeticOperator::Subtract, char('-')),
-        value(BinaryArithmeticOperator::Multiply, char('*')),
-        value(BinaryArithmeticOperator::Divide, char('/')),
-        value(BinaryArithmeticOperator::Modulo, char('%')),
+        value(UnaryOperator::Add, char('+')),
+        value(UnaryOperator::Subtract, char('-')),
     ))
     .parse(input)
 }
@@ -449,30 +443,12 @@ fn expr_atom(input: &[u8], is_root_expr: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
         map(
             pair(
-                pair(
-                    delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
-                    binary_arith_op,
-                ),
-                delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
-            ),
-            |((left, op), right)| {
-                Expr::ArithmeticFunc(ArithmeticFunc::Binary {
-                    op,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            },
-        ),
-        map(
-            pair(
                 unary_arith_op,
                 delimited(multispace0, |i| inner_expr(i, is_root_expr), multispace0),
             ),
-            |(op, operand)| {
-                Expr::ArithmeticFunc(ArithmeticFunc::Unary {
-                    op,
-                    operand: Box::new(operand),
-                })
+            |(op, operand)| Expr::UnaryOp {
+                op,
+                operand: Box::new(operand),
             },
         ),
         map(

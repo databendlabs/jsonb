@@ -253,18 +253,6 @@ pub enum BinaryOperator {
     Gte,
     /// `starts with` represents right is an initial substring of left.
     StartsWith,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum UnaryArithmeticOperator {
-    /// `Add` represents unary arithmetic + operation.
-    Add,
-    /// `Subtract` represents unary arithmetic - operation.
-    Subtract,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BinaryArithmeticOperator {
     /// `Add` represents binary arithmetic + operation.
     Add,
     /// `Subtract` represents binary arithmetic - operation.
@@ -278,16 +266,11 @@ pub enum BinaryArithmeticOperator {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ArithmeticFunc<'a> {
-    Unary {
-        op: UnaryArithmeticOperator,
-        operand: Box<Expr<'a>>,
-    },
-    Binary {
-        op: BinaryArithmeticOperator,
-        left: Box<Expr<'a>>,
-        right: Box<Expr<'a>>,
-    },
+pub enum UnaryOperator {
+    /// `Add` represents unary arithmetic + operation.
+    Add,
+    /// `Subtract` represents unary arithmetic - operation.
+    Subtract,
 }
 
 /// Represents a filter expression used to filter Array or Object.
@@ -297,14 +280,18 @@ pub enum Expr<'a> {
     Paths(Vec<Path<'a>>),
     /// Literal value.
     Value(Box<PathValue<'a>>),
-    /// Filter expression that performs a binary operation, returns a boolean value.
+    /// Filter expression that performs a binary operation, returns a boolean value,
+    /// Or arithmetic expression that performs an arithmetic operation, returns a number value.
     BinaryOp {
         op: BinaryOperator,
         left: Box<Expr<'a>>,
         right: Box<Expr<'a>>,
     },
-    /// Arithmetic expression that performs an arithmetic operation, returns a number value.
-    ArithmeticFunc(ArithmeticFunc<'a>),
+    /// Unary expression that performs an arithmetic operation.
+    UnaryOp {
+        op: UnaryOperator,
+        operand: Box<Expr<'a>>,
+    },
     /// Filter function, returns a boolean value.
     ExistsFunc(Vec<Path<'a>>),
 }
@@ -482,30 +469,35 @@ impl Display for BinaryOperator {
             BinaryOperator::StartsWith => {
                 write!(f, "starts with")
             }
+            BinaryOperator::Add => {
+                write!(f, "+")
+            }
+            BinaryOperator::Subtract => {
+                write!(f, "-")
+            }
+            BinaryOperator::Multiply => {
+                write!(f, "*")
+            }
+            BinaryOperator::Divide => {
+                write!(f, "/")
+            }
+            BinaryOperator::Modulo => {
+                write!(f, "%")
+            }
         }
     }
 }
 
-impl Display for UnaryArithmeticOperator {
+impl Display for UnaryOperator {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let symbol = match self {
-            UnaryArithmeticOperator::Add => "+",
-            UnaryArithmeticOperator::Subtract => "-",
-        };
-        write!(f, "{}", symbol)
-    }
-}
-
-impl Display for BinaryArithmeticOperator {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let symbol = match self {
-            BinaryArithmeticOperator::Add => "+",
-            BinaryArithmeticOperator::Subtract => "-",
-            BinaryArithmeticOperator::Multiply => "*",
-            BinaryArithmeticOperator::Divide => "/",
-            BinaryArithmeticOperator::Modulo => "%",
-        };
-        write!(f, "{}", symbol)
+        match self {
+            UnaryOperator::Add => {
+                write!(f, "+")
+            }
+            UnaryOperator::Subtract => {
+                write!(f, "-")
+            }
+        }
     }
 }
 
@@ -541,14 +533,9 @@ impl Display for Expr<'_> {
                     write!(f, "{right}")?;
                 }
             }
-            Expr::ArithmeticFunc(expr) => match expr {
-                ArithmeticFunc::Unary { op, operand } => {
-                    write!(f, "{}{}", op, operand)?;
-                }
-                ArithmeticFunc::Binary { op, left, right } => {
-                    write!(f, "{} {} {}", left, op, right)?;
-                }
-            },
+            Expr::UnaryOp { op, operand } => {
+                write!(f, "{}{}", op, operand)?;
+            }
             Expr::ExistsFunc(paths) => {
                 f.write_str("exists(")?;
                 for path in paths {
