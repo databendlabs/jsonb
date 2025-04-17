@@ -101,6 +101,21 @@ impl Serializer {
         self.replace_jentry(jentry, &mut jentry_index);
         Ok(())
     }
+
+    fn write_binary(&mut self, v: &[u8]) -> Result<()> {
+        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
+        let mut jentry_index = self.buffer.len();
+        let payload_index = jentry_index + 4;
+        // resize buffer to keep space for jentry.
+        self.buffer.resize(payload_index, 0);
+
+        let len = v.len();
+        self.buffer.extend_from_slice(v);
+        let jentry = JEntry::make_binary_jentry(len);
+
+        self.replace_jentry(jentry, &mut jentry_index);
+        Ok(())
+    }
 }
 
 impl<'a> ser::Serializer for &'a mut Serializer {
@@ -180,8 +195,8 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self.write_str(v)
     }
 
-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok> {
-        todo!()
+    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok> {
+        self.write_binary(v)
     }
 
     fn serialize_none(self) -> Result<Self::Ok> {
@@ -503,6 +518,17 @@ impl Serialize for RawJsonb<'_> {
                         };
                         serializer.serialize_str(s)
                     }
+                    BINARY_TAG => {
+                        let payload_start = index;
+                        let payload_end = index + jentry.length as usize;
+
+                        let v = &self.data[payload_start..payload_end];
+                        let mut s = String::new();
+                        for c in v {
+                            s.push_str(&format!("{c:02X}"));
+                        }
+                        serializer.serialize_str(&s)
+                    }
                     CONTAINER_TAG => {
                         // Scalar header can't have contianer jentry tag
                         Err(ser::Error::custom("Invalid jsonb".to_string()))
@@ -754,6 +780,11 @@ impl<'a> Encoder<'a> {
                 let len = s.len();
                 self.buf.extend_from_slice(s.as_ref().as_bytes());
                 JEntry::make_string_jentry(len)
+            }
+            Value::Binary(v) => {
+                let len = v.len();
+                self.buf.extend_from_slice(v);
+                JEntry::make_binary_jentry(len)
             }
             Value::Array(array) => {
                 let len = self.encode_array(array);

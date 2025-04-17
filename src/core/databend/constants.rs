@@ -27,6 +27,8 @@ pub(super) const NUMBER_TAG: u32 = 0x20000000;
 pub(super) const FALSE_TAG: u32 = 0x30000000;
 pub(super) const TRUE_TAG: u32 = 0x40000000;
 pub(super) const CONTAINER_TAG: u32 = 0x50000000;
+pub(super) const BINARY_TAG: u32 = 0x60000000;
+pub(super) const EXTENSION_TAG: u32 = 0x70000000;
 
 // JSONB number constants
 pub(super) const NUMBER_ZERO: u8 = 0x00;

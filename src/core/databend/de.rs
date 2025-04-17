@@ -146,6 +146,14 @@ impl<'de> Deserializer<'de> {
         Ok(Cow::Borrowed(s))
     }
 
+    fn read_payload_binary(&mut self, length: usize) -> Result<&[u8]> {
+        let start = self.index;
+        let end = self.index + length;
+        let v = &self.raw.data[start..end];
+        self.index = end;
+        Ok(v)
+    }
+
     fn read_null(&mut self) -> Result<()> {
         let jentry_res = self.read_scalar_jentry();
         if jentry_res == Err(Error::UnexpectedType) {
@@ -154,7 +162,7 @@ impl<'de> Deserializer<'de> {
         let jentry = jentry_res?;
         match jentry.type_code {
             NULL_TAG => Ok(()),
-            FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG => {
+            FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | BINARY_TAG => {
                 Err(Error::UnexpectedType)
             }
             _ => Err(Error::InvalidJsonb),
@@ -170,7 +178,9 @@ impl<'de> Deserializer<'de> {
         match jentry.type_code {
             FALSE_TAG => Ok(false),
             TRUE_TAG => Ok(true),
-            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG => Err(Error::UnexpectedType),
+            NULL_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | BINARY_TAG => {
+                Err(Error::UnexpectedType)
+            }
             _ => Err(Error::InvalidJsonb),
         }
     }
@@ -187,7 +197,7 @@ impl<'de> Deserializer<'de> {
                 let num = self.read_payload_number(length)?;
                 Ok(num)
             }
-            NULL_TAG | FALSE_TAG | TRUE_TAG | STRING_TAG | CONTAINER_TAG => {
+            NULL_TAG | FALSE_TAG | TRUE_TAG | STRING_TAG | CONTAINER_TAG | BINARY_TAG => {
                 Err(Error::UnexpectedType)
             }
             _ => Err(Error::InvalidJsonb),
@@ -230,7 +240,7 @@ impl<'de> Deserializer<'de> {
                 let s = self.read_payload_str(length)?;
                 Ok(s)
             }
-            NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | CONTAINER_TAG => {
+            NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | CONTAINER_TAG | BINARY_TAG => {
                 Err(Error::UnexpectedType)
             }
             _ => Err(Error::InvalidJsonb),
@@ -240,6 +250,25 @@ impl<'de> Deserializer<'de> {
     fn read_string(&mut self) -> Result<String> {
         let s = self.read_str()?;
         Ok(s.to_string())
+    }
+
+    fn read_binary(&mut self) -> Result<&[u8]> {
+        let jentry_res = self.read_scalar_jentry();
+        if jentry_res == Err(Error::UnexpectedType) {
+            return Err(Error::UnexpectedType);
+        }
+        let jentry = jentry_res?;
+        match jentry.type_code {
+            BINARY_TAG => {
+                let length = jentry.length as usize;
+                let v = self.read_payload_binary(length)?;
+                Ok(v)
+            }
+            NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG => {
+                Err(Error::UnexpectedType)
+            }
+            _ => Err(Error::InvalidJsonb),
+        }
     }
 
     fn read_with_jentry<V>(&mut self, jentry: JEntry, visitor: V) -> Result<V::Value>
@@ -291,6 +320,11 @@ impl<'de> Deserializer<'de> {
                     }
                     Number::Float64(i) => visitor.visit_f64(i),
                 }
+            }
+            BINARY_TAG => {
+                let length = jentry.length as usize;
+                let v = self.read_payload_binary(length)?;
+                visitor.visit_bytes(v)
             }
             CONTAINER_TAG => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
@@ -462,14 +496,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        visitor.visit_bytes(self.read_binary()?)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        visitor.visit_byte_buf(self.read_binary()?.to_vec())
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -921,6 +955,12 @@ impl<'a> Decoder<'a> {
                 let n = Number::decode(number)?;
                 self.buf = &self.buf[offset..];
                 Ok(Value::Number(n))
+            }
+            BINARY_TAG => {
+                let offset = jentry.length as usize;
+                let v = &self.buf.get(..offset).ok_or(Error::InvalidUtf8)?;
+                self.buf = &self.buf[offset..];
+                Ok(Value::Binary(v))
             }
             CONTAINER_TAG => self.decode_jsonb(),
             _ => Err(Error::InvalidJsonbJEntry),

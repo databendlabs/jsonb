@@ -206,6 +206,10 @@ impl OwnedJsonb {
                 let jentry = JEntry::make_string_jentry(data.len());
                 (jentry, Some(data))
             }
+            JsonbItem::Binary(data) => {
+                let jentry = JEntry::make_binary_jentry(data.len());
+                (jentry, Some(data))
+            }
             JsonbItem::Raw(raw_jsonb) => {
                 return Ok(raw_jsonb.to_owned());
             }

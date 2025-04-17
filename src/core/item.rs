@@ -31,6 +31,8 @@ pub(crate) enum JsonbItemType {
     Number,
     /// The String JSONB type.
     String,
+    /// The Binary JSONB type.
+    Binary,
     /// The Array JSONB type with the length of items.
     Array(usize),
     /// The Object JSONB type with the length of key and value pairs.
@@ -64,6 +66,10 @@ impl PartialOrd for JsonbItemType {
             (JsonbItemType::String, _) => Some(Ordering::Greater),
             (_, JsonbItemType::String) => Some(Ordering::Less),
 
+            (JsonbItemType::Binary, JsonbItemType::Binary) => None,
+            (JsonbItemType::Binary, _) => Some(Ordering::Greater),
+            (_, JsonbItemType::Binary) => Some(Ordering::Less),
+
             (JsonbItemType::Number, JsonbItemType::Number) => None,
             (JsonbItemType::Number, _) => Some(Ordering::Greater),
             (_, JsonbItemType::Number) => Some(Ordering::Less),
@@ -92,6 +98,8 @@ pub(crate) enum JsonbItem<'a> {
     Number(&'a [u8]),
     /// Represents a JSONB string, stored as a byte slice.
     String(&'a [u8]),
+    /// Represents a JSONB binary, stored as a byte slice.
+    Binary(&'a [u8]),
     /// Represents raw JSONB data, using a borrowed slice.
     Raw(RawJsonb<'a>),
     /// Represents owned JSONB data.
@@ -105,6 +113,7 @@ impl<'a> JsonbItem<'a> {
             JsonbItem::Boolean(_) => Ok(JsonbItemType::Boolean),
             JsonbItem::Number(_) => Ok(JsonbItemType::Number),
             JsonbItem::String(_) => Ok(JsonbItemType::String),
+            JsonbItem::Binary(_) => Ok(JsonbItemType::Binary),
             JsonbItem::Raw(raw) => raw.jsonb_item_type(),
             JsonbItem::Owned(owned) => owned.as_raw().jsonb_item_type(),
         }
