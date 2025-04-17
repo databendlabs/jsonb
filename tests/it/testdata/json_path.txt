@@ -81,25 +81,23 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Add,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+            BinaryOp {
+                op: Add,
+                left: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -113,25 +111,23 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Subtract,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                10,
-                            ),
+            BinaryOp {
+                op: Subtract,
+                left: Value(
+                    Number(
+                        UInt64(
+                            10,
                         ),
                     ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -145,25 +141,23 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Multiply,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                10,
-                            ),
+            BinaryOp {
+                op: Multiply,
+                left: Value(
+                    Number(
+                        UInt64(
+                            10,
                         ),
                     ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -177,25 +171,23 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Divide,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                10,
-                            ),
+            BinaryOp {
+                op: Divide,
+                left: Value(
+                    Number(
+                        UInt64(
+                            10,
                         ),
                     ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -209,25 +201,23 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Modulo,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                10,
-                            ),
+            BinaryOp {
+                op: Modulo,
+                left: Value(
+                    Number(
+                        UInt64(
+                            10,
                         ),
                     ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -291,34 +281,32 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Unary {
-                    op: Add,
-                    operand: Paths(
-                        [
-                            Root,
-                            DotField(
-                                "store",
-                            ),
-                            DotField(
-                                "book",
-                            ),
-                            ArrayIndices(
-                                [
+            UnaryOp {
+                op: Add,
+                operand: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "store",
+                        ),
+                        DotField(
+                            "book",
+                        ),
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                            DotField(
-                                "price",
-                            ),
-                        ],
-                    ),
-                },
-            ),
+                                ),
+                            ],
+                        ),
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+            },
         ),
     ],
 }
@@ -332,34 +320,32 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Unary {
-                    op: Subtract,
-                    operand: Paths(
-                        [
-                            Root,
-                            DotField(
-                                "store",
-                            ),
-                            DotField(
-                                "book",
-                            ),
-                            ArrayIndices(
-                                [
+            UnaryOp {
+                op: Subtract,
+                operand: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "store",
+                        ),
+                        DotField(
+                            "book",
+                        ),
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                            DotField(
-                                "price",
-                            ),
-                        ],
-                    ),
-                },
-            ),
+                                ),
+                            ],
+                        ),
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+            },
         ),
     ],
 }
@@ -373,41 +359,39 @@ $.store.book[0].price + 5
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Add,
-                    left: Paths(
-                        [
-                            Root,
-                            DotField(
-                                "store",
-                            ),
-                            DotField(
-                                "book",
-                            ),
-                            ArrayIndices(
-                                [
+            BinaryOp {
+                op: Add,
+                left: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "store",
+                        ),
+                        DotField(
+                            "book",
+                        ),
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                            DotField(
-                                "price",
-                            ),
-                        ],
-                    ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                5,
-                            ),
+                                ),
+                            ],
+                        ),
+                        DotField(
+                            "price",
+                        ),
+                    ],
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            5,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -1323,38 +1307,36 @@ $.phones[0].number + 3
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Add,
-                    left: Paths(
-                        [
-                            Root,
-                            DotField(
-                                "phones",
-                            ),
-                            ArrayIndices(
-                                [
+            BinaryOp {
+                op: Add,
+                left: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "phones",
+                        ),
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                            DotField(
-                                "number",
-                            ),
-                        ],
-                    ),
-                    right: Value(
-                        Number(
-                            UInt64(
-                                3,
-                            ),
+                                ),
+                            ],
+                        ),
+                        DotField(
+                            "number",
+                        ),
+                    ],
+                ),
+                right: Value(
+                    Number(
+                        UInt64(
+                            3,
                         ),
                     ),
-                },
-            ),
+                ),
+            },
         ),
     ],
 }
@@ -1368,32 +1350,30 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Binary {
-                    op: Subtract,
-                    left: Value(
-                        Number(
-                            UInt64(
-                                7,
-                            ),
+            BinaryOp {
+                op: Subtract,
+                left: Value(
+                    Number(
+                        UInt64(
+                            7,
                         ),
                     ),
-                    right: Paths(
-                        [
-                            Root,
-                            ArrayIndices(
-                                [
+                ),
+                right: Paths(
+                    [
+                        Root,
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                        ],
-                    ),
-                },
-            ),
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            },
         ),
     ],
 }
@@ -1407,31 +1387,29 @@ JsonPath {
 JsonPath {
     paths: [
         Expr(
-            ArithmeticFunc(
-                Unary {
-                    op: Subtract,
-                    operand: Paths(
-                        [
-                            Root,
-                            DotField(
-                                "phones",
-                            ),
-                            ArrayIndices(
-                                [
+            UnaryOp {
+                op: Subtract,
+                operand: Paths(
+                    [
+                        Root,
+                        DotField(
+                            "phones",
+                        ),
+                        ArrayIndices(
+                            [
+                                Index(
                                     Index(
-                                        Index(
-                                            0,
-                                        ),
+                                        0,
                                     ),
-                                ],
-                            ),
-                            DotField(
-                                "number",
-                            ),
-                        ],
-                    ),
-                },
-            ),
+                                ),
+                            ],
+                        ),
+                        DotField(
+                            "number",
+                        ),
+                    ],
+                ),
+            },
         ),
     ],
 }

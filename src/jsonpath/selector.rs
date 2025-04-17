@@ -22,9 +22,7 @@ use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::core::ObjectValueIterator;
 use crate::error::Result;
-use crate::jsonpath::ArithmeticFunc;
 use crate::jsonpath::ArrayIndex;
-use crate::jsonpath::BinaryArithmeticOperator;
 use crate::jsonpath::BinaryOperator;
 use crate::jsonpath::Expr;
 use crate::jsonpath::JsonPath;
@@ -617,7 +615,7 @@ impl<'a> Selector<'a> {
     fn eval_expr(&mut self, item: JsonbItem<'a>, expr: &'a Expr<'a>) -> Result<()> {
         match expr {
             Expr::UnaryOp { op, operand } => {
-                let res_items = self.eval_unary_arithmetic_func(item.clone(), &op, &operand)?;
+                let res_items = self.eval_unary_arithmetic_func(item.clone(), op, operand)?;
                 for res_item in res_items {
                     self.items.push_back(res_item);
                 }
@@ -629,7 +627,7 @@ impl<'a> Selector<'a> {
                 | BinaryOperator::Divide
                 | BinaryOperator::Modulo => {
                     let res_items =
-                        self.eval_binary_arithmetic_func(item.clone(), &op, &left, right)?;
+                        self.eval_binary_arithmetic_func(item.clone(), op, left, right)?;
                     for res_item in res_items {
                         self.items.push_back(res_item);
                     }
