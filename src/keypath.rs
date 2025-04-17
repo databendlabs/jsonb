@@ -26,6 +26,7 @@ use nom::sequence::delimited;
 use nom::sequence::preceded;
 use nom::sequence::terminated;
 use nom::IResult;
+use nom::Parser;
 
 use crate::jsonpath::raw_string;
 use crate::jsonpath::string;
@@ -100,7 +101,8 @@ fn key_path(input: &[u8]) -> IResult<&[u8], KeyPath<'_>> {
         map(i32, KeyPath::Index),
         map(string, KeyPath::QuotedName),
         map(raw_string, KeyPath::Name),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn key_paths(input: &[u8]) -> IResult<&[u8], Vec<KeyPath<'_>>> {
@@ -118,5 +120,6 @@ fn key_paths(input: &[u8]) -> IResult<&[u8], Vec<KeyPath<'_>>> {
             ),
             |_| vec![],
         ),
-    ))(input)
+    ))
+    .parse(input)
 }

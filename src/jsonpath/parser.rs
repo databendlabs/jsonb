@@ -37,8 +37,8 @@ use nom::sequence::pair;
 use nom::sequence::preceded;
 use nom::sequence::separated_pair;
 use nom::sequence::terminated;
-use nom::sequence::tuple;
 use nom::IResult;
+use nom::Parser;
 
 use crate::constants::UNICODE_LEN;
 use crate::error::Error;
@@ -64,7 +64,8 @@ fn json_path(input: &[u8]) -> IResult<&[u8], JsonPath<'_>> {
     map(
         delimited(multispace0, predicate_or_paths, multispace0),
         |paths| JsonPath { paths },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn check_escaped(input: &[u8], i: &mut usize) -> bool {
@@ -176,15 +177,16 @@ fn bracket_wildcard(input: &[u8]) -> IResult<&[u8], ()> {
             delimited(multispace0, char('*'), multispace0),
             char(']'),
         ),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn colon_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
-    alt((preceded(char(':'), string), preceded(char(':'), raw_string)))(input)
+    alt((preceded(char(':'), string), preceded(char(':'), raw_string))).parse(input)
 }
 
 fn dot_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
-    alt((preceded(char('.'), string), preceded(char('.'), raw_string)))(input)
+    alt((preceded(char('.'), string), preceded(char('.'), raw_string))).parse(input)
 }
 
 fn object_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
@@ -192,7 +194,8 @@ fn object_field(input: &[u8]) -> IResult<&[u8], Cow<'_, str>> {
         terminated(char('['), multispace0),
         string,
         preceded(multispace0, char(']')),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn index(input: &[u8]) -> IResult<&[u8], Index> {
@@ -200,20 +203,21 @@ fn index(input: &[u8]) -> IResult<&[u8], Index> {
         map(i32, Index::Index),
         map(
             preceded(
-                tuple((tag_no_case("last"), multispace0, char('-'), multispace0)),
-                i32,
+                separated_pair(tag_no_case("last"), multispace0, char('-')),
+                preceded(multispace0, i32),
             ),
             |v| Index::LastIndex(v.saturating_neg()),
         ),
         map(
             preceded(
-                tuple((tag_no_case("last"), multispace0, char('+'), multispace0)),
-                i32,
+                separated_pair(tag_no_case("last"), multispace0, char('+')),
+                preceded(multispace0, i32),
             ),
             Index::LastIndex,
         ),
         map(tag_no_case("last"), |_| Index::LastIndex(0)),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn array_index(input: &[u8]) -> IResult<&[u8], ArrayIndex> {
@@ -227,7 +231,8 @@ fn array_index(input: &[u8]) -> IResult<&[u8], ArrayIndex> {
             |(s, e)| ArrayIndex::Slice((s, e)),
         ),
         map(index, ArrayIndex::Index),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn array_indices(input: &[u8]) -> IResult<&[u8], Vec<ArrayIndex>> {
@@ -235,7 +240,8 @@ fn array_indices(input: &[u8]) -> IResult<&[u8], Vec<ArrayIndex>> {
         char('['),
         separated_list1(char(','), delimited(multispace0, array_index, multispace0)),
         char(']'),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
@@ -246,7 +252,8 @@ fn inner_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
         map(dot_field, Path::DotField),
         map(array_indices, Path::ArrayIndices),
         map(object_field, Path::ObjectField),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 // Compatible with Snowflake query syntax, the first field name does not require the leading period
@@ -256,7 +263,8 @@ fn pre_path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
         map(delimited(multispace0, raw_string, multispace0), |v| {
             Path::DotField(v)
         }),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
@@ -265,18 +273,20 @@ fn path(input: &[u8]) -> IResult<&[u8], Path<'_>> {
         map(delimited(multispace0, filter_expr, multispace0), |v| {
             Path::FilterExpr(Box::new(v))
         }),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn predicate_or_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
-    alt((predicate, paths))(input)
+    alt((predicate, paths)).parse(input)
 }
 
 fn predicate(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
     map(
         delimited(multispace0, |i| expr_or(i, true), multispace0),
         |v| vec![Path::Predicate(Box::new(v))],
-    )(input)
+    )
+    .parse(input)
 }
 
 fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
@@ -288,7 +298,8 @@ fn paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
             }
             paths
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn expr_paths(input: &[u8], root_predicate: bool) -> IResult<&[u8], Vec<Path<'_>>> {
@@ -308,7 +319,8 @@ fn expr_paths(input: &[u8], root_predicate: bool) -> IResult<&[u8], Vec<Path<'_>
             paths.insert(0, pre_path);
             paths
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn filter_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
@@ -319,7 +331,8 @@ fn filter_expr(input: &[u8]) -> IResult<&[u8], Expr<'_>> {
             char(')'),
         ),
         |v| v,
-    )(input)
+    )
+    .parse(input)
 }
 
 fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
@@ -331,14 +344,16 @@ fn op(input: &[u8]) -> IResult<&[u8], BinaryOperator> {
         value(BinaryOperator::Lt, char('<')),
         value(BinaryOperator::Gte, tag(">=")),
         value(BinaryOperator::Gt, char('>')),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn unary_arith_op(input: &[u8]) -> IResult<&[u8], UnaryArithmeticOperator> {
     alt((
         value(UnaryArithmeticOperator::Add, char('+')),
         value(UnaryArithmeticOperator::Subtract, char('-')),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn binary_arith_op(input: &[u8]) -> IResult<&[u8], BinaryArithmeticOperator> {
@@ -348,7 +363,8 @@ fn binary_arith_op(input: &[u8]) -> IResult<&[u8], BinaryArithmeticOperator> {
         value(BinaryArithmeticOperator::Multiply, char('*')),
         value(BinaryArithmeticOperator::Divide, char('/')),
         value(BinaryArithmeticOperator::Modulus, char('%')),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
@@ -360,25 +376,29 @@ fn path_value(input: &[u8]) -> IResult<&[u8], PathValue<'_>> {
         map(i64, |v| PathValue::Number(Number::Int64(v))),
         map(double, |v| PathValue::Number(Number::Float64(v))),
         map(string, PathValue::String),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn inner_expr(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
         map(|i| expr_paths(i, root_predicate), Expr::Paths),
         map(path_value, |v| Expr::Value(Box::new(v))),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
     alt((
         map(
-            tuple((
+            pair(
+                pair(
+                    delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                    binary_arith_op,
+                ),
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
-                binary_arith_op,
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
-            )),
-            |(left, op, right)| {
+            ),
+            |((left, op), right)| {
                 Expr::ArithmeticFunc(ArithmeticFunc::Binary {
                     op,
                     left: Box::new(left),
@@ -387,10 +407,10 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             },
         ),
         map(
-            tuple((
+            pair(
                 unary_arith_op,
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
-            )),
+            ),
             |(op, operand)| {
                 Expr::ArithmeticFunc(ArithmeticFunc::Unary {
                     op,
@@ -399,12 +419,14 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             },
         ),
         map(
-            tuple((
+            pair(
+                pair(
+                    delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
+                    op,
+                ),
                 delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
-                op,
-                delimited(multispace0, |i| inner_expr(i, root_predicate), multispace0),
-            )),
-            |(left, op, right)| Expr::BinaryOp {
+            ),
+            |((left, op), right)| Expr::BinaryOp {
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -419,11 +441,12 @@ fn expr_atom(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             |expr| expr,
         ),
         map(filter_func, Expr::FilterFunc),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn filter_func(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
-    alt((exists, starts_with))(input)
+    alt((exists, starts_with)).parse(input)
 }
 
 fn exists(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
@@ -437,7 +460,8 @@ fn exists(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
                 preceded(multispace0, char(')')),
             ),
         ),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn exists_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
@@ -453,14 +477,16 @@ fn exists_paths(input: &[u8]) -> IResult<&[u8], Vec<Path<'_>>> {
             paths.insert(0, pre);
             paths
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn starts_with(input: &[u8]) -> IResult<&[u8], FilterFunc<'_>> {
     preceded(
         tag("starts with"),
         preceded(multispace0, map(string, FilterFunc::StartsWith)),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
@@ -479,7 +505,8 @@ fn expr_and(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             }
             expr
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
@@ -498,7 +525,8 @@ fn expr_or(input: &[u8], root_predicate: bool) -> IResult<&[u8], Expr<'_>> {
             }
             expr
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 #[cfg(test)]
