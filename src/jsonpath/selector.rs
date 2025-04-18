@@ -22,16 +22,14 @@ use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::core::ObjectValueIterator;
 use crate::error::Result;
-use crate::jsonpath::ArithmeticFunc;
 use crate::jsonpath::ArrayIndex;
-use crate::jsonpath::BinaryArithmeticOperator;
 use crate::jsonpath::BinaryOperator;
 use crate::jsonpath::Expr;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Path;
 use crate::jsonpath::PathValue;
 use crate::jsonpath::RecursiveLevel;
-use crate::jsonpath::UnaryArithmeticOperator;
+use crate::jsonpath::UnaryOperator;
 use crate::number::Number;
 use crate::to_owned_jsonb;
 use crate::Error;
@@ -616,13 +614,35 @@ impl<'a> Selector<'a> {
 
     fn eval_expr(&mut self, item: JsonbItem<'a>, expr: &'a Expr<'a>) -> Result<()> {
         match expr {
-            Expr::ArithmeticFunc(func) => {
-                let res_items = self.eval_arithmetic_func(item.clone(), func)?;
+            Expr::UnaryOp { op, operand } => {
+                let res_items = self.eval_unary_arithmetic_func(item.clone(), op, operand)?;
                 for res_item in res_items {
                     self.items.push_back(res_item);
                 }
             }
-            Expr::BinaryOp { .. } | Expr::ExistsFunc(_) => {
+            Expr::BinaryOp { op, left, right } => match op {
+                BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+                | BinaryOperator::Modulo => {
+                    let res_items =
+                        self.eval_binary_arithmetic_func(item.clone(), op, left, right)?;
+                    for res_item in res_items {
+                        self.items.push_back(res_item);
+                    }
+                }
+                _ => {
+                    let res = self.eval_filter_expr(item, expr)?;
+                    let res_item = if let Some(res) = res {
+                        JsonbItem::Boolean(res)
+                    } else {
+                        JsonbItem::Null
+                    };
+                    self.items.push_back(res_item);
+                }
+            },
+            Expr::ExistsFunc(_) => {
                 let res = self.eval_filter_expr(item, expr)?;
                 let res_item = if let Some(res) = res {
                     JsonbItem::Boolean(res)
@@ -642,56 +662,61 @@ impl<'a> Selector<'a> {
         Ok(())
     }
 
-    fn eval_arithmetic_func(
+    fn eval_unary_arithmetic_func(
         &mut self,
         item: JsonbItem<'a>,
-        func: &'a ArithmeticFunc<'a>,
+        op: &UnaryOperator,
+        operand: &'a Expr<'a>,
     ) -> Result<Vec<JsonbItem<'a>>> {
-        match func {
-            ArithmeticFunc::Unary { op, operand } => {
-                let operand = self.convert_expr_val(item.clone(), operand)?;
-                let Ok(nums) = operand.convert_to_numbers() else {
-                    return Err(Error::InvalidJsonPath);
-                };
-                let mut num_vals = Vec::with_capacity(nums.len());
-                match op {
-                    UnaryArithmeticOperator::Add => {
-                        for num in nums {
-                            let owned_num = to_owned_jsonb(&num)?;
-                            num_vals.push(JsonbItem::Owned(owned_num));
-                        }
-                    }
-                    UnaryArithmeticOperator::Subtract => {
-                        for num in nums {
-                            let neg_num = num.neg()?;
-                            let owned_num = to_owned_jsonb(&neg_num)?;
-                            num_vals.push(JsonbItem::Owned(owned_num));
-                        }
-                    }
-                };
-                Ok(num_vals)
+        let operand = self.convert_expr_val(item, operand)?;
+        let Ok(nums) = operand.convert_to_numbers() else {
+            return Err(Error::InvalidJsonPath);
+        };
+        let mut num_vals = Vec::with_capacity(nums.len());
+        match op {
+            UnaryOperator::Add => {
+                for num in nums {
+                    let owned_num = to_owned_jsonb(&num)?;
+                    num_vals.push(JsonbItem::Owned(owned_num));
+                }
             }
-            ArithmeticFunc::Binary { op, left, right } => {
-                let lhs = self.convert_expr_val(item.clone(), left)?;
-                let rhs = self.convert_expr_val(item.clone(), right)?;
-                let Ok(lnum) = lhs.convert_to_number() else {
-                    return Err(Error::InvalidJsonPath);
-                };
-                let Ok(rnum) = rhs.convert_to_number() else {
-                    return Err(Error::InvalidJsonPath);
-                };
+            UnaryOperator::Subtract => {
+                for num in nums {
+                    let neg_num = num.neg()?;
+                    let owned_num = to_owned_jsonb(&neg_num)?;
+                    num_vals.push(JsonbItem::Owned(owned_num));
+                }
+            }
+        };
+        Ok(num_vals)
+    }
 
-                let num_val = match op {
-                    BinaryArithmeticOperator::Add => lnum.add(rnum)?,
-                    BinaryArithmeticOperator::Subtract => lnum.sub(rnum)?,
-                    BinaryArithmeticOperator::Multiply => lnum.mul(rnum)?,
-                    BinaryArithmeticOperator::Divide => lnum.div(rnum)?,
-                    BinaryArithmeticOperator::Modulo => lnum.rem(rnum)?,
-                };
-                let owned_num = to_owned_jsonb(&num_val)?;
-                Ok(vec![JsonbItem::Owned(owned_num)])
-            }
-        }
+    fn eval_binary_arithmetic_func(
+        &mut self,
+        item: JsonbItem<'a>,
+        op: &BinaryOperator,
+        left: &'a Expr<'a>,
+        right: &'a Expr<'a>,
+    ) -> Result<Vec<JsonbItem<'a>>> {
+        let lhs = self.convert_expr_val(item.clone(), left)?;
+        let rhs = self.convert_expr_val(item.clone(), right)?;
+        let Ok(lnum) = lhs.convert_to_number() else {
+            return Err(Error::InvalidJsonPath);
+        };
+        let Ok(rnum) = rhs.convert_to_number() else {
+            return Err(Error::InvalidJsonPath);
+        };
+
+        let num_val = match op {
+            BinaryOperator::Add => lnum.add(rnum)?,
+            BinaryOperator::Subtract => lnum.sub(rnum)?,
+            BinaryOperator::Multiply => lnum.mul(rnum)?,
+            BinaryOperator::Divide => lnum.div(rnum)?,
+            BinaryOperator::Modulo => lnum.rem(rnum)?,
+            _ => return Ok(vec![]),
+        };
+        let owned_num = to_owned_jsonb(&num_val)?;
+        Ok(vec![JsonbItem::Owned(owned_num)])
     }
 
     fn eval_value(&mut self, val: &PathValue<'a>) -> Result<JsonbItem<'a>> {
@@ -730,12 +755,19 @@ impl<'a> Selector<'a> {
                         (_, _) => Ok(None),
                     }
                 }
-                _ => {
+                BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::Lte
+                | BinaryOperator::Gt
+                | BinaryOperator::Gte
+                | BinaryOperator::StartsWith => {
                     let lhs = self.convert_expr_val(item.clone(), left)?;
                     let rhs = self.convert_expr_val(item.clone(), right)?;
                     let res = self.eval_compare(op, &lhs, &rhs);
                     Ok(res)
                 }
+                _ => Ok(None),
             },
             Expr::ExistsFunc(paths) => {
                 let res = self.eval_exists(item, paths)?;
@@ -904,7 +936,6 @@ impl<'a> Selector<'a> {
             return res;
         }
         let order = lhs.partial_cmp(&rhs);
-        println!("lhs={:?} rhs={:?} order={:?}", lhs, rhs, order);
         if let Some(order) = order {
             let res = match op {
                 BinaryOperator::Eq => order == Ordering::Equal,
@@ -913,7 +944,9 @@ impl<'a> Selector<'a> {
                 BinaryOperator::Lte => order == Ordering::Equal || order == Ordering::Less,
                 BinaryOperator::Gt => order == Ordering::Greater,
                 BinaryOperator::Gte => order == Ordering::Equal || order == Ordering::Greater,
-                _ => unreachable!(),
+                _ => {
+                    return None;
+                }
             };
             Some(res)
         } else {

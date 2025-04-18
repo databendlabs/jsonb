@@ -29,7 +29,7 @@ rust-version = "1.80"
 byteorder = "1.5.0"
 fast-float2 = "0.2.3"
 itoa = "1.0"
-nom = "7.1.3"
+nom = "8.0.0"
 num-traits = "0.2.19"
 ordered-float = { version = "5.0", default-features = false }
 rand = { version = "0.9.0", features = ["small_rng"] }
