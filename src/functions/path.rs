@@ -138,16 +138,12 @@ impl RawJsonb<'_> {
     /// ```
     pub fn get_by_name(&self, name: &str, ignore_case: bool) -> Result<Option<OwnedJsonb>> {
         let key_name = Cow::Borrowed(name);
-        if let Some(val_item) =
-            self.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
-        {
+        if let Some(val_item) = self.get_object_value_by_key_name(&key_name, false)? {
             let value = OwnedJsonb::from_item(val_item)?;
             return Ok(Some(value));
         }
         if ignore_case {
-            if let Some(val_item) = self.get_object_value_by_key_name(&key_name, |name, key| {
-                key.eq_ignore_ascii_case(name)
-            })? {
+            if let Some(val_item) = self.get_object_value_by_key_name(&key_name, true)? {
                 let value = OwnedJsonb::from_item(val_item)?;
                 return Ok(Some(value));
             }
@@ -258,9 +254,7 @@ impl RawJsonb<'_> {
                         KeyPath::Index(index) => Cow::Owned(index.to_string()),
                         KeyPath::Name(name) | KeyPath::QuotedName(name) => Cow::Borrowed(name),
                     };
-                    if let Some(val_item) =
-                        current.get_object_value_by_key_name(&name, |name, key| key.eq(name))?
-                    {
+                    if let Some(val_item) = current.get_object_value_by_key_name(&name, false)? {
                         current_item = val_item;
                     } else {
                         return Ok(None);

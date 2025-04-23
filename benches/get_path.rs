@@ -78,6 +78,11 @@ fn add_benchmark(c: &mut Criterion) {
             paths: vec!["search_metadata", "max_id_str"],
             expected: "505874924095815681",
         },
+        TestSuite {
+            file: "status_string_values",
+            paths: vec!["status", "status_fSw0bx7gb5GpJHrw2JDN_kgke"],
+            expected: "sViysVYYl35oR",
+        },
     ];
 
     for test_suite in test_suites {
