@@ -38,23 +38,23 @@ pub enum ExtensionValue<'a> {
     Interval(Interval),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Date {
     pub value: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Timestamp {
     pub value: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct TimestampTz {
     pub offset: i8,
     pub value: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Interval {
     pub months: i32,
     pub days: i32,
@@ -229,10 +229,9 @@ impl PartialOrd for ExtensionValue<'_> {
             ExtensionValue::TimestampTz(_) => 1,
             ExtensionValue::Interval(_) => 0,
         };
-        if self_level > other_level {
-            return Some(Ordering::Greater);
-        } else if self_level < other_level {
-            return Some(Ordering::Less);
+        let res = self_level.cmp(&other_level);
+        if matches!(res, Ordering::Greater | Ordering::Less) {
+            return Some(res);
         }
 
         match (self, other) {
@@ -251,6 +250,7 @@ impl PartialOrd for ExtensionValue<'_> {
             (ExtensionValue::Interval(self_data), ExtensionValue::Interval(other_data)) => {
                 Some(self_data.cmp(other_data))
             }
+            (_, _) => None,
         }
     }
 }

@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::error::*;
+use crate::ExtensionValue;
 use crate::Number;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
@@ -183,12 +184,12 @@ impl PartialOrd for JsonbItem<'_> {
             (JsonbItem::Raw(_), JsonbItem::Null) => Some(Ordering::Less),
             (JsonbItem::Null, JsonbItem::Raw(_)) => Some(Ordering::Greater),
             // compare extension
-            (JsonbItem::Extension(self_val), JsonbItem::Extension(other_val)) => {
+            (JsonbItem::Extension(self_data), JsonbItem::Extension(other_data)) => {
                 let self_val = ExtensionValue::decode(self_data).ok()?;
                 let other_val = ExtensionValue::decode(other_data).ok()?;
                 self_val.partial_cmp(&other_val)
             }
-            (JsonbItem::Raw(self_raw), JsonbItem::Extension(other_val)) => {
+            (JsonbItem::Raw(self_raw), JsonbItem::Extension(other_data)) => {
                 let self_val = self_raw.as_extension_value();
                 let other_val = ExtensionValue::decode(other_data).ok()?;
                 if let Ok(Some(self_val)) = self_val {
@@ -197,7 +198,7 @@ impl PartialOrd for JsonbItem<'_> {
                     None
                 }
             }
-            (JsonbItem::Extension(self_val), JsonbItem::Raw(other_raw)) => {
+            (JsonbItem::Extension(self_data), JsonbItem::Raw(other_raw)) => {
                 let self_val = ExtensionValue::decode(self_data).ok()?;
                 let other_val = other_raw.as_extension_value();
                 if let Ok(Some(other_val)) = other_val {
