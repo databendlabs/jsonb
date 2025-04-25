@@ -29,7 +29,7 @@ const MONTHS_PER_YEAR: i32 = 12;
 
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.6f";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ExtensionValue<'a> {
     Binary(&'a [u8]),
     Date(Date),
@@ -200,6 +200,57 @@ impl Display for ExtensionValue<'_> {
             ExtensionValue::Timestamp(v) => write!(f, "{}", v),
             ExtensionValue::TimestampTz(v) => write!(f, "{}", v),
             ExtensionValue::Interval(v) => write!(f, "{}", v),
+        }
+    }
+}
+
+impl Eq for ExtensionValue<'_> {}
+
+impl PartialEq for ExtensionValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.partial_cmp(other) == Some(Ordering::Equal)
+    }
+}
+
+#[allow(clippy::non_canonical_partial_ord_impl)]
+impl PartialOrd for ExtensionValue<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let self_level = match self {
+            ExtensionValue::Binary(_) => 4,
+            ExtensionValue::Date(_) => 3,
+            ExtensionValue::Timestamp(_) => 2,
+            ExtensionValue::TimestampTz(_) => 1,
+            ExtensionValue::Interval(_) => 0,
+        };
+        let other_level = match other {
+            ExtensionValue::Binary(_) => 4,
+            ExtensionValue::Date(_) => 3,
+            ExtensionValue::Timestamp(_) => 2,
+            ExtensionValue::TimestampTz(_) => 1,
+            ExtensionValue::Interval(_) => 0,
+        };
+        if self_level > other_level {
+            return Some(Ordering::Greater);
+        } else if self_level < other_level {
+            return Some(Ordering::Less);
+        }
+
+        match (self, other) {
+            (ExtensionValue::Binary(self_data), ExtensionValue::Binary(other_data)) => {
+                Some(self_data.cmp(other_data))
+            }
+            (ExtensionValue::Date(self_data), ExtensionValue::Date(other_data)) => {
+                Some(self_data.cmp(other_data))
+            }
+            (ExtensionValue::Timestamp(self_data), ExtensionValue::Timestamp(other_data)) => {
+                Some(self_data.cmp(other_data))
+            }
+            (ExtensionValue::TimestampTz(self_data), ExtensionValue::TimestampTz(other_data)) => {
+                Some(self_data.cmp(other_data))
+            }
+            (ExtensionValue::Interval(self_data), ExtensionValue::Interval(other_data)) => {
+                Some(self_data.cmp(other_data))
+            }
         }
     }
 }

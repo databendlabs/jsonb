@@ -66,15 +66,15 @@ impl PartialOrd for JsonbItemType {
             (JsonbItemType::String, _) => Some(Ordering::Greater),
             (_, JsonbItemType::String) => Some(Ordering::Less),
 
-            (JsonbItemType::Extension, JsonbItemType::Extension) => None,
-            (JsonbItemType::Extension, _) => Some(Ordering::Greater),
-            (_, JsonbItemType::Extension) => Some(Ordering::Less),
-
             (JsonbItemType::Number, JsonbItemType::Number) => None,
             (JsonbItemType::Number, _) => Some(Ordering::Greater),
             (_, JsonbItemType::Number) => Some(Ordering::Less),
 
             (JsonbItemType::Boolean, JsonbItemType::Boolean) => None,
+            (JsonbItemType::Boolean, _) => Some(Ordering::Greater),
+            (_, JsonbItemType::Boolean) => Some(Ordering::Less),
+
+            (JsonbItemType::Extension, JsonbItemType::Extension) => None,
         }
     }
 }
@@ -182,6 +182,30 @@ impl PartialOrd for JsonbItem<'_> {
             // compare null, raw jsonb must not null
             (JsonbItem::Raw(_), JsonbItem::Null) => Some(Ordering::Less),
             (JsonbItem::Null, JsonbItem::Raw(_)) => Some(Ordering::Greater),
+            // compare extension
+            (JsonbItem::Extension(self_val), JsonbItem::Extension(other_val)) => {
+                let self_val = ExtensionValue::decode(self_data).ok()?;
+                let other_val = ExtensionValue::decode(other_data).ok()?;
+                self_val.partial_cmp(&other_val)
+            }
+            (JsonbItem::Raw(self_raw), JsonbItem::Extension(other_val)) => {
+                let self_val = self_raw.as_extension_value();
+                let other_val = ExtensionValue::decode(other_data).ok()?;
+                if let Ok(Some(self_val)) = self_val {
+                    self_val.partial_cmp(&other_val)
+                } else {
+                    None
+                }
+            }
+            (JsonbItem::Extension(self_val), JsonbItem::Raw(other_raw)) => {
+                let self_val = ExtensionValue::decode(self_data).ok()?;
+                let other_val = other_raw.as_extension_value();
+                if let Ok(Some(other_val)) = other_val {
+                    self_val.partial_cmp(&other_val)
+                } else {
+                    None
+                }
+            }
             // compare boolean
             (JsonbItem::Boolean(self_val), JsonbItem::Boolean(other_val)) => {
                 self_val.partial_cmp(other_val)

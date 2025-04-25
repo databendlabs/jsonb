@@ -29,11 +29,11 @@ pub(crate) const TT: char = '\x09'; // \t Horizontal Tab
 pub(crate) const NULL_LEVEL: u8 = 8;
 pub(crate) const ARRAY_LEVEL: u8 = 7;
 pub(crate) const OBJECT_LEVEL: u8 = 6;
-pub(crate) const EXTENSION_LEVEL: u8 = 5;
-pub(crate) const STRING_LEVEL: u8 = 4;
-pub(crate) const NUMBER_LEVEL: u8 = 3;
-pub(crate) const TRUE_LEVEL: u8 = 2;
-pub(crate) const FALSE_LEVEL: u8 = 1;
+pub(crate) const STRING_LEVEL: u8 = 5;
+pub(crate) const NUMBER_LEVEL: u8 = 4;
+pub(crate) const TRUE_LEVEL: u8 = 3;
+pub(crate) const FALSE_LEVEL: u8 = 2;
+pub(crate) const EXTENSION_LEVEL: u8 = 1;
 
 pub(crate) const TYPE_STRING: &str = "string";
 pub(crate) const TYPE_NULL: &str = "null";

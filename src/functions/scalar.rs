@@ -1441,6 +1441,74 @@ impl RawJsonb<'_> {
         Ok(matches!(jsonb_item_type, JsonbItemType::Object(_)))
     }
 
+    /// Checks if the JSONB value is a extension(binary, date, timestamp, timestamp_tz, interval) value.
+    ///
+    /// This function checks if the JSONB value represents a extension value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a extension value.
+    /// * `Ok(false)` - If the value is not a extension value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Binary value
+    /// let binary_value = Value::Binary(&[1,2,3]);
+    /// let buf = binary_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_extension_value().unwrap());
+    /// ```
+    pub fn is_extension_value(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        Ok(matches!(jsonb_item_type, JsonbItemType::Extension))
+    }
+
+    /// Extracts a extension value from a JSONB value.
+    ///
+    /// This function attempts to extract a extension value from the JSONB value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(ExtensionValue))` - If the value is a extension value, the extracted extension value.
+    /// * `Ok(None)` - If the value is not a extension value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the extension value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // Binary value
+    /// let binary_value = Value::Binary(&[1,2,3]);
+    /// let buf = binary_value.to_vec();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_extension_value().unwrap(), Some(ExtensionValue::Binary(&[1,2,3]));
+    /// ```
+    pub fn as_extension_value(&self) -> Result<Option<ExtensionValue>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(data) => {
+                let val = ExtensionValue::decode(data)?;
+                Ok(Some(val))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Checks if the JSONB value is a binary value.
     ///
     /// This function checks if the JSONB value represents a binary value.
@@ -1490,7 +1558,6 @@ impl RawJsonb<'_> {
     /// Extracts a binary value from a JSONB value.
     ///
     /// This function attempts to extract a binary value from the JSONB value.
-    /// If the JSONB value is a binary value, it returns the binary; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -1578,7 +1645,6 @@ impl RawJsonb<'_> {
     /// Extracts a date value from a JSONB value.
     ///
     /// This function attempts to extract a date value from the JSONB value.
-    /// If the JSONB value is a date value, it returns the date; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -1667,7 +1733,6 @@ impl RawJsonb<'_> {
     /// Extracts a timestamp value from a JSONB value.
     ///
     /// This function attempts to extract a timestamp value from the JSONB value.
-    /// If the JSONB value is a timestamp value, it returns the timestamp; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -1756,7 +1821,6 @@ impl RawJsonb<'_> {
     /// Extracts a timestamp tz value from a JSONB value.
     ///
     /// This function attempts to extract a timestamp tz value from the JSONB value.
-    /// If the JSONB value is a timestamp tz value, it returns the timestamp tz; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
@@ -1845,7 +1909,6 @@ impl RawJsonb<'_> {
     /// Extracts a interval value from a JSONB value.
     ///
     /// This function attempts to extract a interval value from the JSONB value.
-    /// If the JSONB value is a interval value, it returns the interval; otherwise, it returns `None`.
     ///
     /// # Arguments
     ///
