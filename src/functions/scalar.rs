@@ -1489,6 +1489,7 @@ impl RawJsonb<'_> {
     /// # Examples
     ///
     /// ```rust
+    /// use jsonb::ExtensionValue;
     /// use jsonb::RawJsonb;
     /// use jsonb::Value;
     ///
