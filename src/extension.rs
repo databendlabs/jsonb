@@ -216,18 +216,18 @@ impl PartialEq for ExtensionValue<'_> {
 impl PartialOrd for ExtensionValue<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         let self_level = match self {
-            ExtensionValue::Binary(_) => 4,
-            ExtensionValue::Date(_) => 3,
+            ExtensionValue::Binary(_) => 0,
+            ExtensionValue::Date(_) => 1,
             ExtensionValue::Timestamp(_) => 2,
-            ExtensionValue::TimestampTz(_) => 1,
-            ExtensionValue::Interval(_) => 0,
+            ExtensionValue::TimestampTz(_) => 3,
+            ExtensionValue::Interval(_) => 4,
         };
         let other_level = match other {
-            ExtensionValue::Binary(_) => 4,
-            ExtensionValue::Date(_) => 3,
+            ExtensionValue::Binary(_) => 0,
+            ExtensionValue::Date(_) => 1,
             ExtensionValue::Timestamp(_) => 2,
-            ExtensionValue::TimestampTz(_) => 1,
-            ExtensionValue::Interval(_) => 0,
+            ExtensionValue::TimestampTz(_) => 3,
+            ExtensionValue::Interval(_) => 4,
         };
         let res = self_level.cmp(&other_level);
         if matches!(res, Ordering::Greater | Ordering::Less) {
