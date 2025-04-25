@@ -1496,7 +1496,7 @@ impl RawJsonb<'_> {
     /// let binary_value = Value::Binary(&[1,2,3]);
     /// let buf = binary_value.to_vec();
     /// let raw_jsonb = RawJsonb::new(&buf);
-    /// assert_eq!(raw_jsonb.as_extension_value().unwrap(), Some(ExtensionValue::Binary(&[1,2,3]));
+    /// assert_eq!(raw_jsonb.as_extension_value().unwrap(), Some(ExtensionValue::Binary(&[1,2,3])));
     /// ```
     pub fn as_extension_value(&self) -> Result<Option<ExtensionValue>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
