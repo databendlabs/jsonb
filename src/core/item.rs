@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::error::*;
+use crate::ExtensionValue;
 use crate::Number;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
@@ -31,6 +32,8 @@ pub(crate) enum JsonbItemType {
     Number,
     /// The String JSONB type.
     String,
+    /// The Extension JSONB type.
+    Extension,
     /// The Array JSONB type with the length of items.
     Array(usize),
     /// The Object JSONB type with the length of key and value pairs.
@@ -69,6 +72,10 @@ impl PartialOrd for JsonbItemType {
             (_, JsonbItemType::Number) => Some(Ordering::Less),
 
             (JsonbItemType::Boolean, JsonbItemType::Boolean) => None,
+            (JsonbItemType::Boolean, _) => Some(Ordering::Greater),
+            (_, JsonbItemType::Boolean) => Some(Ordering::Less),
+
+            (JsonbItemType::Extension, JsonbItemType::Extension) => None,
         }
     }
 }
@@ -92,6 +99,8 @@ pub(crate) enum JsonbItem<'a> {
     Number(&'a [u8]),
     /// Represents a JSONB string, stored as a byte slice.
     String(&'a [u8]),
+    /// Represents a JSONB extension values, stored as a byte slice.
+    Extension(&'a [u8]),
     /// Represents raw JSONB data, using a borrowed slice.
     Raw(RawJsonb<'a>),
     /// Represents owned JSONB data.
@@ -105,6 +114,7 @@ impl<'a> JsonbItem<'a> {
             JsonbItem::Boolean(_) => Ok(JsonbItemType::Boolean),
             JsonbItem::Number(_) => Ok(JsonbItemType::Number),
             JsonbItem::String(_) => Ok(JsonbItemType::String),
+            JsonbItem::Extension(_) => Ok(JsonbItemType::Extension),
             JsonbItem::Raw(raw) => raw.jsonb_item_type(),
             JsonbItem::Owned(owned) => owned.as_raw().jsonb_item_type(),
         }
@@ -173,6 +183,30 @@ impl PartialOrd for JsonbItem<'_> {
             // compare null, raw jsonb must not null
             (JsonbItem::Raw(_), JsonbItem::Null) => Some(Ordering::Less),
             (JsonbItem::Null, JsonbItem::Raw(_)) => Some(Ordering::Greater),
+            // compare extension
+            (JsonbItem::Extension(self_data), JsonbItem::Extension(other_data)) => {
+                let self_val = ExtensionValue::decode(self_data).ok()?;
+                let other_val = ExtensionValue::decode(other_data).ok()?;
+                self_val.partial_cmp(&other_val)
+            }
+            (JsonbItem::Raw(self_raw), JsonbItem::Extension(other_data)) => {
+                let self_val = self_raw.as_extension_value();
+                let other_val = ExtensionValue::decode(other_data).ok()?;
+                if let Ok(Some(self_val)) = self_val {
+                    self_val.partial_cmp(&other_val)
+                } else {
+                    None
+                }
+            }
+            (JsonbItem::Extension(self_data), JsonbItem::Raw(other_raw)) => {
+                let self_val = ExtensionValue::decode(self_data).ok()?;
+                let other_val = other_raw.as_extension_value();
+                if let Ok(Some(other_val)) = other_val {
+                    self_val.partial_cmp(&other_val)
+                } else {
+                    None
+                }
+            }
             // compare boolean
             (JsonbItem::Boolean(self_val), JsonbItem::Boolean(other_val)) => {
                 self_val.partial_cmp(other_val)

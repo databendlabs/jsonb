@@ -85,6 +85,7 @@ pub enum Error {
     InvalidJsonbHeader,
     InvalidJsonbJEntry,
     InvalidJsonbNumber,
+    InvalidJsonbExtension,
 
     InvalidJsonPath,
     InvalidJsonPathPredicate,
@@ -123,13 +124,6 @@ impl Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        // match self {
-        //    Error::JsonError(e) => Some(e),
-        //    Error::Json5Error(e) => Some(e),
-        //    Error::Io(e) => Some(e),
-        //    Error::Utf8(e) => Some(e),
-        //    _ => None,
-        //}
         None
     }
 }

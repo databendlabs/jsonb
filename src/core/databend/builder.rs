@@ -199,6 +199,11 @@ fn append_jsonb_item(buf: &mut Vec<u8>, jentry_index: &mut usize, item: JsonbIte
             replace_jentry(buf, jentry, jentry_index);
             buf.extend_from_slice(data);
         }
+        JsonbItem::Extension(data) => {
+            let jentry = JEntry::make_extension_jentry(data.len());
+            replace_jentry(buf, jentry, jentry_index);
+            buf.extend_from_slice(data);
+        }
         JsonbItem::Raw(raw_jsonb) => {
             append_raw_jsonb_data(buf, jentry_index, raw_jsonb)?;
         }

@@ -14,7 +14,11 @@
 
 use std::borrow::Cow;
 
-use jsonb::{from_slice, Object, Value};
+use ethnum::I256;
+use jsonb::{
+    from_slice, Date, Decimal128, Decimal256, Interval, Number, Object, Timestamp, TimestampTz,
+    Value,
+};
 
 #[test]
 fn test_decode_null() {
@@ -141,6 +145,31 @@ fn test_decode_float64() {
 }
 
 #[test]
+fn test_decode_decimal() {
+    let tests = vec![
+        (b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x26\x02".to_vec(), Number::Decimal128(Decimal128 {
+            precision: 38,
+            scale: 2,
+            value: 1234
+        })),
+        (b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x26\x0A".to_vec(), Number::Decimal128(Decimal128 {
+            precision: 38,
+            scale: 10,
+            value: 10000000000485
+        })),
+        (b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x4C\x02".to_vec(),
+        Number::Decimal256(Decimal256 { precision: 76, scale: 2, value: I256::new(1234) })),
+        (b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x4C\x0A".to_vec(),
+            Number::Decimal256(Decimal256 { precision: 76, scale: 10, value: I256::new(10000000000485) })),
+    ];
+    for (s, v) in tests {
+        let value = from_slice(s.as_slice()).unwrap();
+        assert!(value.is_number());
+        assert_eq!(value.as_number().unwrap(), v);
+    }
+}
+
+#[test]
 fn test_decode_array() {
     let tests = vec![(
         b"\x80\0\0\x02\x30\0\0\0\x40\0\0\0".to_vec(),
@@ -174,6 +203,46 @@ fn test_decode_object() {
             assert_eq!(lk, rk);
             assert_eq!(lv, rv);
         }
+    }
+}
+
+#[test]
+fn test_decode_extension() {
+    let tests = vec![
+        (
+            b"\x20\0\0\0\x60\0\0\x04\0\x01\x02\x03".to_vec(),
+            Value::Binary(&[1, 2, 3]),
+        ),
+        (
+            b"\x20\0\0\0\x60\0\0\x05\x10\0\0\x4f\x94".to_vec(),
+            Value::Date(Date { value: 20372 }),
+        ),
+        (
+            b"\x20\0\0\0\x60\0\0\x09\x20\0\x06\x40\xd6\xb7\x23\x80\0".to_vec(),
+            Value::Timestamp(Timestamp {
+                value: 1760140800000000,
+            }),
+        ),
+        (
+            b"\x20\0\0\0\x60\0\0\x0a\x30\0\x06\x40\xd6\xb7\x23\x80\0\x08".to_vec(),
+            Value::TimestampTz(TimestampTz {
+                offset: 8,
+                value: 1760140800000000,
+            }),
+        ),
+        (
+            b"\x20\0\0\0\x60\0\0\x11\x40\0\0\0\x0A\0\0\0\x14\0\0\0\0\x11\xE1\xA3\0".to_vec(),
+            Value::Interval(Interval {
+                months: 10,
+                days: 20,
+                micros: 300000000,
+            }),
+        ),
+    ];
+
+    for (s, v) in tests {
+        let value = from_slice(s.as_slice()).unwrap();
+        assert_eq!(value, v);
     }
 }
 

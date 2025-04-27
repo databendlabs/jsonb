@@ -27,6 +27,7 @@ pub(super) const NUMBER_TAG: u32 = 0x20000000;
 pub(super) const FALSE_TAG: u32 = 0x30000000;
 pub(super) const TRUE_TAG: u32 = 0x40000000;
 pub(super) const CONTAINER_TAG: u32 = 0x50000000;
+pub(super) const EXTENSION_TAG: u32 = 0x60000000;
 
 // JSONB number constants
 pub(super) const NUMBER_ZERO: u8 = 0x00;
@@ -36,6 +37,14 @@ pub(super) const NUMBER_NEG_INF: u8 = 0x30;
 pub(super) const NUMBER_INT: u8 = 0x40;
 pub(super) const NUMBER_UINT: u8 = 0x50;
 pub(super) const NUMBER_FLOAT: u8 = 0x60;
+pub(super) const NUMBER_DECIMAL: u8 = 0x70;
+
+// JSONB extension constants
+pub(super) const EXTENSION_BINARY: u8 = 0x00;
+pub(super) const EXTENSION_DATE: u8 = 0x10;
+pub(super) const EXTENSION_TIMESTAMP: u8 = 0x20;
+pub(super) const EXTENSION_TIMESTAMP_TZ: u8 = 0x30;
+pub(super) const EXTENSION_INTERVAL: u8 = 0x40;
 
 // @todo support offset mode
 #[allow(dead_code)]

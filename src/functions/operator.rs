@@ -27,6 +27,7 @@ use crate::core::ObjectBuilder;
 use crate::core::ObjectIterator;
 use crate::error::*;
 use crate::number::Number;
+use crate::ExtensionValue;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
 
@@ -41,6 +42,12 @@ impl RawJsonb<'_> {
     /// * `"string"`
     /// * `"array"`
     /// * `"object"`
+    /// * `"decimal"`
+    /// * `"binary"`
+    /// * `"date"`
+    /// * `"timestamp"`
+    /// * `"timestamp_tz"`
+    /// * `"interval"`
     ///
     /// # Arguments
     ///
@@ -86,8 +93,37 @@ impl RawJsonb<'_> {
         match jsonb_item_type {
             JsonbItemType::Null => Ok(TYPE_NULL),
             JsonbItemType::Boolean => Ok(TYPE_BOOLEAN),
-            JsonbItemType::Number => Ok(TYPE_NUMBER),
+            JsonbItemType::Number => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Number(data) => {
+                        let val = Number::decode(data)?;
+                        match val {
+                            Number::Decimal128(_v) => Ok(TYPE_DECIMAL),
+                            Number::Decimal256(_v) => Ok(TYPE_DECIMAL),
+                            _ => Ok(TYPE_NUMBER),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
             JsonbItemType::String => Ok(TYPE_STRING),
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(data) => {
+                        let val = ExtensionValue::decode(data)?;
+                        match val {
+                            ExtensionValue::Binary(_v) => Ok(TYPE_BINARY),
+                            ExtensionValue::Date(_v) => Ok(TYPE_DATE),
+                            ExtensionValue::Timestamp(_v) => Ok(TYPE_TIMESTAMP),
+                            ExtensionValue::TimestampTz(_v) => Ok(TYPE_TIMESTAMP_TZ),
+                            ExtensionValue::Interval(_v) => Ok(TYPE_INTERVAL),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
             JsonbItemType::Array(_) => Ok(TYPE_ARRAY),
             JsonbItemType::Object(_) => Ok(TYPE_OBJECT),
         }
@@ -666,6 +702,12 @@ impl RawJsonb<'_> {
             JsonbItem::String(data) => {
                 buf.push(depth);
                 buf.push(STRING_LEVEL);
+                buf.extend_from_slice(data);
+                buf.push(0);
+            }
+            JsonbItem::Extension(data) => {
+                buf.push(depth);
+                buf.push(EXTENSION_LEVEL);
                 buf.extend_from_slice(data);
                 buf.push(0);
             }

@@ -217,7 +217,7 @@ impl PartialEq for RawJsonb<'_> {
 /// The ordering is defined as follows:
 ///
 /// 1. Null is considered greater than any other type.
-/// 2. Scalars are compared based on their type and value (String > Number > Boolean).
+/// 2. Scalars are compared based on their type and value (String > Number > Boolean > ExtensionValue).
 /// 3. Arrays are compared element by element.
 /// 4. Objects are compared based on their keys and values.
 /// 5. Arrays are greater than objects and scalars.
@@ -287,6 +287,14 @@ impl PartialOrd for RawJsonb<'_> {
             (JsonbItemType::Boolean, JsonbItemType::Boolean) => {
                 let self_val = self.as_bool();
                 let other_val = other.as_bool();
+                match (self_val, other_val) {
+                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
+                    (_, _) => None,
+                }
+            }
+            (JsonbItemType::Extension, JsonbItemType::Extension) => {
+                let self_val = self.as_extension_value();
+                let other_val = other.as_extension_value();
                 match (self_val, other_val) {
                     (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
                     (_, _) => None,

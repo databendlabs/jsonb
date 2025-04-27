@@ -66,6 +66,7 @@
 mod constants;
 pub mod core;
 mod error;
+mod extension;
 mod from;
 mod functions;
 pub mod jsonpath;
@@ -78,8 +79,11 @@ mod util;
 mod value;
 
 pub use error::Error;
+pub use extension::*;
 #[allow(unused_imports)]
 pub use from::*;
+pub use number::Decimal128;
+pub use number::Decimal256;
 pub use number::Number;
 pub use owned::to_owned_jsonb;
 pub use owned::OwnedJsonb;
