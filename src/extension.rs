@@ -29,35 +29,76 @@ const MONTHS_PER_YEAR: i32 = 12;
 
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.6f";
 
+/// Represents extended JSON value types that are not supported in standard JSON.
+///
+/// Standard JSON only supports strings, numbers, booleans, null, arrays, and objects.
+/// This enum provides additional data types commonly needed in database systems and
+/// other applications that require more specialized data representations.
 #[derive(Debug, Clone)]
 pub enum ExtensionValue<'a> {
+    /// Binary data (byte array), allowing efficient storage of binary content
+    /// that would otherwise require base64 encoding in standard JSON
     Binary(&'a [u8]),
+    /// Calendar date without time component (year, month, day)
     Date(Date),
+    /// Timestamp with microsecond precision but without timezone information
     Timestamp(Timestamp),
+    /// Timestamp with microsecond precision and timezone offset information
     TimestampTz(TimestampTz),
+    /// Time interval representation for duration calculations
     Interval(Interval),
 }
 
+/// Represents a calendar date (year, month, day) without time component.
+///
+/// The value is stored as days since the Unix epoch (January 1, 1970).
+/// This allows for efficient date arithmetic and comparison operations.
+/// Standard JSON has no native date type and typically uses ISO 8601 strings.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Date {
+    /// Days since Unix epoch (January 1, 1970)
+    /// Positive values represent dates after the epoch, negative values represent dates before
     pub value: i32,
 }
 
+/// Represents a timestamp (date and time) without timezone information.
+///
+/// The value is stored as microseconds since the Unix epoch (January 1, 1970 00:00:00 UTC).
+/// This provides microsecond precision for timestamp operations.
+/// Standard JSON has no native timestamp type and typically uses ISO 8601 strings.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Timestamp {
+    /// Microseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
     pub value: i64,
 }
 
+/// Represents a timestamp with timezone information.
+///
+/// Combines a timestamp value with a timezone offset, allowing for
+/// timezone-aware datetime operations. The timestamp is stored in UTC,
+/// and the offset indicates the local timezone.
+/// Standard JSON has no native timezone-aware timestamp type.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct TimestampTz {
+    /// Timezone offset in hours from UTC
     pub offset: i8,
+    /// Microseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
     pub value: i64,
 }
 
+/// Represents a time interval or duration.
+///
+/// This structure can represent complex time intervals with separate
+/// components for months, days, and microseconds, allowing for precise
+/// duration calculations that account for calendar irregularities.
+/// Standard JSON has no native interval/duration type.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Interval {
+    /// Number of months in the interval
     pub months: i32,
+    /// Number of days in the interval
     pub days: i32,
+    /// Number of microseconds in the interval
     pub micros: i64,
 }
 

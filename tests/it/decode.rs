@@ -16,8 +16,8 @@ use std::borrow::Cow;
 
 use ethnum::I256;
 use jsonb::{
-    from_slice, Date, Decimal128, Decimal256, Interval, Number, Object, Timestamp, TimestampTz,
-    Value,
+    from_slice, Date, Decimal128, Decimal256, Decimal64, Interval, Number, Object, Timestamp,
+    TimestampTz, Value,
 };
 
 #[test]
@@ -145,22 +145,44 @@ fn test_decode_float64() {
 }
 
 #[test]
-fn test_decode_decimal() {
+fn test_decode_deprected_decimal() {
+    // Compatible with deprecated Decimal128 and Decimal256 formats, including precision
     let tests = vec![
         (b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x26\x02".to_vec(), Number::Decimal128(Decimal128 {
-            precision: 38,
             scale: 2,
             value: 1234
         })),
         (b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x26\x0A".to_vec(), Number::Decimal128(Decimal128 {
-            precision: 38,
             scale: 10,
             value: 10000000000485
         })),
         (b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x4C\x02".to_vec(),
-        Number::Decimal256(Decimal256 { precision: 76, scale: 2, value: I256::new(1234) })),
+        Number::Decimal256(Decimal256 { scale: 2, value: I256::new(1234) })),
         (b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x4C\x0A".to_vec(),
-            Number::Decimal256(Decimal256 { precision: 76, scale: 10, value: I256::new(10000000000485) })),
+            Number::Decimal256(Decimal256 { scale: 10, value: I256::new(10000000000485) })),
+    ];
+    for (s, v) in tests {
+        let value = from_slice(s.as_slice()).unwrap();
+        assert!(value.is_number());
+        assert_eq!(value.as_number().unwrap(), v);
+    }
+}
+
+#[test]
+fn test_decode_decimal() {
+    let tests = vec![
+        (b"\x20\0\0\0\x20\0\0\x0A\x70\0\0\0\0\0\0\x04\xD2\x02".to_vec(), Number::Decimal64(Decimal64 {
+            scale: 2,
+            value: 1234
+        })),
+        (b"\x20\0\0\0\x20\0\0\x12\x70\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x0A".to_vec(), Number::Decimal128(Decimal128 {
+            scale: 10,
+            value: 10000000000485
+        })),
+        (b"\x20\0\0\0\x20\0\0\x22\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x02".to_vec(),
+        Number::Decimal256(Decimal256 { scale: 2, value: I256::new(1234) })),
+        (b"\x20\0\0\0\x20\0\0\x22\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x09\x18\x4E\x72\xA1\xE5\x0A".to_vec(),
+            Number::Decimal256(Decimal256 { scale: 10, value: I256::new(10000000000485) })),
     ];
     for (s, v) in tests {
         let value = from_slice(s.as_slice()).unwrap();

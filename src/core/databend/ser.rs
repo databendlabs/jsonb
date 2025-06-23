@@ -487,20 +487,7 @@ impl Serialize for RawJsonb<'_> {
                     NUMBER_TAG => {
                         let num = Number::decode(&self.data[payload_start..payload_end])
                             .map_err(|e| ser::Error::custom(format!("{e}")))?;
-
-                        match num {
-                            Number::Int64(i) => serializer.serialize_i64(i),
-                            Number::UInt64(i) => serializer.serialize_u64(i),
-                            Number::Float64(i) => serializer.serialize_f64(i),
-                            Number::Decimal128(i) => {
-                                let v = i.to_float64();
-                                serializer.serialize_f64(v)
-                            }
-                            Number::Decimal256(i) => {
-                                let v = i.to_float64();
-                                serializer.serialize_f64(v)
-                            }
-                        }
+                        num.serialize(serializer)
                     }
                     STRING_TAG => {
                         let s = unsafe {
@@ -539,19 +526,7 @@ impl Serialize for RawJsonb<'_> {
                         NUMBER_TAG => {
                             let num = Number::decode(&self.data[payload_start..payload_end])
                                 .map_err(|e| ser::Error::custom(format!("{e}")))?;
-                            match num {
-                                Number::Int64(i) => serialize_seq.serialize_element(&i)?,
-                                Number::UInt64(i) => serialize_seq.serialize_element(&i)?,
-                                Number::Float64(i) => serialize_seq.serialize_element(&i)?,
-                                Number::Decimal128(i) => {
-                                    let v = i.to_float64();
-                                    serialize_seq.serialize_element(&v)?
-                                }
-                                Number::Decimal256(i) => {
-                                    let v = i.to_float64();
-                                    serialize_seq.serialize_element(&v)?
-                                }
-                            }
+                            serialize_seq.serialize_element(&num)?;
                         }
                         STRING_TAG => {
                             let s = unsafe {
@@ -624,19 +599,7 @@ impl Serialize for RawJsonb<'_> {
                         NUMBER_TAG => {
                             let num = Number::decode(&self.data[payload_start..payload_end])
                                 .map_err(|e| ser::Error::custom(format!("{e}")))?;
-                            match num {
-                                Number::Int64(i) => serialize_map.serialize_entry(&k, &i)?,
-                                Number::UInt64(i) => serialize_map.serialize_entry(&k, &i)?,
-                                Number::Float64(i) => serialize_map.serialize_entry(&k, &i)?,
-                                Number::Decimal128(i) => {
-                                    let v = i.to_float64();
-                                    serialize_map.serialize_entry(&k, &v)?
-                                }
-                                Number::Decimal256(i) => {
-                                    let v = i.to_float64();
-                                    serialize_map.serialize_entry(&k, &v)?
-                                }
-                            }
+                            serialize_map.serialize_entry(&k, &num)?;
                         }
                         STRING_TAG => {
                             let s = unsafe {

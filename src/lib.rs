@@ -84,6 +84,7 @@ pub use extension::*;
 pub use from::*;
 pub use number::Decimal128;
 pub use number::Decimal256;
+pub use number::Decimal64;
 pub use number::Number;
 pub use owned::to_owned_jsonb;
 pub use owned::OwnedJsonb;

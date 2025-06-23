@@ -213,9 +213,10 @@ impl<'de> Deserializer<'de> {
         match num {
             Number::Int64(n) => T::from_i64(n).ok_or(Error::UnexpectedType),
             Number::UInt64(n) => T::from_u64(n).ok_or(Error::UnexpectedType),
-            Number::Float64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
-                Err(Error::UnexpectedType)
-            }
+            Number::Float64(_)
+            | Number::Decimal64(_)
+            | Number::Decimal128(_)
+            | Number::Decimal256(_) => Err(Error::UnexpectedType),
         }
     }
 
@@ -228,6 +229,10 @@ impl<'de> Deserializer<'de> {
             Number::Int64(n) => T::from_i64(n).ok_or(Error::UnexpectedType),
             Number::UInt64(n) => T::from_u64(n).ok_or(Error::UnexpectedType),
             Number::Float64(n) => T::from_f64(n).ok_or(Error::UnexpectedType),
+            Number::Decimal64(v) => {
+                let n = v.to_float64();
+                T::from_f64(n).ok_or(Error::UnexpectedType)
+            }
             Number::Decimal128(v) => {
                 let n = v.to_float64();
                 T::from_f64(n).ok_or(Error::UnexpectedType)
@@ -317,6 +322,10 @@ impl<'de> Deserializer<'de> {
                         }
                     }
                     Number::Float64(i) => visitor.visit_f64(i),
+                    Number::Decimal64(i) => {
+                        let v = i.to_float64();
+                        visitor.visit_f64(v)
+                    }
                     Number::Decimal128(i) => {
                         let v = i.to_float64();
                         visitor.visit_f64(v)
