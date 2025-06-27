@@ -32,6 +32,7 @@ use crate::extension::Timestamp;
 use crate::extension::TimestampTz;
 use crate::number::Decimal128;
 use crate::number::Decimal256;
+use crate::number::Decimal64;
 use crate::Number;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
@@ -304,19 +305,23 @@ impl Number {
                 writer.write_all(&v.to_be_bytes())?;
                 Ok(9)
             }
+            Self::Decimal64(v) => {
+                writer.write_all(&[NUMBER_DECIMAL])?;
+                writer.write_all(&v.value.to_be_bytes())?;
+                writer.write_all(&v.scale.to_be_bytes())?;
+                Ok(10)
+            }
             Self::Decimal128(v) => {
                 writer.write_all(&[NUMBER_DECIMAL])?;
                 writer.write_all(&v.value.to_be_bytes())?;
-                writer.write_all(&v.precision.to_be_bytes())?;
                 writer.write_all(&v.scale.to_be_bytes())?;
-                Ok(19)
+                Ok(18)
             }
             Self::Decimal256(v) => {
                 writer.write_all(&[NUMBER_DECIMAL])?;
                 writer.write_all(&v.value.to_be_bytes())?;
-                writer.write_all(&v.precision.to_be_bytes())?;
                 writer.write_all(&v.scale.to_be_bytes())?;
-                Ok(35)
+                Ok(34)
             }
         }
     }
@@ -353,26 +358,36 @@ impl Number {
             },
             NUMBER_FLOAT => Number::Float64(f64::from_be_bytes(bytes[1..].try_into().unwrap())),
             NUMBER_DECIMAL => match len {
-                18 => {
+                9 => {
+                    let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
+                    let scale = u8::from_be_bytes(bytes[9..10].try_into().unwrap());
+                    let dec = Decimal64 { scale, value };
+                    Number::Decimal64(dec)
+                }
+                17 => {
                     let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
-                    let precision = u8::from_be_bytes(bytes[17..18].try_into().unwrap());
-                    let scale = u8::from_be_bytes(bytes[18..19].try_into().unwrap());
-                    let dec = Decimal128 {
-                        precision,
-                        scale,
-                        value,
-                    };
+                    let scale = u8::from_be_bytes(bytes[17..18].try_into().unwrap());
+                    let dec = Decimal128 { scale, value };
                     Number::Decimal128(dec)
                 }
-                34 => {
+                18 => {
+                    // Compatible with deprecated Decimal128 formats, including precision
+                    let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
+                    let scale = u8::from_be_bytes(bytes[18..19].try_into().unwrap());
+                    let dec = Decimal128 { scale, value };
+                    Number::Decimal128(dec)
+                }
+                33 => {
                     let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
-                    let precision = u8::from_be_bytes(bytes[33..34].try_into().unwrap());
+                    let scale = u8::from_be_bytes(bytes[33..34].try_into().unwrap());
+                    let dec = Decimal256 { scale, value };
+                    Number::Decimal256(dec)
+                }
+                34 => {
+                    // Compatible with deprecated Decimal256 formats, including precision
+                    let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[34..35].try_into().unwrap());
-                    let dec = Decimal256 {
-                        precision,
-                        scale,
-                        value,
-                    };
+                    let dec = Decimal256 { scale, value };
                     Number::Decimal256(dec)
                 }
                 _ => {

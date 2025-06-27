@@ -64,17 +64,12 @@ fn test_parse_number_errors() {
     test_parse_err(&[
         ("+", "expected value, pos 1"),
         (".", "expected value, pos 1"),
-        ("-", "EOF while parsing a value, pos 1"),
-        ("00", "invalid number, pos 2"),
+        ("-", "expected value, pos 1"),
         ("0x80", "trailing characters, pos 2"),
         ("\\0", "expected value, pos 1"),
-        (".0", "expected value, pos 1"),
-        ("0.", "EOF while parsing a value, pos 2"),
-        ("1.", "EOF while parsing a value, pos 2"),
-        ("1.a", "invalid number, pos 3"),
-        ("1.e1", "invalid number, pos 3"),
-        ("1e", "EOF while parsing a value, pos 2"),
-        ("1e+", "EOF while parsing a value, pos 3"),
+        ("1.a", "trailing characters, pos 3"),
+        ("1e", "invalid number, pos 2"),
+        ("1e+", "invalid number, pos 3"),
         ("1a", "trailing characters, pos 2"),
     ]);
 }
@@ -242,6 +237,13 @@ fn test_parse_f64() {
              000000000000000000e-10",
             Value::Number(Number::Float64(1e308)),
         ),
+        // Extended JSON number syntax
+        ("+1", Value::Number(Number::Int64(1))),
+        ("00", Value::Number(Number::UInt64(0))),
+        (".0", Value::Number(Number::UInt64(0))),
+        ("0.", Value::Number(Number::UInt64(0))),
+        ("1.", Value::Number(Number::UInt64(1))),
+        ("1.e1", Value::Number(Number::Float64(10.0))),
     ]);
 }
 
@@ -313,7 +315,6 @@ fn test_parse_array() {
         ("[ ", "EOF while parsing a value, pos 2"),
         ("[1", "EOF while parsing a value, pos 2"),
         ("[1,", "EOF while parsing a value, pos 3"),
-        ("[1,]", "expected value, pos 4"),
         ("[1 2]", "expected `,` or `]`, pos 3"),
         ("[]a", "trailing characters, pos 3"),
     ]);
@@ -367,6 +368,20 @@ fn test_parse_array() {
                 ]),
             ]),
         ),
+        // Extended JSON array syntax
+        (
+            "[1, ]",
+            Value::Array(vec![Value::Number(Number::UInt64(1)), Value::Null]),
+        ),
+        (
+            "[ , 2, 3]",
+            Value::Array(vec![
+                Value::Null,
+                Value::Number(Number::UInt64(2)),
+                Value::Number(Number::UInt64(3)),
+            ]),
+        ),
+        ("[ , ]", Value::Array(vec![Value::Null, Value::Null])),
     ]);
 }
 

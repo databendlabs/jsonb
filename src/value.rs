@@ -24,29 +24,54 @@ use rand::distr::SampleString;
 use rand::rng;
 use rand::Rng;
 
-use super::extension::Date;
-use super::extension::Interval;
-use super::extension::Timestamp;
-use super::extension::TimestampTz;
-use super::number::Number;
 use crate::core::Encoder;
+use crate::Date;
+use crate::Decimal128;
+use crate::Decimal256;
+use crate::Decimal64;
+use crate::Interval;
+use crate::Number;
+use crate::Timestamp;
+use crate::TimestampTz;
 
 pub type Object<'a> = BTreeMap<String, Value<'a>>;
 
-// JSONB value
+/// Represents a JSON or extended JSON value.
+///
+/// This enum supports both standard JSON types (Null, Bool, String, Number, Array, Object)
+/// and extended types for specialized data representation (Binary, Date, Timestamp, etc.).
+/// The extended types provide additional functionality beyond the JSON specification,
+/// making this implementation more suitable for database applications and other
+/// systems requiring richer data type support.
 #[derive(Clone, PartialEq, Default, Eq)]
 pub enum Value<'a> {
+    /// Represents a JSON null value
     #[default]
     Null,
+    /// Represents a JSON boolean value (true or false)
     Bool(bool),
+    /// Represents a JSON string value
     String(Cow<'a, str>),
+    /// Represents a JSON number value with various internal representations
     Number(Number),
+    /// Extended type: Represents binary data not supported in standard JSON
+    /// Useful for storing raw bytes, images, or other binary content
     Binary(&'a [u8]),
+    /// Extended type: Represents a calendar date (year, month, day)
+    /// Stored as days since epoch for efficient comparison and manipulation
     Date(Date),
+    /// Extended type: Represents a timestamp without timezone information
+    /// Stored as microseconds since epoch
     Timestamp(Timestamp),
+    /// Extended type: Represents a timestamp with timezone information
+    /// Includes both timestamp and timezone offset
     TimestampTz(TimestampTz),
+    /// Extended type: Represents a time interval or duration
+    /// Useful for time difference calculations and scheduling
     Interval(Interval),
+    /// Represents a JSON array of values
     Array(Vec<Value<'a>>),
+    /// Represents a JSON object as key-value pairs
     Object(Object<'a>),
 }
 
@@ -390,18 +415,42 @@ impl<'a> Value<'a> {
                 let s = Alphanumeric.sample_string(&mut rng, 5);
                 Value::String(Cow::from(s))
             }
-            2 => match rng.random_range(0..=2) {
-                0 => {
+            2 => match rng.random_range(0..=20) {
+                0..=5 => {
                     let n: u64 = rng.random_range(0..=100000);
                     Value::Number(Number::UInt64(n))
                 }
-                1 => {
+                6..=10 => {
                     let n: i64 = rng.random_range(-100000..=100000);
                     Value::Number(Number::Int64(n))
                 }
-                _ => {
+                11..=15 => {
                     let n: f64 = rng.random_range(-4000.0..1.3e5);
                     Value::Number(Number::Float64(n))
+                }
+                16..=17 => {
+                    let scale: u8 = rng.random_range(0..=18);
+                    let value: i64 = rng.random_range(-999999999999999999..=999999999999999999);
+                    Value::Number(Number::Decimal64(Decimal64 { scale, value }))
+                }
+                18..=19 => {
+                    let scale: u8 = rng.random_range(0..=38);
+                    let value: i128 = rng.random_range(
+                        -99999999999999999999999999999999999999i128
+                            ..=99999999999999999999999999999999999999i128,
+                    );
+                    Value::Number(Number::Decimal128(Decimal128 { scale, value }))
+                }
+                _ => {
+                    let scale: u8 = rng.random_range(0..=76);
+                    let lo: i128 =
+                        rng.random_range(0i128..=99999999999999999999999999999999999999i128);
+                    let hi: i128 = rng.random_range(
+                        -999999999999999999999999999999999999i128
+                            ..=999999999999999999999999999999999999i128,
+                    );
+                    let value = ethnum::i256::from_words(hi, lo);
+                    Value::Number(Number::Decimal256(Decimal256 { scale, value }))
                 }
             },
             _ => Value::Null,

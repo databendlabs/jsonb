@@ -17,4 +17,5 @@ mod encode;
 mod functions;
 mod jsonpath_parser;
 mod keypath_parser;
+mod number;
 mod parser;

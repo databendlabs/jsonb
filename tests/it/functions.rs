@@ -26,6 +26,7 @@ use jsonb::parse_value;
 use jsonb::Date;
 use jsonb::Decimal128;
 use jsonb::Decimal256;
+use jsonb::Decimal64;
 use jsonb::Error;
 use jsonb::Interval;
 use jsonb::Number;
@@ -327,7 +328,7 @@ fn test_select_by_path() {
         assert_eq!(owned_jsonbs.len(), expects.len());
         for (owned_jsonb, expect) in owned_jsonbs.into_iter().zip(expects.iter()) {
             let expected_buf = parse_value(expect.as_bytes()).unwrap().to_vec();
-            assert_eq!(owned_jsonb.to_vec(), expected_buf);
+            assert_eq!(owned_jsonb.as_raw(), RawJsonb::new(&expected_buf));
         }
     }
 }
@@ -842,7 +843,6 @@ fn test_to_string() {
         ),
         (
             Value::Number(Number::Decimal128(Decimal128 {
-                precision: 38,
                 scale: 2,
                 value: 1234,
             })),
@@ -850,7 +850,6 @@ fn test_to_string() {
         ),
         (
             Value::Number(Number::Decimal256(Decimal256 {
-                precision: 76,
                 scale: 2,
                 value: I256::new(981724),
             })),
@@ -873,12 +872,10 @@ fn test_to_string() {
                     micros: 300000000,
                 }),
                 Value::Number(Number::Decimal128(Decimal128 {
-                    precision: 38,
                     scale: 2,
                     value: 1234,
                 })),
                 Value::Number(Number::Decimal256(Decimal256 {
-                    precision: 76,
                     scale: 2,
                     value: I256::new(981724),
                 })),
@@ -913,7 +910,6 @@ fn test_to_string() {
                 (
                     "k6".to_string(),
                     Value::Number(Number::Decimal128(Decimal128 {
-                        precision: 38,
                         scale: 2,
                         value: 1234,
                     })),
@@ -921,7 +917,6 @@ fn test_to_string() {
                 (
                     "k7".to_string(),
                     Value::Number(Number::Decimal256(Decimal256 {
-                        precision: 76,
                         scale: 2,
                         value: I256::new(981724),
                     })),
@@ -1063,12 +1058,13 @@ fn test_strip_nulls() {
 #[test]
 fn test_type_of() {
     let sources = vec![
-        (r#"null"#, "null"),
-        (r#"1"#, "number"),
-        (r#"-1.2"#, "number"),
-        (r#""test""#, "string"),
-        (r#"[1,2,3,4,5]"#, "array"),
-        (r#"{"a":1,"b":2}"#, "object"),
+        (r#"null"#, "NULL_VALUE"),
+        (r#"1"#, "INTEGER"),
+        (r#"-1.2"#, "DECIMAL"),
+        (r#"1.912000000000000e+02"#, "DOUBLE"),
+        (r#""test""#, "STRING"),
+        (r#"[1,2,3,4,5]"#, "ARRAY"),
+        (r#"{"a":1,"b":2}"#, "OBJECT"),
     ];
 
     for (s, expect) in sources {
@@ -1080,20 +1076,20 @@ fn test_type_of() {
     }
 
     let extension_sources = vec![
-        (Value::Binary(&[97, 98, 99]), "binary"),
-        (Value::Date(Date { value: 90570 }), "date"),
+        (Value::Binary(&[97, 98, 99]), "BINARY"),
+        (Value::Date(Date { value: 90570 }), "DATE"),
         (
             Value::Timestamp(Timestamp {
                 value: 190390000000,
             }),
-            "timestamp",
+            "TIMESTAMP",
         ),
         (
             Value::TimestampTz(TimestampTz {
                 offset: 8,
                 value: 190390000000,
             }),
-            "timestamp_tz",
+            "TIMESTAMP_TZ",
         ),
         (
             Value::Interval(Interval {
@@ -1101,23 +1097,28 @@ fn test_type_of() {
                 days: 20,
                 micros: 300000000,
             }),
-            "interval",
+            "INTERVAL",
+        ),
+        (
+            Value::Number(Number::Decimal64(Decimal64 {
+                scale: 5,
+                value: 111111111111,
+            })),
+            "DECIMAL",
         ),
         (
             Value::Number(Number::Decimal128(Decimal128 {
-                precision: 38,
                 scale: 2,
-                value: 1234,
+                value: 99999999999999999999999999999999999999,
             })),
-            "decimal",
+            "DECIMAL",
         ),
         (
             Value::Number(Number::Decimal256(Decimal256 {
-                precision: 76,
                 scale: 2,
                 value: I256::new(981724),
             })),
-            "decimal",
+            "DECIMAL",
         ),
     ];
     for (v, expect) in extension_sources {

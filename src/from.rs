@@ -197,6 +197,9 @@ impl<'a> From<Value<'a>> for JsonValue {
                 Number::Int64(v) => JsonValue::Number(v.into()),
                 Number::UInt64(v) => JsonValue::Number(v.into()),
                 Number::Float64(v) => JsonValue::Number(JsonNumber::from_f64(v).unwrap()),
+                Number::Decimal64(v) => {
+                    JsonValue::Number(JsonNumber::from_f64(v.to_float64()).unwrap())
+                }
                 Number::Decimal128(v) => {
                     JsonValue::Number(JsonNumber::from_f64(v.to_float64()).unwrap())
                 }

@@ -66,27 +66,27 @@ impl RawJsonb<'_> {
     /// // Type checking
     /// let arr_jsonb = "[1, 2, 3]".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = arr_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "array");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "ARRAY");
     ///
     /// let obj_jsonb = r#"{"a": 1}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = obj_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "object");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "OBJECT");
     ///
     /// let num_jsonb = "1".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = num_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "number");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "INTEGER");
     ///
     /// let string_jsonb = r#""hello""#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = string_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "string");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "STRING");
     ///
     /// let bool_jsonb = "true".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = bool_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "boolean");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "BOOLEAN");
     ///
     /// let null_jsonb = "null".parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = null_jsonb.as_raw();
-    /// assert_eq!(raw_jsonb.type_of().unwrap(), "null");
+    /// assert_eq!(raw_jsonb.type_of().unwrap(), "NULL_VALUE");
     /// ```
     pub fn type_of(&self) -> Result<&'static str> {
         let jsonb_item_type = self.jsonb_item_type()?;
@@ -99,9 +99,11 @@ impl RawJsonb<'_> {
                     JsonbItem::Number(data) => {
                         let val = Number::decode(data)?;
                         match val {
-                            Number::Decimal128(_v) => Ok(TYPE_DECIMAL),
-                            Number::Decimal256(_v) => Ok(TYPE_DECIMAL),
-                            _ => Ok(TYPE_NUMBER),
+                            Number::UInt64(_) | Number::Int64(_) => Ok(TYPE_INTEGER),
+                            Number::Decimal64(_)
+                            | Number::Decimal128(_)
+                            | Number::Decimal256(_) => Ok(TYPE_DECIMAL),
+                            Number::Float64(_) => Ok(TYPE_DOUBLE),
                         }
                     }
                     _ => Err(Error::InvalidJsonb),
