@@ -1,3 +1,10 @@
+## [v0.5.2] - 2025-06-27
+
+### Added
+
+- Feat: Enhanced JSONB Parser with Decimal Support and Extended Syntax (#86)
+- Feat: Support extension types (#83)
+
 ## [v0.5.1] - 2025-04-18
 
 ### Added
@@ -131,6 +138,8 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.2]: https://github.com/databendlabs/jsonb/compare/v0.5.1...v0.5.2
+[v0.5.1]: https://github.com/databendlabs/jsonb/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/databendlabs/jsonb/compare/v0.4.4...v0.5.0
 [v0.4.4]: https://github.com/databendlabs/jsonb/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/databendlabs/jsonb/compare/v0.4.2...v0.4.3
