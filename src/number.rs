@@ -28,10 +28,97 @@ use serde::de::Deserialize;
 use serde::de::Deserializer;
 use serde::de::Visitor;
 use serde::ser::Serialize;
-use serde::ser::SerializeStruct;
 use serde::ser::Serializer;
 
-const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+// Pre-calculate powers of 10 for common scales to avoid repeated computation
+const I128_POWERS_OF_10: [i128; 39] = [
+    1,
+    10,
+    100,
+    1000,
+    10000,
+    100000,
+    1000000,
+    10000000,
+    100000000,
+    1000000000,
+    10000000000,
+    100000000000,
+    1000000000000,
+    10000000000000,
+    100000000000000,
+    1000000000000000,
+    10000000000000000,
+    100000000000000000,
+    1000000000000000000,
+    10000000000000000000,
+    100000000000000000000,
+    1000000000000000000000,
+    10000000000000000000000,
+    100000000000000000000000,
+    1000000000000000000000000,
+    10000000000000000000000000,
+    100000000000000000000000000,
+    1000000000000000000000000000,
+    10000000000000000000000000000,
+    100000000000000000000000000000,
+    1000000000000000000000000000000,
+    10000000000000000000000000000000,
+    100000000000000000000000000000000,
+    1000000000000000000000000000000000,
+    10000000000000000000000000000000000,
+    100000000000000000000000000000000000,
+    1000000000000000000000000000000000000,
+    10000000000000000000000000000000000000,
+    100000000000000000000000000000000000000,
+];
+
+// Pre-calculate leading zeros to avoid repeated computation
+const LEADING_ZEROS: [&str; 38] = [
+    "",
+    "0",
+    "00",
+    "000",
+    "0000",
+    "00000",
+    "000000",
+    "0000000",
+    "00000000",
+    "000000000",
+    "0000000000",
+    "00000000000",
+    "000000000000",
+    "0000000000000",
+    "00000000000000",
+    "000000000000000",
+    "0000000000000000",
+    "00000000000000000",
+    "000000000000000000",
+    "0000000000000000000",
+    "00000000000000000000",
+    "000000000000000000000",
+    "0000000000000000000000",
+    "00000000000000000000000",
+    "000000000000000000000000",
+    "0000000000000000000000000",
+    "00000000000000000000000000",
+    "000000000000000000000000000",
+    "0000000000000000000000000000",
+    "00000000000000000000000000000",
+    "000000000000000000000000000000",
+    "0000000000000000000000000000000",
+    "00000000000000000000000000000000",
+    "000000000000000000000000000000000",
+    "0000000000000000000000000000000000",
+    "00000000000000000000000000000000000",
+    "000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000",
+];
+
+const I128_SCALE: usize = 38;
+
+static I256_DIVIDE_SCALE: std::sync::LazyLock<i256> =
+    std::sync::LazyLock::new(|| i256::from(100000000000000000000000000000000000000_i128));
 
 /// Represents a decimal number with 64-bit precision.
 ///
@@ -184,6 +271,9 @@ impl Serialize for Number {
     ///
     /// This implementation supports serialization to JSON integers and floats.
     /// It automatically selects the most suitable output format based on the internal representation.
+    ///
+    /// When the `arbitrary_precision` feature is enabled, decimal types are serialized with full precision
+    /// using the optimized formatting functions. When disabled, decimal types are converted to f64.
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -192,11 +282,70 @@ impl Serialize for Number {
             Number::Int64(v) => serializer.serialize_i64(*v),
             Number::UInt64(v) => serializer.serialize_u64(*v),
             Number::Float64(v) => serializer.serialize_f64(*v),
+            #[cfg(feature = "arbitrary_precision")]
             Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
-                let mut serialize_struct = serializer.serialize_struct(NUMBER_TOKEN, 0)?;
-                let val = format!("{}", self);
-                serialize_struct.serialize_field(NUMBER_TOKEN, val.as_str())?;
+                use serde::ser::SerializeStruct;
+                use std::io::Write;
+                const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
+                struct WriteAdapter<'a>(&'a mut std::io::Cursor<&'a mut [u8]>);
+
+                impl std::fmt::Write for WriteAdapter<'_> {
+                    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                        self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
+                    }
+                }
+
+                impl WriteAdapter<'_> {
+                    fn position(&self) -> usize {
+                        self.0.position() as usize
+                    }
+                }
+
+                let mut buffer = [0u8; 128];
+                let mut cursor = std::io::Cursor::new(&mut buffer[..]);
+                let mut adapter = WriteAdapter(&mut cursor);
+
+                match self {
+                    Number::Decimal64(v) => {
+                        format_decimal_i128(&mut adapter, v.value as i128, v.scale as usize)
+                            .map_err(|e| {
+                                serde::ser::Error::custom(format!("Format decimal64 error: {e}"))
+                            })?;
+                    }
+                    Number::Decimal128(v) => {
+                        format_decimal_i128(&mut adapter, v.value, v.scale as usize).map_err(
+                            |e| serde::ser::Error::custom(format!("Format decimal128 error: {e}")),
+                        )?;
+                    }
+                    Number::Decimal256(v) => {
+                        format_decimal_i256(&mut adapter, v.value, v.scale as usize).map_err(
+                            |e| serde::ser::Error::custom(format!("Format decimal256 error: {e}")),
+                        )?;
+                    }
+                    _ => unreachable!(),
+                }
+
+                let pos = adapter.position();
+                let num_str = std::str::from_utf8(&buffer[..pos]).map_err(|e| {
+                    serde::ser::Error::custom(format!("Invalid decimal number: {e}"))
+                })?;
+
+                let mut serialize_struct = serializer.serialize_struct(NUMBER_TOKEN, 1)?;
+                serialize_struct.serialize_field(NUMBER_TOKEN, num_str)?;
                 serialize_struct.end()
+            }
+            #[cfg(not(feature = "arbitrary_precision"))]
+            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                // Convert to f64 when arbitrary_precision is not enabled
+                let (value, scale) = match self {
+                    Number::Decimal64(v) => (v.value as f64, v.scale as i32),
+                    Number::Decimal128(v) => (v.value as f64, v.scale as i32),
+                    Number::Decimal256(v) => (v.value.as_f64(), v.scale as i32),
+                    _ => unreachable!(),
+                };
+                let scaled_value = value / 10f64.powi(scale);
+                serializer.serialize_f64(scaled_value)
             }
         }
     }
@@ -915,80 +1064,165 @@ impl Display for Number {
                 let s = buffer.format(*v);
                 write!(f, "{}", s)
             }
-            Number::Decimal64(v) => {
-                if v.scale == 0 {
-                    write!(f, "{}", v.value)
-                } else {
-                    let pow_scale = 10_i64.pow(v.scale as u32);
-                    if v.value >= 0 {
-                        write!(
-                            f,
-                            "{}.{:0>width$}",
-                            v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    } else {
-                        write!(
-                            f,
-                            "-{}.{:0>width$}",
-                            -v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    }
-                }
+            Number::Decimal64(v) => format_decimal_i128(f, v.value as i128, v.scale as usize),
+            Number::Decimal128(v) => format_decimal_i128(f, v.value, v.scale as usize),
+            Number::Decimal256(v) => format_decimal_i256(f, v.value, v.scale as usize),
+        }
+    }
+}
+
+/// Helper function to format a decimal i128 value to a formatter without string allocations
+///
+/// This function efficiently formats a decimal number with the following optimizations:
+/// 1. Uses stack-allocated buffers instead of heap allocations
+/// 2. Handles the sign separately to simplify the formatting logic
+/// 3. Uses the fast itoa library for integer-to-string conversion
+/// 4. Pre-computed zero strings for padding fractional parts
+fn format_decimal_i128(
+    f: &mut impl std::fmt::Write,
+    value: i128,
+    scale: usize,
+) -> std::fmt::Result {
+    let mut itoa_buf = itoa::Buffer::new();
+    if scale == 0 {
+        f.write_str(itoa_buf.format(value))
+    } else {
+        // Handle negative numbers by writing the minus sign and working with absolute value
+        let value = if value < 0 {
+            f.write_str("-")?;
+            -value
+        } else {
+            value
+        };
+        let pow_scale = I128_POWERS_OF_10[scale];
+        // Split the value into integer and fractional parts
+        let integer_part = value / pow_scale;
+        f.write_str(itoa_buf.format(integer_part))?;
+        f.write_str(".")?;
+
+        // Format the fractional part with leading zeros if needed
+        let fractional_part = (value % pow_scale).abs();
+        let fractional_str = itoa_buf.format(fractional_part);
+
+        let leading_zeros_count = scale - fractional_str.len();
+        if leading_zeros_count > 0 {
+            let zeros = LEADING_ZEROS[leading_zeros_count];
+            f.write_str(zeros)?;
+        }
+        f.write_str(fractional_str)
+    }
+}
+
+/// Formats a decimal i256 value to a formatter without heap allocations.
+///
+/// This function efficiently formats a 256-bit decimal number with the specified scale
+/// (number of decimal places) by splitting it into high and low 128-bit parts.
+fn format_decimal_i256(
+    f: &mut impl std::fmt::Write,
+    value: i256,
+    scale: usize,
+) -> std::fmt::Result {
+    // Handle negative values by writing the minus sign and negating the value
+    let value = if value < i256::ZERO {
+        f.write_str("-")?;
+        -value
+    } else {
+        value
+    };
+
+    // Split the i256 value into high and low parts for easier formatting
+    let high_part = (value / *I256_DIVIDE_SCALE).as_i128();
+    let low_part = (value % *I256_DIVIDE_SCALE).as_i128();
+    let mut itoa_buf = itoa::Buffer::new();
+
+    // Case 1: Integer-only formatting (no decimal places)
+    if scale == 0 {
+        if high_part > 0 {
+            // Format high part first (most significant digits)
+            f.write_str(itoa_buf.format(high_part))?;
+
+            // Format low part with proper zero padding to maintain place value
+            let low_str = itoa_buf.format(low_part);
+            let zeros_count = I128_SCALE - low_str.len();
+            if zeros_count > 0 {
+                let zeros = LEADING_ZEROS[zeros_count];
+                f.write_str(zeros)?;
             }
-            Number::Decimal128(v) => {
-                if v.scale == 0 {
-                    write!(f, "{}", v.value)
-                } else {
-                    let pow_scale = 10_i128.pow(v.scale as u32);
-                    if v.value >= 0 {
-                        write!(
-                            f,
-                            "{}.{:0>width$}",
-                            v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    } else {
-                        write!(
-                            f,
-                            "-{}.{:0>width$}",
-                            -v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    }
-                }
+            f.write_str(low_str)
+        } else {
+            // Only low part has non-zero value
+            f.write_str(itoa_buf.format(low_part))
+        }
+    }
+    // Case 2: Decimal point falls within the high part (large scale)
+    else if scale >= I128_SCALE {
+        // Calculate how many decimal places are in the high part
+        let high_scale = scale - I128_SCALE;
+        let pow_scale = I128_POWERS_OF_10[high_scale];
+
+        // Format the integer portion from the high part
+        let int_part = high_part / pow_scale;
+        f.write_str(itoa_buf.format(int_part))?;
+        f.write_str(".")?;
+
+        // Format the fractional portion from the high part
+        if high_scale > 0 {
+            let high_frac_part = high_part % pow_scale;
+            let high_frac_str = itoa_buf.format(high_frac_part);
+
+            // Add leading zeros if needed
+            let high_zeros_count = high_scale - high_frac_str.len();
+            if high_zeros_count > 0 {
+                let zeros = LEADING_ZEROS[high_zeros_count];
+                f.write_str(zeros)?;
             }
-            Number::Decimal256(v) => {
-                if v.scale == 0 {
-                    write!(f, "{}", v.value)
-                } else {
-                    let pow_scale = i256::from(10).pow(v.scale as u32);
-                    // -1/10 = 0
-                    if v.value >= i256::from(0) {
-                        write!(
-                            f,
-                            "{}.{:0>width$}",
-                            v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    } else {
-                        write!(
-                            f,
-                            "-{}.{:0>width$}",
-                            -v.value / pow_scale,
-                            (v.value % pow_scale).abs(),
-                            width = v.scale as usize
-                        )
-                    }
-                }
+            f.write_str(high_frac_str)?;
+        }
+
+        // Format the low part with proper zero padding
+        let mut low_buf = itoa::Buffer::new();
+        let low_frac_str = low_buf.format(low_part);
+        let low_zeros_count = I128_SCALE - low_frac_str.len();
+        if low_zeros_count > 0 {
+            let low_zeros = LEADING_ZEROS[low_zeros_count];
+            f.write_str(low_zeros)?;
+        }
+        f.write_str(low_frac_str)
+    }
+    // Case 3: Decimal point falls within the low part
+    else {
+        // Format high part if it exists (integer portion)
+        if high_part > 0 {
+            f.write_str(itoa_buf.format(high_part))?;
+        }
+        let pow_scale = I128_POWERS_OF_10[scale];
+
+        // Calculate integer part from low component
+        let int_part = low_part / pow_scale;
+        let int_str = itoa_buf.format(int_part);
+
+        // If high part exists, we need to ensure proper place value with padding
+        if high_part > 0 {
+            let int_zeros_count = I128_SCALE - scale - int_str.len();
+            if int_zeros_count > 0 {
+                let int_zeros = LEADING_ZEROS[int_zeros_count];
+                f.write_str(int_zeros)?;
             }
         }
+        f.write_str(int_str)?;
+        f.write_str(".")?;
+
+        // Format fractional part from low component with proper zero padding
+        let frac_part = low_part % pow_scale;
+        let mut frac_buf = itoa::Buffer::new();
+        let frac_str = frac_buf.format(frac_part);
+
+        let frac_zeros_count = scale - frac_str.len();
+        if frac_zeros_count > 0 {
+            let frac_zeros = LEADING_ZEROS[frac_zeros_count];
+            f.write_str(frac_zeros)?;
+        }
+        f.write_str(frac_str)
     }
 }
 

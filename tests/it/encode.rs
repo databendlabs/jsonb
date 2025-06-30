@@ -171,10 +171,6 @@ fn test_encode_array() {
         b"\x80\0\0\x02\x30\0\0\0\x40\0\0\0",
     );
 
-    let buf = Value::Array(vec![Value::Bool(false), Value::Bool(true)]).to_vec();
-    let raw_jsonb = jsonb::RawJsonb::new(&buf);
-    println!("{}", raw_jsonb.to_string());
-
     assert_eq!(
         &Value::Array(vec![
             Value::Bool(false),

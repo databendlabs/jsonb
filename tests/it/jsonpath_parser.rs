@@ -76,11 +76,11 @@ fn test_json_path() {
         let json_path = parse_json_path(case.as_bytes()).unwrap();
 
         writeln!(file, "---------- Input ----------").unwrap();
-        writeln!(file, "{}", case).unwrap();
+        writeln!(file, "{case}").unwrap();
         writeln!(file, "---------- Output ---------").unwrap();
-        writeln!(file, "{}", json_path).unwrap();
+        writeln!(file, "{json_path}").unwrap();
         writeln!(file, "---------- AST ------------").unwrap();
-        writeln!(file, "{:#?}", json_path).unwrap();
+        writeln!(file, "{json_path:#?}").unwrap();
         writeln!(file, "\n").unwrap();
     }
 }

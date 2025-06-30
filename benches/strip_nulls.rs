@@ -62,11 +62,11 @@ fn add_benchmark(c: &mut Criterion) {
         let bytes = read(&file);
         let json = from_slice(&bytes).unwrap().to_vec();
 
-        c.bench_function(&format!("strip_nulls_deser[{}]", file), |b| {
+        c.bench_function(&format!("strip_nulls_deser[{file}]"), |b| {
             b.iter(|| strip_nulls_deser(&json));
         });
 
-        c.bench_function(&format!("strip_nulls_fast[{}]", file), |b| {
+        c.bench_function(&format!("strip_nulls_fast[{file}]"), |b| {
             b.iter(|| strip_nulls_fast(&json));
         });
     }

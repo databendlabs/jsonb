@@ -35,13 +35,14 @@ pub enum ParseErrorCode {
     InvalidLoneLeadingSurrogateInHexEscape(u16),
     InvalidSurrogateInHexEscape(u16),
     UnexpectedEndOfHexEscape,
+    ObjectDuplicateKey(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Display for ParseErrorCode {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match *self {
+        match self {
             ParseErrorCode::InvalidEOF => f.write_str("EOF while parsing a value"),
             ParseErrorCode::InvalidNumberValue => f.write_str("invalid number"),
             ParseErrorCode::InvalidStringValue => f.write_str("invalid string"),
@@ -68,6 +69,9 @@ impl Display for ParseErrorCode {
                 write!(f, "invalid surrogate in hex escape '{:X}'", n)
             }
             ParseErrorCode::UnexpectedEndOfHexEscape => f.write_str("unexpected end of hex escape"),
+            ParseErrorCode::ObjectDuplicateKey(key) => {
+                write!(f, "duplicate object attribute \"{}\"", key)
+            }
         }
     }
 }

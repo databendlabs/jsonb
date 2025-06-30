@@ -1056,11 +1056,35 @@ fn test_strip_nulls() {
 }
 
 #[test]
+#[cfg(feature = "arbitrary_precision")]
+fn test_decimal_type_of() {
+    let sources = vec![
+        (r#"-1.2"#, "DECIMAL"),
+        (r#"1.9120000000000001"#, "DECIMAL"),
+        (
+            r#"99999999999999999999999999999999999999999999999999999999.99999999999999999999"#,
+            "DECIMAL",
+        ),
+        (
+            r#"-9999999999999999999999999999999999999999999999999999999999999999999999999999"#,
+            "DECIMAL",
+        ),
+    ];
+
+    for (s, expect) in sources {
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.type_of();
+        assert_eq!(res, Ok(expect));
+    }
+}
+
+#[test]
 fn test_type_of() {
     let sources = vec![
         (r#"null"#, "NULL_VALUE"),
         (r#"1"#, "INTEGER"),
-        (r#"-1.2"#, "DECIMAL"),
         (r#"1.912000000000000e+02"#, "DOUBLE"),
         (r#""test""#, "STRING"),
         (r#"[1,2,3,4,5]"#, "ARRAY"),
