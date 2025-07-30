@@ -37,7 +37,7 @@ ordered-float = { version = "5.0", default-features = false }
 rand = { version = "0.9.0", features = ["small_rng"] }
 ryu = "1.0"
 serde = "1.0"
-serde_json = { version = "1.0", default-features = false, features = ["std", "arbitrary_precision"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 goldenfile = "1.8"
@@ -49,9 +49,11 @@ criterion = "0.5.1"
 proptest = "1.7"
 
 [features]
-default = ["databend", "serde_json/preserve_order"]
+default = ["databend", "preserve_order", "arbitrary_precision"]
 databend = []
 sqlite = []
+arbitrary_precision = ["serde_json/arbitrary_precision"]
+preserve_order = ["serde_json/preserve_order"]
 
 [[bench]]
 name = "parser"
