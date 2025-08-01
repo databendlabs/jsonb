@@ -359,16 +359,40 @@ impl Number {
         match self {
             Number::Int64(v) => Some(*v),
             Number::UInt64(v) => {
-                if *v <= i64::MAX.try_into().unwrap() {
+                if *v <= i64::MAX as u64 {
                     Some(*v as i64)
                 } else {
                     None
                 }
             }
-            Number::Float64(_)
-            | Number::Decimal64(_)
-            | Number::Decimal128(_)
-            | Number::Decimal256(_) => None,
+            Number::Float64(_) => None,
+            Number::Decimal64(v) => {
+                if v.scale == 0 {
+                    Some(v.value)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal128(v) => {
+                if v.scale == 0
+                    && v.value >= i128::from(i64::MIN)
+                    && v.value <= i128::from(i64::MAX)
+                {
+                    Some(v.value as i64)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal256(v) => {
+                if v.scale == 0
+                    && v.value >= i256::from(i64::MIN)
+                    && v.value <= i256::from(i64::MAX)
+                {
+                    Some(v.value.as_i64())
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -385,10 +409,28 @@ impl Number {
                 }
             }
             Number::UInt64(v) => Some(*v),
-            Number::Float64(_)
-            | Number::Decimal64(_)
-            | Number::Decimal128(_)
-            | Number::Decimal256(_) => None,
+            Number::Float64(_) => None,
+            Number::Decimal64(v) => {
+                if v.scale == 0 && v.value >= 0 {
+                    Some(v.value as u64)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal128(v) => {
+                if v.scale == 0 && v.value >= 0 && v.value <= i128::from(u64::MAX) {
+                    Some(v.value as u64)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal256(v) => {
+                if v.scale == 0 && v.value >= i256::ZERO && v.value <= i256::from(u64::MAX) {
+                    Some(v.value.as_u64())
+                } else {
+                    None
+                }
+            }
         }
     }
 
