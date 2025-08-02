@@ -18,7 +18,7 @@ use std::io::Read;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 
 fn parse_jsonb(data: &[u8]) {
-    let _v: jsonb::Value = jsonb::parse_value(data).unwrap();
+    let _v: jsonb::OwnedJsonb = jsonb::parse_owned_jsonb(data).unwrap();
 }
 
 fn parse_serde_json(data: &[u8]) {
@@ -46,20 +46,20 @@ fn add_benchmark(c: &mut Criterion) {
         let file = format!("{}", path.unwrap().path().display());
         let bytes = read(&file);
 
-        c.bench_function(&format!("jsonb parse {}", file), |b| {
+        c.bench_function(&format!("jsonb parse {file}"), |b| {
             b.iter(|| parse_jsonb(&bytes))
         });
 
-        c.bench_function(&format!("serde_json parse {}", file), |b| {
+        c.bench_function(&format!("serde_json parse {file}"), |b| {
             b.iter(|| parse_serde_json(&bytes))
         });
 
-        c.bench_function(&format!("json_deserializer parse {}", file), |b| {
+        c.bench_function(&format!("json_deserializer parse {file}"), |b| {
             b.iter(|| parse_json_deserializer(&bytes))
         });
 
         let bytes = bytes.clone();
-        c.bench_function(&format!("simd_json parse {}", file), move |b| {
+        c.bench_function(&format!("simd_json parse {file}"), move |b| {
             b.iter_batched(
                 || bytes.clone(),
                 |mut data| parse_simd_json(&mut data),

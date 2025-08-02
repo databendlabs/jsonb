@@ -34,19 +34,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cmp::Ordering::*;
-
 use jsonb::RawJsonb;
-use jsonb::{parse_value, Number, Value};
+use jsonb::{parse_value, parse_value_standard_mode};
+use ordered_float::OrderedFloat;
 
 #[test]
+#[cfg(feature = "arbitrary_precision")]
 fn it_cmps_decimals() {
+    use core::cmp::Ordering::*;
+    use jsonb::{Number, Value};
+
     fn cmp(a: &str, b: &str, c: core::cmp::Ordering) {
         let v1 = parse_value(a.as_bytes()).unwrap();
         let v2 = parse_value(b.as_bytes()).unwrap();
 
-        let s1 = format!("{}", v1);
-        let s2 = format!("{}", v2);
+        let s1 = format!("{v1}");
+        let s2 = format!("{v2}");
 
         let buf1 = v1.to_vec();
         let buf2 = v2.to_vec();
@@ -2164,16 +2167,29 @@ fn it_cmps_decimals() {
 #[test]
 fn test_parse_decimal() {
     let tests = [
-        ("-999999999999999999"),
-        ("999999999999999999"),
-        ("-999999999.99999999999999999999999999999"),
-        ("-99999999999999999999999999999999999999"),
-        ("9999999999999999999999999.9999999999999"),
-        ("99999999999999999999999999999999999999"),
-        ("-999999999999999999999999999999999999999999999999999.9999999999999999999999999"),
-        ("-9999999999999999999999999999999999999999999999999999999999999999999999999999"),
-        ("99999999999999999999999999999999999.99999999999999999999999999999999999999999"),
-        ("9999999999999999999999999999999999999999999999999999999999999999999999999999"),
+        "10000000000000000000000000000000000000",
+        "100000000000000000000000000000000000004",
+        "1.00000000000000000000000000000000000004",
+        "123.4500000000000000000000000000000000000004",
+        "123.0045000000000000000000000000000000000004",
+        "123450000000000000000000.0000000000000000004",
+        "0.001234500000000000000000000000000000000004",
+        "-123456789012345678",
+        "123456789012345678",
+        "-123456789012.34567890123456789012345678",
+        "12345678901234567890123456.789012345678",
+        "-12345678901234567890123456789012345678901234567890123456789.01234567890123456",
+        "1234567890123.456789012345678901234567890123456789012345678901234567890123456",
+        "-999999999999999999",
+        "999999999999999999",
+        "-999999999.99999999999999999999999999999",
+        "-99999999999999999999999999999999999999",
+        "9999999999999999999999999.9999999999999",
+        "99999999999999999999999999999999999999",
+        "-999999999999999999999999999999999999999999999999999.9999999999999999999999999",
+        "-9999999999999999999999999999999999999999999999999999999999999999999999999999",
+        "99999999999999999999999999999999999.99999999999999999999999999999999999999999",
+        "9999999999999999999999999999999999999999999999999999999999999999999999999999",
         "1.123456",
         "-0.123456",
         "-1.00",
@@ -2220,15 +2236,29 @@ fn test_parse_decimal() {
         "317000006395220278118691742155288870912",
     ];
 
+    #[cfg(feature = "arbitrary_precision")]
     for test in tests {
         let v = parse_value(test.as_bytes()).unwrap();
-        let s = format!("{}", v);
+        let s = format!("{v}");
         let buf = v.to_vec();
         let r = RawJsonb::new(&buf);
         let ss = r.to_string();
 
         assert_eq!(test, s);
         assert_eq!(test, ss);
+    }
+    // standard json
+    for test in tests {
+        let v = parse_value_standard_mode(test.as_bytes()).unwrap();
+        let s = OrderedFloat(v.as_f64().unwrap());
+        let buf = v.to_vec();
+        let r = RawJsonb::new(&buf);
+        let ss = OrderedFloat(r.as_f64().unwrap().unwrap());
+        let val: f64 = fast_float2::parse(test).unwrap();
+        let expected = OrderedFloat(val);
+
+        assert_eq!(expected, s);
+        assert_eq!(expected, ss);
     }
 }
 
@@ -2253,7 +2283,19 @@ fn test_parse_float() {
 
     for (expected, test) in tests {
         let v = parse_value(test.as_bytes()).unwrap();
-        let s = format!("{}", v);
+        let s = format!("{v}");
+        let buf = v.to_vec();
+        let r = RawJsonb::new(&buf);
+        let ss = r.to_string();
+
+        assert_eq!(expected, s);
+        assert_eq!(expected, ss);
+    }
+
+    // standard json
+    for (expected, test) in tests {
+        let v = parse_value_standard_mode(test.as_bytes()).unwrap();
+        let s = format!("{v}");
         let buf = v.to_vec();
         let r = RawJsonb::new(&buf);
         let ss = r.to_string();
