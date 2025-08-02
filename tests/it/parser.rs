@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use jsonb::{parse_value, Number, Object, Value};
+use jsonb::{parse_value, parse_value_standard_mode, Number, Object, Value};
 
 fn test_parse_err(errors: &[(&str, &'static str)]) {
     for &(s, err) in errors {
@@ -27,6 +27,20 @@ fn test_parse_err(errors: &[(&str, &'static str)]) {
 fn test_parse_ok(tests: Vec<(&str, Value<'_>)>) {
     for (s, val) in tests {
         assert_eq!(parse_value(s.as_bytes()).unwrap(), val);
+    }
+}
+
+fn test_parse_standard_err(errors: &[(&str, &'static str)]) {
+    for &(s, err) in errors {
+        let res = parse_value_standard_mode(s.as_bytes());
+        assert!(res.is_err());
+        assert_eq!(res.err().unwrap().to_string(), err);
+    }
+}
+
+fn test_parse_standard_ok(tests: Vec<(&str, Value<'_>)>) {
+    for (s, val) in tests {
+        assert_eq!(parse_value_standard_mode(s.as_bytes()).unwrap(), val);
     }
 }
 
@@ -62,9 +76,9 @@ fn test_parse_boolean() {
 #[test]
 fn test_parse_number_errors() {
     test_parse_err(&[
-        ("+", "expected value, pos 1"),
-        (".", "expected value, pos 1"),
-        ("-", "expected value, pos 1"),
+        ("+", "invalid number, pos 1"),
+        (".", "invalid number, pos 1"),
+        ("-", "invalid number, pos 1"),
         ("0x80", "trailing characters, pos 2"),
         ("\\0", "expected value, pos 1"),
         ("1.a", "trailing characters, pos 3"),
@@ -72,41 +86,62 @@ fn test_parse_number_errors() {
         ("1e+", "invalid number, pos 3"),
         ("1a", "trailing characters, pos 2"),
     ]);
+
+    test_parse_standard_err(&[
+        ("+", "invalid number, pos 1"),
+        (".", "invalid number, pos 1"),
+        ("-", "invalid number, pos 1"),
+        ("0x80", "trailing characters, pos 2"),
+        ("\\0", "expected value, pos 1"),
+        ("1.a", "invalid number, pos 3"),
+        ("1e", "invalid number, pos 2"),
+        ("1e+", "invalid number, pos 3"),
+        ("1a", "trailing characters, pos 2"),
+        // Extended JSON number syntax return error in standard mode
+        ("+1", "invalid number, pos 1"),
+        ("00", "invalid number, pos 2"),
+        (".0", "invalid number, pos 1"),
+        ("0.", "invalid number, pos 3"),
+        ("1.", "invalid number, pos 3"),
+        ("1.e1", "invalid number, pos 3"),
+    ]);
 }
 
 #[test]
 fn test_parse_i64() {
-    test_parse_ok(vec![
+    let i64_min = i64::MIN.to_string();
+    let i64_max = i64::MAX.to_string();
+    let tests = vec![
         ("-2", Value::Number(Number::Int64(-2))),
         ("-1234", Value::Number(Number::Int64(-1234))),
         (" -1234 ", Value::Number(Number::Int64(-1234))),
-        (
-            &i64::MIN.to_string(),
-            Value::Number(Number::Int64(i64::MIN)),
-        ),
-        (
-            &i64::MAX.to_string(),
-            Value::Number(Number::UInt64(i64::MAX as u64)),
-        ),
-    ]);
+        (&i64_min, Value::Number(Number::Int64(i64::MIN))),
+        (&i64_max, Value::Number(Number::UInt64(i64::MAX as u64))),
+    ];
+    test_parse_ok(tests.clone());
+    test_parse_standard_ok(tests);
 }
 
 #[test]
 fn test_parse_u64() {
-    test_parse_ok(vec![
+    let u64_max = u64::MAX.to_string();
+    let tests = vec![
         ("0", Value::Number(Number::UInt64(0u64))),
         ("3", Value::Number(Number::UInt64(3u64))),
         ("1234", Value::Number(Number::UInt64(1234))),
-        (
-            &u64::MAX.to_string(),
-            Value::Number(Number::UInt64(u64::MAX)),
-        ),
-    ]);
+        (&u64_max, Value::Number(Number::UInt64(u64::MAX))),
+    ];
+    test_parse_ok(tests.clone());
+    test_parse_standard_ok(tests);
 }
 
 #[test]
 fn test_parse_f64() {
-    test_parse_ok(vec![
+    let i64_min_minus_one = format!("{}", (i64::MIN as f64) - 1.0);
+    let u64_max_plus_one = format!("{}", (u64::MAX as f64) + 1.0);
+    let epsilon = format!("{}", f64::EPSILON);
+
+    let tests = vec![
         (
             "100e777777777777777777777777777",
             Value::Number(Number::Float64(f64::INFINITY)),
@@ -170,17 +205,14 @@ fn test_parse_f64() {
             Value::Number(Number::Float64(0.01)),
         ),
         (
-            &format!("{}", (i64::MIN as f64) - 1.0),
+            &i64_min_minus_one,
             Value::Number(Number::Float64((i64::MIN as f64) - 1.0)),
         ),
         (
-            &format!("{}", (u64::MAX as f64) + 1.0),
+            &u64_max_plus_one,
             Value::Number(Number::Float64((u64::MAX as f64) + 1.0)),
         ),
-        (
-            &format!("{}", f64::EPSILON),
-            Value::Number(Number::Float64(f64::EPSILON)),
-        ),
+        (&epsilon, Value::Number(Number::Float64(f64::EPSILON))),
         (
             "0.0000000000000000000000000000000000000000000000000123e50",
             Value::Number(Number::Float64(1.23)),
@@ -237,14 +269,20 @@ fn test_parse_f64() {
              000000000000000000e-10",
             Value::Number(Number::Float64(1e308)),
         ),
-        // Extended JSON number syntax
+    ];
+    test_parse_ok(tests.clone());
+    test_parse_standard_ok(tests);
+
+    // Extended JSON number syntax
+    let extended_tests = vec![
         ("+1", Value::Number(Number::Int64(1))),
         ("00", Value::Number(Number::UInt64(0))),
         (".0", Value::Number(Number::UInt64(0))),
         ("0.", Value::Number(Number::UInt64(0))),
         ("1.", Value::Number(Number::UInt64(1))),
         ("1.e1", Value::Number(Number::Float64(10.0))),
-    ]);
+    ];
+    test_parse_ok(extended_tests);
 }
 
 #[test]
@@ -319,7 +357,20 @@ fn test_parse_array() {
         ("[]a", "trailing characters, pos 3"),
     ]);
 
-    test_parse_ok(vec![
+    test_parse_standard_err(&[
+        ("[", "EOF while parsing a value, pos 1"),
+        ("[ ", "EOF while parsing a value, pos 2"),
+        ("[1", "EOF while parsing a value, pos 2"),
+        ("[1,", "EOF while parsing a value, pos 3"),
+        ("[1 2]", "expected `,` or `]`, pos 3"),
+        ("[]a", "trailing characters, pos 3"),
+        // Extended JSON array syntax return error in standard mode
+        ("[1, ]", "expected value, pos 5"),
+        ("[ , 2, 3]", "expected value, pos 3"),
+        ("[ , ]", "expected value, pos 3"),
+    ]);
+
+    let tests = vec![
         ("[]", Value::Array(vec![])),
         ("[ ]", Value::Array(vec![])),
         ("[null]", Value::Array(vec![Value::Null])),
@@ -368,7 +419,13 @@ fn test_parse_array() {
                 ]),
             ]),
         ),
-        // Extended JSON array syntax
+    ];
+
+    test_parse_ok(tests.clone());
+    test_parse_standard_ok(tests);
+
+    // Extended JSON array syntax
+    let extended_tests = vec![
         (
             "[1, ]",
             Value::Array(vec![Value::Number(Number::UInt64(1)), Value::Null]),
@@ -382,7 +439,8 @@ fn test_parse_array() {
             ]),
         ),
         ("[ , ]", Value::Array(vec![Value::Null, Value::Null])),
-    ]);
+    ];
+    test_parse_ok(extended_tests);
 }
 
 #[test]
@@ -400,6 +458,10 @@ fn test_parse_object() {
         ("{\"a\":1 1", "expected `,` or `}`, pos 7"),
         ("{\"a\":1,", "EOF while parsing a value, pos 7"),
         ("{}a", "trailing characters, pos 3"),
+        (
+            "{\"k\":\"v\",\"k\":\"v2\"}",
+            "duplicate object attribute \"k\", pos 12",
+        ),
     ]);
 
     let mut obj1 = Object::new();

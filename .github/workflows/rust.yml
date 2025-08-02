@@ -24,3 +24,5 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Run tests disable arbitrary_precision
+      run: cargo test --no-default-features --features databend --verbose

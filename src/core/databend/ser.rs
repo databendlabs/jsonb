@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use byteorder::BigEndian;
@@ -28,6 +29,7 @@ use crate::core::ObjectBuilder;
 use crate::error::*;
 use crate::extension::ExtensionValue;
 use crate::number::Number;
+use crate::parser::JsonAst;
 use crate::value::Object;
 use crate::value::Value;
 use crate::Error;
@@ -634,91 +636,21 @@ impl Serialize for RawJsonb<'_> {
     }
 }
 
-pub(crate) struct Encoder<'a> {
-    pub buf: &'a mut Vec<u8>,
+/// `BaseEncoder` provides common buffer management functionality for `JSONB` encoding.
+/// It handles low-level operations like reserving space for JEntries, writing encoded
+/// JEntries back to the buffer, and encoding container headers.
+struct BaseEncoder<'a> {
+    buf: &'a mut Vec<u8>,
 }
 
-impl<'a> Encoder<'a> {
-    pub(crate) fn new(buf: &'a mut Vec<u8>) -> Encoder<'a> {
+impl<'a> BaseEncoder<'a> {
+    /// Creates a new `BaseEncoder` with the given buffer.
+    fn new(buf: &'a mut Vec<u8>) -> BaseEncoder<'a> {
         Self { buf }
     }
 
-    // Encode `JSONB` Value to a sequence of bytes
-    pub(crate) fn encode(&mut self, value: &Value<'a>) {
-        match value {
-            Value::Array(array) => self.encode_array(array),
-            Value::Object(obj) => self.encode_object(obj),
-            _ => self.encode_scalar(value),
-        };
-    }
-
-    // Encoded `Scalar` consists of a `Header`, a `JEntry` and encoded data
-    fn encode_scalar(&mut self, value: &Value<'a>) -> usize {
-        self.buf
-            .write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)
-            .unwrap();
-
-        // Scalar Value only has one JEntry
-        let mut scalar_len = 4 + 4;
-        let mut jentry_index = self.reserve_jentries(4);
-
-        let jentry = self.encode_value(value);
-        scalar_len += jentry.length as usize;
-        self.replace_jentry(jentry, &mut jentry_index);
-
-        scalar_len
-    }
-
-    // Encoded `Array` consists of a `Header`, N `JEntries` and encoded data
-    // N is the number of `Array` inner values
-    fn encode_array(&mut self, values: &[Value<'a>]) -> usize {
-        let header = ARRAY_CONTAINER_TAG | values.len() as u32;
-        self.buf.write_u32::<BigEndian>(header).unwrap();
-
-        // `Array` has N `JEntries`
-        let mut array_len = 4 + values.len() * 4;
-        let mut jentry_index = self.reserve_jentries(values.len() * 4);
-
-        // encode all values
-        for value in values.iter() {
-            let jentry = self.encode_value(value);
-            array_len += jentry.length as usize;
-            self.replace_jentry(jentry, &mut jentry_index);
-        }
-
-        array_len
-    }
-
-    // Encoded `Object` consists of a `Header`, 2 * N `JEntries` and encoded data
-    // N is the number of `Object` inner key value pair
-    fn encode_object(&mut self, obj: &Object<'a>) -> usize {
-        let header = OBJECT_CONTAINER_TAG | obj.len() as u32;
-        self.buf.write_u32::<BigEndian>(header).unwrap();
-
-        // `Object` has 2 * N `JEntries`
-        let mut object_len = 4 + obj.len() * 8;
-        let mut jentry_index = self.reserve_jentries(obj.len() * 8);
-
-        // encode all keys first
-        for (key, _) in obj.iter() {
-            let len = key.len();
-            object_len += len;
-            self.buf.extend_from_slice(key.as_bytes());
-            let jentry = JEntry::make_string_jentry(len);
-            self.replace_jentry(jentry, &mut jentry_index);
-        }
-        // encode all values
-        for (_, value) in obj.iter() {
-            let jentry = self.encode_value(value);
-            object_len += jentry.length as usize;
-            self.replace_jentry(jentry, &mut jentry_index);
-        }
-
-        object_len
-    }
-
-    // Reserve space for `JEntries` and fill them later
-    // As the length of each `Value` cannot be known until the `Value` encoded
+    /// Reserves space in the buffer for JEntries that will be filled in later.
+    /// Returns the starting index where the JEntries will be placed.
     fn reserve_jentries(&mut self, len: usize) -> usize {
         let old_len = self.buf.len();
         let new_len = old_len + len;
@@ -726,7 +658,8 @@ impl<'a> Encoder<'a> {
         old_len
     }
 
-    // Write encoded `JEntry` to the corresponding index
+    /// Writes an encoded `JEntry` to the buffer at the specified index.
+    /// Updates the index to point to the next `JEntry` position.
     fn replace_jentry(&mut self, jentry: JEntry, jentry_index: &mut usize) {
         let jentry_bytes = jentry.encoded().to_be_bytes();
         for (i, b) in jentry_bytes.iter().enumerate() {
@@ -735,10 +668,123 @@ impl<'a> Encoder<'a> {
         *jentry_index += 4;
     }
 
-    // `Null` and `Boolean` only has a `JEntry`
-    // `Number` and `String` has a `JEntry` and an encoded data
-    // `Array` and `Object` has a container `JEntry` and nested encoded data
+    /// Encodes a scalar container header and reserves space for its `JEntry`.
+    /// Returns the total length of the scalar container and the index where its JEntry will be placed.
+    fn encode_scalar_header(&mut self) -> (usize, usize) {
+        let header = SCALAR_CONTAINER_TAG;
+        self.buf.write_u32::<BigEndian>(header).unwrap();
+
+        // Scalar Value only has one JEntry
+        let scalar_len = 4 + 4;
+        let jentry_index = self.reserve_jentries(4);
+        (scalar_len, jentry_index)
+    }
+
+    /// Encodes an array container header and reserves space for its JEntries.
+    /// Returns the total length of the array container and the index where its JEntries will be placed.
+    fn encode_array_header(&mut self, len: usize) -> (usize, usize) {
+        let header = ARRAY_CONTAINER_TAG | len as u32;
+        self.buf.write_u32::<BigEndian>(header).unwrap();
+
+        // `Array` has N `JEntries`
+        let array_len = 4 + len * 4;
+        let jentry_index = self.reserve_jentries(len * 4);
+
+        (array_len, jentry_index)
+    }
+
+    /// Encodes an object container header and reserves space for its JEntries.
+    /// Returns the total length of the object container and the index where its JEntries will be placed.
+    fn encode_object_header(&mut self, len: usize) -> (usize, usize) {
+        let header = OBJECT_CONTAINER_TAG | len as u32;
+        self.buf.write_u32::<BigEndian>(header).unwrap();
+
+        // `Object` has 2 * N `JEntries`
+        let object_len = 4 + len * 8;
+        let jentry_index = self.reserve_jentries(len * 8);
+
+        (object_len, jentry_index)
+    }
+}
+
+/// Encoder for serializing Value types to `JSONB` binary format.
+/// Uses `BaseEncoder` for common buffer management operations.
+pub(crate) struct Encoder<'a> {
+    base_encoder: BaseEncoder<'a>,
+}
+
+impl<'a> Encoder<'a> {
+    /// Creates a new `Encoder` with the given buffer.
+    pub(crate) fn new(buf: &'a mut Vec<u8>) -> Encoder<'a> {
+        let base_encoder = BaseEncoder::new(buf);
+        Self { base_encoder }
+    }
+
+    /// Encodes a `Value` into `JSONB` binary format.
+    /// Dispatches to the appropriate encoding method based on the value type.
+    pub(crate) fn encode(&mut self, value: &Value<'a>) {
+        match value {
+            Value::Array(array) => self.encode_array(array),
+            Value::Object(obj) => self.encode_object(obj),
+            _ => self.encode_scalar(value),
+        };
+    }
+
+    /// Encodes a scalar `Value` (null, bool, number, string, or extension types).
+    /// Returns the total length of the encoded scalar.
+    fn encode_scalar(&mut self, value: &Value<'a>) -> usize {
+        let (mut scalar_len, mut jentry_index) = self.base_encoder.encode_scalar_header();
+
+        let jentry = self.encode_value(value);
+        scalar_len += jentry.length as usize;
+        self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+
+        scalar_len
+    }
+
+    /// Encodes an array of Values.
+    /// Returns the total length of the encoded array.
+    fn encode_array(&mut self, values: &[Value<'a>]) -> usize {
+        let (mut array_len, mut jentry_index) = self.base_encoder.encode_array_header(values.len());
+
+        // encode all values
+        for value in values.iter() {
+            let jentry = self.encode_value(value);
+            array_len += jentry.length as usize;
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        array_len
+    }
+
+    /// Encodes an object of Values (map of string keys to Values).
+    /// Returns the total length of the encoded object.
+    fn encode_object(&mut self, obj: &Object<'a>) -> usize {
+        let (mut object_len, mut jentry_index) = self.base_encoder.encode_object_header(obj.len());
+
+        // encode all keys first
+        for (key, _) in obj.iter() {
+            let len = key.len();
+            object_len += len;
+            self.base_encoder.buf.extend_from_slice(key.as_bytes());
+            let jentry = JEntry::make_string_jentry(len);
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        // encode all values
+        for (_, value) in obj.iter() {
+            let jentry = self.encode_value(value);
+            object_len += jentry.length as usize;
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        object_len
+    }
+
+    /// Encodes a single `Value` and returns its `JEntry`.
+    /// The `JEntry` contains metadata about the encoded value.
     fn encode_value(&mut self, value: &Value<'a>) -> JEntry {
+        let old_off = self.base_encoder.buf.len();
         let jentry = match value {
             Value::Null => JEntry::make_null_jentry(),
             Value::Bool(v) => {
@@ -749,49 +795,45 @@ impl<'a> Encoder<'a> {
                 }
             }
             Value::Number(v) => {
-                let old_off = self.buf.len();
-                let _ = v.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = v.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_number_jentry(len)
             }
             Value::String(s) => {
                 let len = s.len();
-                self.buf.extend_from_slice(s.as_ref().as_bytes());
+                self.base_encoder
+                    .buf
+                    .extend_from_slice(s.as_ref().as_bytes());
                 JEntry::make_string_jentry(len)
             }
             Value::Binary(v) => {
-                let old_off = self.buf.len();
                 let val = ExtensionValue::Binary(v);
-                let _ = val.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = val.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_extension_jentry(len)
             }
             Value::Date(v) => {
-                let old_off = self.buf.len();
                 let val = ExtensionValue::Date(v.clone());
-                let _ = val.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = val.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_extension_jentry(len)
             }
             Value::Timestamp(v) => {
-                let old_off = self.buf.len();
                 let val = ExtensionValue::Timestamp(v.clone());
-                let _ = val.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = val.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_extension_jentry(len)
             }
             Value::TimestampTz(v) => {
-                let old_off = self.buf.len();
                 let val = ExtensionValue::TimestampTz(v.clone());
-                let _ = val.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = val.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_extension_jentry(len)
             }
             Value::Interval(v) => {
-                let old_off = self.buf.len();
                 let val = ExtensionValue::Interval(v.clone());
-                let _ = val.compact_encode(&mut self.buf).unwrap();
-                let len = self.buf.len() - old_off;
+                let _ = val.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
                 JEntry::make_extension_jentry(len)
             }
             Value::Array(array) => {
@@ -799,6 +841,119 @@ impl<'a> Encoder<'a> {
                 JEntry::make_container_jentry(len)
             }
             Value::Object(obj) => {
+                let len = self.encode_object(obj);
+                JEntry::make_container_jentry(len)
+            }
+        };
+
+        jentry
+    }
+}
+
+/// `JsonAstEncoder` for serializing JsonAst types to `JSONB` binary format.
+/// Similar to `Encoder` but works with `JsonAst` instead of `Value` types.
+/// Uses `BaseEncoder` for common buffer management operations.
+pub(crate) struct JsonAstEncoder<'a> {
+    base_encoder: BaseEncoder<'a>,
+}
+
+impl<'a> JsonAstEncoder<'a> {
+    /// Creates a new `JsonAstEncoder` with the given buffer.
+    pub(crate) fn new(buf: &'a mut Vec<u8>) -> JsonAstEncoder<'a> {
+        let base_encoder = BaseEncoder::new(buf);
+        Self { base_encoder }
+    }
+
+    /// Encodes a `JsonAst` into `JSONB` binary format.
+    /// Dispatches to the appropriate encoding method based on the value type.
+    pub(crate) fn encode(&mut self, value: &JsonAst<'a>) {
+        match value {
+            JsonAst::Array(array) => self.encode_array(array),
+            JsonAst::Object(obj) => self.encode_object(obj),
+            _ => self.encode_scalar(value),
+        };
+    }
+
+    /// Encodes a scalar JsonAst (null, bool, number, or string).
+    /// Returns the total length of the encoded scalar.
+    fn encode_scalar(&mut self, value: &JsonAst<'a>) -> usize {
+        let (mut scalar_len, mut jentry_index) = self.base_encoder.encode_scalar_header();
+
+        let jentry = self.encode_value(value);
+        scalar_len += jentry.length as usize;
+        self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+
+        scalar_len
+    }
+
+    /// Encodes an array of `JsonAst` values.
+    /// Returns the total length of the encoded array.
+    fn encode_array(&mut self, values: &[JsonAst<'a>]) -> usize {
+        let (mut array_len, mut jentry_index) = self.base_encoder.encode_array_header(values.len());
+
+        // encode all values
+        for value in values.iter() {
+            let jentry = self.encode_value(value);
+            array_len += jentry.length as usize;
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        array_len
+    }
+
+    /// Encodes an object of `JsonAst` values (vector of key-value pairs).
+    /// Returns the total length of the encoded object.
+    fn encode_object(&mut self, obj: &[(Cow<'a, str>, JsonAst<'a>, usize)]) -> usize {
+        let (mut object_len, mut jentry_index) = self.base_encoder.encode_object_header(obj.len());
+
+        // encode all keys first
+        for (key, _, _) in obj.iter() {
+            let len = key.len();
+            object_len += len;
+            self.base_encoder.buf.extend_from_slice(key.as_bytes());
+            let jentry = JEntry::make_string_jentry(len);
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+        // encode all values
+        for (_, value, _) in obj.iter() {
+            let jentry = self.encode_value(value);
+            object_len += jentry.length as usize;
+            self.base_encoder.replace_jentry(jentry, &mut jentry_index);
+        }
+
+        object_len
+    }
+
+    /// Encodes a single `JsonAst` value and returns its `JEntry`.
+    /// The `JEntry` contains metadata about the encoded value.
+    fn encode_value(&mut self, value: &JsonAst<'a>) -> JEntry {
+        let jentry = match value {
+            JsonAst::Null => JEntry::make_null_jentry(),
+            JsonAst::Bool(v) => {
+                if *v {
+                    JEntry::make_true_jentry()
+                } else {
+                    JEntry::make_false_jentry()
+                }
+            }
+            JsonAst::Number(v) => {
+                let old_off = self.base_encoder.buf.len();
+                let _ = v.compact_encode(&mut self.base_encoder.buf).unwrap();
+                let len = self.base_encoder.buf.len() - old_off;
+                JEntry::make_number_jentry(len)
+            }
+            JsonAst::String(s) => {
+                let len = s.len();
+                self.base_encoder
+                    .buf
+                    .extend_from_slice(s.as_ref().as_bytes());
+                JEntry::make_string_jentry(len)
+            }
+            JsonAst::Array(array) => {
+                let len = self.encode_array(array);
+                JEntry::make_container_jentry(len)
+            }
+            JsonAst::Object(obj) => {
                 let len = self.encode_object(obj);
                 JEntry::make_container_jentry(len)
             }

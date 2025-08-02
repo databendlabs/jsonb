@@ -27,11 +27,11 @@ fn test_json_path() {
         let key_paths = parse_key_paths(case.as_bytes()).unwrap();
 
         writeln!(file, "---------- Input ----------").unwrap();
-        writeln!(file, "{}", case).unwrap();
+        writeln!(file, "{case}").unwrap();
         writeln!(file, "---------- Output ---------").unwrap();
-        writeln!(file, "{}", key_paths).unwrap();
+        writeln!(file, "{key_paths}").unwrap();
         writeln!(file, "---------- AST ------------").unwrap();
-        writeln!(file, "{:#?}", key_paths).unwrap();
+        writeln!(file, "{key_paths:#?}").unwrap();
         writeln!(file, "\n").unwrap();
     }
 }
