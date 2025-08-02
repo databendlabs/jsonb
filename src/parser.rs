@@ -158,12 +158,8 @@ impl<'a> JsonAst<'a> {
             }
             JsonAst::Object(kvs) => {
                 let mut object = Object::new();
-                for (key, val, pos) in kvs.into_iter() {
+                for (key, val, _) in kvs.into_iter() {
                     let key_str = key.to_string();
-                    if object.contains_key(&key_str) {
-                        let code = ParseErrorCode::ObjectDuplicateKey(key_str);
-                        return Err(Error::Syntax(code, pos));
-                    }
                     let value = val.into_value()?;
                     object.insert(key_str, value);
                 }
