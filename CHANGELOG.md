@@ -1,3 +1,10 @@
+## [v0.5.3] - 2025-08-02
+
+### Added
+
+- Perf: Improve parse json performance (#90)
+- Chore: add toplevel feature to allow users to better manager dependencies (#89)
+
 ## [v0.5.2] - 2025-06-27
 
 ### Added
@@ -138,6 +145,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.3]: https://github.com/databendlabs/jsonb/compare/v0.5.2...v0.5.3
 [v0.5.2]: https://github.com/databendlabs/jsonb/compare/v0.5.1...v0.5.2
 [v0.5.1]: https://github.com/databendlabs/jsonb/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/databendlabs/jsonb/compare/v0.4.4...v0.5.0
