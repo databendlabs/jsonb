@@ -18,6 +18,7 @@ use jsonb::{parse_value, parse_value_standard_mode, Number, Object, Value};
 
 fn test_parse_err(errors: &[(&str, &'static str)]) {
     for &(s, err) in errors {
+        println!("s={:?}", s);
         let res = parse_value(s.as_bytes());
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().to_string(), err);
@@ -32,6 +33,7 @@ fn test_parse_ok(tests: Vec<(&str, Value<'_>)>) {
 
 fn test_parse_standard_err(errors: &[(&str, &'static str)]) {
     for &(s, err) in errors {
+        println!("s={:?}", s);
         let res = parse_value_standard_mode(s.as_bytes());
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().to_string(), err);
@@ -48,10 +50,17 @@ fn test_parse_standard_ok(tests: Vec<(&str, Value<'_>)>) {
 fn test_parse_null() {
     test_parse_err(&[
         ("n", "EOF while parsing a value, pos 1"),
-        ("nul", "EOF while parsing a value, pos 3"),
+        ("nul", "expected ident, pos 2"),
         ("nulla", "trailing characters, pos 5"),
     ]);
+
     test_parse_ok(vec![("null", Value::Null)]);
+    // Extended JSON null syntax, allow uppercase letters and empty string is treated as NULL
+    test_parse_ok(vec![
+        ("  ", Value::Null),
+        ("NULL", Value::Null),
+        ("Null", Value::Null),
+    ]);
 }
 
 #[test]
@@ -71,6 +80,13 @@ fn test_parse_boolean() {
         ("false", Value::Bool(false)),
         (" false ", Value::Bool(false)),
     ]);
+    // Extended JSON boolean syntax, allow uppercase letters
+    test_parse_ok(vec![
+        ("TRUE", Value::Bool(true)),
+        (" True ", Value::Bool(true)),
+        ("FALSE", Value::Bool(false)),
+        (" falSE ", Value::Bool(false)),
+    ]);
 }
 
 #[test]
@@ -79,7 +95,6 @@ fn test_parse_number_errors() {
         ("+", "invalid number, pos 1"),
         (".", "invalid number, pos 1"),
         ("-", "invalid number, pos 1"),
-        ("0x80", "trailing characters, pos 2"),
         ("\\0", "expected value, pos 1"),
         ("1.a", "trailing characters, pos 3"),
         ("1e", "invalid number, pos 2"),
@@ -88,8 +103,8 @@ fn test_parse_number_errors() {
     ]);
 
     test_parse_standard_err(&[
-        ("+", "invalid number, pos 1"),
-        (".", "invalid number, pos 1"),
+        ("+", "expected value, pos 1"),
+        (".", "expected value, pos 1"),
         ("-", "invalid number, pos 1"),
         ("0x80", "trailing characters, pos 2"),
         ("\\0", "expected value, pos 1"),
@@ -98,9 +113,9 @@ fn test_parse_number_errors() {
         ("1e+", "invalid number, pos 3"),
         ("1a", "trailing characters, pos 2"),
         // Extended JSON number syntax return error in standard mode
-        ("+1", "invalid number, pos 1"),
+        ("+1", "expected value, pos 1"),
         ("00", "invalid number, pos 2"),
-        (".0", "invalid number, pos 1"),
+        (".0", "expected value, pos 1"),
         ("0.", "invalid number, pos 3"),
         ("1.", "invalid number, pos 3"),
         ("1.e1", "invalid number, pos 3"),
@@ -281,6 +296,18 @@ fn test_parse_f64() {
         ("0.", Value::Number(Number::UInt64(0))),
         ("1.", Value::Number(Number::UInt64(1))),
         ("1.e1", Value::Number(Number::Float64(10.0))),
+        ("nan", Value::Number(Number::Float64(f64::NAN))),
+        ("+infinity", Value::Number(Number::Float64(f64::INFINITY))),
+        ("INFINITY", Value::Number(Number::Float64(f64::INFINITY))),
+        (
+            "-INFINITY",
+            Value::Number(Number::Float64(f64::NEG_INFINITY)),
+        ),
+        ("0xdecaf", Value::Number(Number::UInt64(912559))),
+        (
+            "0xdecaf.124",
+            Value::Number(Number::Float64(912559.0712890625)),
+        ),
     ];
     test_parse_ok(extended_tests);
 }
@@ -344,6 +371,10 @@ fn test_parse_string() {
         ),
         (r#""⚠\u{fe0f}""#, Value::String(Cow::from("⚠\u{fe0f}"))),
     ]);
+
+    // Extended JSON string syntax
+    let extended_tests = vec![("'abcd'", Value::String(Cow::from("abcd")))];
+    test_parse_ok(extended_tests);
 }
 
 #[test]
@@ -448,7 +479,7 @@ fn test_parse_object() {
     test_parse_err(&[
         ("{", "EOF while parsing a value, pos 1"),
         ("{ ", "EOF while parsing a value, pos 2"),
-        ("{1", "key must be a string, pos 2"),
+        ("{1", "object attribute name cannot be a number, pos 2"),
         ("{ \"a\"", "EOF while parsing a value, pos 5"),
         ("{\"a\"", "EOF while parsing a value, pos 4"),
         ("{\"a\" ", "EOF while parsing a value, pos 5"),
@@ -478,17 +509,28 @@ fn test_parse_object() {
     obj4.insert("c".to_string(), Value::Null);
     let mut obj5 = Object::new();
     obj5.insert("d".to_string(), Value::Number(Number::UInt64(5)));
+    let mut obj6 = Object::new();
+    obj6.insert("_test123中文".to_string(), Value::Number(Number::UInt64(6)));
 
     test_parse_ok(vec![
         (r#"{}"#, Value::Object(Object::new())),
         (r#"{ }"#, Value::Object(Object::new())),
         (r#"{"a":3}"#, Value::Object(obj1.clone())),
-        (r#"{ "a" : 3 }"#, Value::Object(obj1)),
+        (r#"{ "a" : 3 }"#, Value::Object(obj1.clone())),
         (r#"{"a":3,"b":4}"#, Value::Object(obj2.clone())),
         (r#" { "a" : 3 , "b" : 4 } "#, Value::Object(obj2)),
-        (r#"{"a": {"b": 3, "c": 4}}"#, Value::Object(obj3)),
+        (r#"{"a": {"b": 3, "c": 4}}"#, Value::Object(obj3.clone())),
         (r#"{"c":null}"#, Value::Object(obj4)),
         (r#"{\t\n\r "d":  5}"#, Value::Object(obj5.clone())),
-        (r#"{ \x0C "d":  5}"#, Value::Object(obj5)),
+        (r#"{ \x0C "d":  5}"#, Value::Object(obj5.clone())),
     ]);
+
+    // Extended JSON string syntax
+    let extended_tests = vec![
+        ("{'a':3}", Value::Object(obj1)),
+        ("{a:{b:3, c:4}}", Value::Object(obj3)),
+        ("{d:5}", Value::Object(obj5)),
+        ("{_test123中文 :6}", Value::Object(obj6)),
+    ];
+    test_parse_ok(extended_tests);
 }
