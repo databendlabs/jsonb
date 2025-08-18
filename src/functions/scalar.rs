@@ -1499,7 +1499,7 @@ impl RawJsonb<'_> {
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_extension_value().unwrap(), Some(ExtensionValue::Binary(&[1,2,3])));
     /// ```
-    pub fn as_extension_value(&self) -> Result<Option<ExtensionValue>> {
+    pub fn as_extension_value(&self) -> Result<Option<ExtensionValue<'_>>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
             JsonbItem::Extension(data) => {
