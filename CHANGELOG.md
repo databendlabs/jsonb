@@ -1,3 +1,9 @@
+## [v0.5.4] - 2025-08-20
+
+### Added
+
+- Feat: Support parse extended json5 syntax (#92)
+
 ## [v0.5.3] - 2025-08-02
 
 ### Added
@@ -145,6 +151,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.4]: https://github.com/databendlabs/jsonb/compare/v0.5.3...v0.5.4
 [v0.5.3]: https://github.com/databendlabs/jsonb/compare/v0.5.2...v0.5.3
 [v0.5.2]: https://github.com/databendlabs/jsonb/compare/v0.5.1...v0.5.2
 [v0.5.1]: https://github.com/databendlabs/jsonb/compare/v0.5.0...v0.5.1
