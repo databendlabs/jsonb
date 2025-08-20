@@ -439,7 +439,7 @@ impl ExtensionValue<'_> {
     }
 
     #[inline]
-    pub(crate) fn decode(bytes: &[u8]) -> Result<ExtensionValue> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<ExtensionValue<'_>> {
         let mut len = bytes.len();
         assert!(len > 0);
         len -= 1;

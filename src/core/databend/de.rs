@@ -147,7 +147,7 @@ impl<'de> Deserializer<'de> {
         Ok(Cow::Borrowed(s))
     }
 
-    fn read_payload_extension(&mut self, length: usize) -> Result<ExtensionValue> {
+    fn read_payload_extension(&mut self, length: usize) -> Result<ExtensionValue<'_>> {
         let start = self.index;
         let end = self.index + length;
         let val = ExtensionValue::decode(&self.raw.data[start..end])?;

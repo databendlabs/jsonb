@@ -53,6 +53,19 @@ const DECIMAL128_MIN: i128 = -99999999999999999999999999999999999999i128;
 #[cfg(feature = "arbitrary_precision")]
 const DECIMAL128_MAX: i128 = 99999999999999999999999999999999999999i128;
 
+// JSON literal constants
+const NULL_LOWERCASE: [u8; 4] = [b'n', b'u', b'l', b'l'];
+const NULL_UPPERCASE: [u8; 4] = [b'N', b'U', b'L', b'L'];
+const TRUE_LOWERCASE: [u8; 4] = [b't', b'r', b'u', b'e'];
+const TRUE_UPPERCASE: [u8; 4] = [b'T', b'R', b'U', b'E'];
+const FALSE_LOWERCASE: [u8; 5] = [b'f', b'a', b'l', b's', b'e'];
+const FALSE_UPPERCASE: [u8; 5] = [b'F', b'A', b'L', b'S', b'E'];
+
+const NAN_LOWERCASE: [u8; 3] = [b'n', b'a', b'n'];
+const NAN_UPPERCASE: [u8; 3] = [b'N', b'A', b'N'];
+const INFINITY_LOWERCASE: [u8; 8] = [b'i', b'n', b'f', b'i', b'n', b'i', b't', b'y'];
+const INFINITY_UPPERCASE: [u8; 8] = [b'I', b'N', b'F', b'I', b'N', b'I', b'T', b'Y'];
+
 #[cfg(feature = "arbitrary_precision")]
 static POWER_TABLE: std::sync::LazyLock<[i256; 39]> = std::sync::LazyLock::new(|| {
     [
@@ -122,7 +135,7 @@ static POWER_TABLE: std::sync::LazyLock<[i256; 39]> = std::sync::LazyLock::new(|
 ///
 /// This approach separates the parsing concerns from the final representation concerns,
 /// allowing each to be optimized independently.
-#[derive(Clone, PartialEq, Default, Eq)]
+#[derive(Clone, PartialEq, Default, Eq, Debug)]
 pub(crate) enum JsonAst<'a> {
     #[default]
     Null,
@@ -134,13 +147,6 @@ pub(crate) enum JsonAst<'a> {
 }
 
 impl<'a> JsonAst<'a> {
-    fn as_string(&self) -> Option<Cow<'a, str>> {
-        match self {
-            JsonAst::String(s) => Some(s.clone()),
-            _ => None,
-        }
-    }
-
     /// Converts the intermediate `JsonAst` representation to the final `Value` type.
     fn into_value(self) -> Result<Value<'a>> {
         let value = match self {
@@ -302,10 +308,12 @@ struct Parser<'a> {
     buf: &'a [u8],
     /// Current position in the buffer
     idx: usize,
-    /// Function pointer for parsing numbers based on the mode
-    parse_number_fn: fn(&mut Self) -> Result<JsonAst<'a>>,
-    /// Function pointer for parsing arrays based on the mode
-    parse_array_fn: fn(&mut Self) -> Result<JsonAst<'a>>,
+    /// Function pointer for parsing json value based on the mode
+    parse_value_fn: fn(&mut Self) -> Result<JsonAst<'a>>,
+    /// Function pointer for parsing array value based on the mode
+    parse_array_value_fn: fn(&mut Self) -> Result<JsonAst<'a>>,
+    /// Function pointer for parsing object_key based on the mode
+    parse_object_key_fn: fn(&mut Self) -> Result<Cow<'a, str>>,
 }
 
 impl<'a> Parser<'a> {
@@ -313,8 +321,9 @@ impl<'a> Parser<'a> {
         Self {
             buf,
             idx: 0,
-            parse_number_fn: Self::parse_json_number,
-            parse_array_fn: Self::parse_json_array,
+            parse_value_fn: Self::parse_json_value,
+            parse_array_value_fn: Self::parse_array_value,
+            parse_object_key_fn: Self::parse_object_key,
         }
     }
 
@@ -322,37 +331,60 @@ impl<'a> Parser<'a> {
         Self {
             buf,
             idx: 0,
-            parse_number_fn: Self::parse_standard_json_number,
-            parse_array_fn: Self::parse_standard_json_array,
+            parse_value_fn: Self::parse_standard_json_value,
+            parse_array_value_fn: Self::parse_standard_json_value,
+            parse_object_key_fn: Self::parse_standard_object_key,
         }
     }
 
     /// Parse a complete JSON document from the input buffer.
     fn parse(&mut self) -> Result<JsonAst<'a>> {
-        let val = self.parse_json_value()?;
+        let value = (self.parse_value_fn)(self)?;
+
         self.skip_unused();
         if self.idx < self.buf.len() {
             self.step();
             return Err(self.error(ParseErrorCode::UnexpectedTrailingCharacters));
         }
-        Ok(val)
+        Ok(value)
     }
 
-    /// Parse a JSON value, dispatching to the appropriate parser based on the first character.
-    ///
-    /// This is an optimized version that avoids runtime mode checks by using function pointers
-    /// selected during parser initialization.
+    /// Parse a JSON value in standard mode, following strict JSON syntax rules as RFC 8259.
     #[inline]
-    fn parse_json_value(&mut self) -> Result<JsonAst<'a>> {
+    fn parse_standard_json_value(&mut self) -> Result<JsonAst<'a>> {
         self.skip_unused();
         let c = self.next()?;
         match c {
-            b'n' => self.parse_json_null(),
-            b't' => self.parse_json_true(),
-            b'f' => self.parse_json_false(),
-            b'0'..=b'9' | b'-' | b'+' | b'.' => (self.parse_number_fn)(self),
-            b'"' => self.parse_json_string(),
-            b'[' => (self.parse_array_fn)(self),
+            b'n' => self.parse_standard_json_null(),
+            b't' => self.parse_standard_json_true(),
+            b'f' => self.parse_standard_json_false(),
+            b'0'..=b'9' | b'-' => self.parse_standard_json_number(),
+            b'"' => self.parse_standard_json_string(),
+            b'[' => self.parse_json_array(),
+            b'{' => self.parse_json_object(),
+            _ => {
+                self.step();
+                Err(self.error(ParseErrorCode::ExpectedSomeValue))
+            }
+        }
+    }
+
+    /// Parse a JSON value in extended mode with more lenient syntax rules
+    #[inline]
+    fn parse_json_value(&mut self) -> Result<JsonAst<'a>> {
+        self.skip_unused();
+        // Parse empty string to Null value
+        let Ok(c) = self.next() else {
+            return Ok(JsonAst::Null);
+        };
+        match c {
+            b'n' | b'N' => self.parse_json_null_or_nan(),
+            b't' | b'T' => self.parse_json_true(),
+            b'f' | b'F' => self.parse_json_false(),
+            b'i' | b'I' => self.parse_json_infinity(),
+            b'0'..=b'9' | b'-' | b'+' | b'.' => self.parse_json_number(),
+            b'"' | b'\'' => self.parse_json_string(),
+            b'[' => self.parse_json_array(),
             b'{' => self.parse_json_object(),
             _ => {
                 self.step();
@@ -362,19 +394,19 @@ impl<'a> Parser<'a> {
     }
 
     #[inline]
-    fn next(&mut self) -> Result<&u8> {
+    fn next(&mut self) -> Result<u8> {
         match self.buf.get(self.idx) {
-            Some(c) => Ok(c),
+            Some(c) => Ok(*c),
             None => Err(self.error(ParseErrorCode::InvalidEOF)),
         }
     }
 
     #[inline]
-    fn must_is(&mut self, c: u8) -> Result<()> {
+    fn must_is(&mut self, c: &u8) -> Result<()> {
         match self.buf.get(self.idx) {
             Some(v) => {
                 self.step();
-                if v == &c {
+                if v == c {
                     Ok(())
                 } else {
                     Err(self.error(ParseErrorCode::ExpectedSomeIdent))
@@ -385,10 +417,24 @@ impl<'a> Parser<'a> {
     }
 
     #[inline]
-    fn check_next(&mut self, c: u8) -> bool {
-        if self.idx < self.buf.len() {
-            let v = self.buf.get(self.idx).unwrap();
-            if v == &c {
+    fn must_either(&mut self, c1: &u8, c2: &u8) -> Result<u8> {
+        match self.buf.get(self.idx) {
+            Some(v) => {
+                self.step();
+                if v == c1 || v == c2 {
+                    Ok(*v)
+                } else {
+                    Err(self.error(ParseErrorCode::ExpectedSomeIdent))
+                }
+            }
+            None => Err(self.error(ParseErrorCode::InvalidEOF)),
+        }
+    }
+
+    #[inline]
+    fn check_next(&mut self, c: &u8) -> bool {
+        if let Some(v) = self.buf.get(self.idx) {
+            if v == c {
                 return true;
             }
         }
@@ -396,33 +442,44 @@ impl<'a> Parser<'a> {
     }
 
     #[inline]
-    fn check_next_either(&mut self, c1: u8, c2: u8) -> bool {
-        if self.idx < self.buf.len() {
-            let v = self.buf.get(self.idx).unwrap();
-            if v == &c1 || v == &c2 {
-                return true;
+    fn check_next_either(&mut self, c1: &u8, c2: &u8) -> Option<u8> {
+        if let Some(v) = self.buf.get(self.idx) {
+            if v == c1 || v == c2 {
+                return Some(*v);
             }
         }
-        false
+        None
     }
 
     #[inline]
-    fn check_digit(&mut self) -> bool {
-        if self.idx < self.buf.len() {
-            let v = self.buf.get(self.idx).unwrap();
+    fn check_digit(&mut self) -> Option<u8> {
+        if let Some(v) = self.buf.get(self.idx) {
             if v.is_ascii_digit() {
-                return true;
+                let digit = v - b'0';
+                return Some(digit);
             }
         }
-        false
+        None
     }
 
     #[inline]
     fn step_digits(&mut self) -> usize {
         let mut len = 0;
-        while self.idx < self.buf.len() {
-            let c = self.buf.get(self.idx).unwrap();
-            if !c.is_ascii_digit() {
+        while let Some(v) = self.buf.get(self.idx) {
+            if !v.is_ascii_digit() {
+                break;
+            }
+            len += 1;
+            self.step();
+        }
+        len
+    }
+
+    #[inline]
+    fn step_hexdigits(&mut self) -> usize {
+        let mut len = 0;
+        while let Some(v) = self.buf.get(self.idx) {
+            if !v.is_ascii_hexdigit() {
                 break;
             }
             len += 1;
@@ -483,28 +540,94 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_json_null(&mut self) -> Result<JsonAst<'a>> {
-        let data = [b'n', b'u', b'l', b'l'];
-        for v in data.into_iter() {
+    /// Parse a JSON null literal in standard mode
+    #[inline]
+    fn parse_standard_json_null(&mut self) -> Result<JsonAst<'a>> {
+        for v in NULL_LOWERCASE.iter() {
             self.must_is(v)?;
         }
         Ok(JsonAst::Null)
     }
 
-    fn parse_json_true(&mut self) -> Result<JsonAst<'a>> {
-        let data = [b't', b'r', b'u', b'e'];
-        for v in data.into_iter() {
+    /// Parse a JSON null or NaN literal in extended mode with case-insensitivity
+    #[inline]
+    fn parse_json_null_or_nan(&mut self) -> Result<JsonAst<'a>> {
+        let idx = self.idx;
+        if let Ok(null) = self.parse_json_null() {
+            Ok(null)
+        } else {
+            // fallback idx to check if it is NaN
+            self.idx = idx;
+            self.parse_json_nan()
+        }
+    }
+
+    /// Parse a JSON null literal in extended mode with case-insensitivity
+    /// Accepts any case variation of "null" (e.g., "Null", "NULL", "nUlL").
+    #[inline]
+    fn parse_json_null(&mut self) -> Result<JsonAst<'a>> {
+        for (v1, v2) in NULL_LOWERCASE.iter().zip(NULL_UPPERCASE.iter()) {
+            self.must_either(v1, v2)?;
+        }
+        Ok(JsonAst::Null)
+    }
+
+    /// Parse a JSON true literal in standard mode
+    #[inline]
+    fn parse_standard_json_true(&mut self) -> Result<JsonAst<'a>> {
+        for v in TRUE_LOWERCASE.iter() {
             self.must_is(v)?;
         }
         Ok(JsonAst::Bool(true))
     }
 
-    fn parse_json_false(&mut self) -> Result<JsonAst<'a>> {
-        let data = [b'f', b'a', b'l', b's', b'e'];
-        for v in data.into_iter() {
+    /// Parse a JSON true literal in extended mode with case-insensitivity
+    /// Accepts any case variation of "true" (e.g., "True", "TRUE", "tRuE").
+    #[inline]
+    fn parse_json_true(&mut self) -> Result<JsonAst<'a>> {
+        for (v1, v2) in TRUE_LOWERCASE.iter().zip(TRUE_UPPERCASE.iter()) {
+            self.must_either(v1, v2)?;
+        }
+        Ok(JsonAst::Bool(true))
+    }
+
+    /// Parse a JSON false literal in standard mode
+    #[inline]
+    fn parse_standard_json_false(&mut self) -> Result<JsonAst<'a>> {
+        for v in FALSE_LOWERCASE.iter() {
             self.must_is(v)?;
         }
         Ok(JsonAst::Bool(false))
+    }
+
+    /// Parse a JSON false literal in extended mode with case-insensitivity
+    /// Accepts any case variation of "false" (e.g., "False", "FALSE", "fAlSe").
+    #[inline]
+    fn parse_json_false(&mut self) -> Result<JsonAst<'a>> {
+        for (v1, v2) in FALSE_LOWERCASE.iter().zip(FALSE_UPPERCASE.iter()) {
+            self.must_either(v1, v2)?;
+        }
+        Ok(JsonAst::Bool(false))
+    }
+
+    /// Parse a JSON infinity literal in extended mode with case-insensitivity
+    /// Accepts any case variation of "infinity" (e.g., "Infinity", "INFINITY").
+    #[inline]
+    fn parse_json_infinity(&mut self) -> Result<JsonAst<'a>> {
+        for (v1, v2) in INFINITY_LOWERCASE.iter().zip(INFINITY_UPPERCASE.iter()) {
+            self.must_either(v1, v2)?;
+        }
+        Ok(JsonAst::Number(Number::Float64(f64::INFINITY)))
+    }
+
+    /// Parse a JSON NaN literal in extended mode with case-insensitivity
+    /// Accepts any case variation of "NaN" (e.g., "nan", "NAN").
+    #[inline]
+    fn parse_json_nan(&mut self) -> Result<JsonAst<'a>> {
+        for (v1, v2) in NAN_LOWERCASE.iter().zip(NAN_UPPERCASE.iter()) {
+            self.must_either(v1, v2)?;
+        }
+        Ok(JsonAst::Number(Number::Float64(f64::NAN)))
     }
 
     /// Parse JSON numbers in standard mode
@@ -525,30 +648,23 @@ impl<'a> Parser<'a> {
         let mut has_fraction = false;
         let mut has_exponent = false;
 
-        let c = self.next()?;
-        if *c == b'-' {
+        if self.check_next(&b'-') {
             negative = true;
             self.step();
-        } else if *c == b'+' || *c == b'.' {
-            self.step();
-            return Err(self.error(ParseErrorCode::InvalidNumberValue));
         }
-        if self.check_next(b'0') {
+        if self.check_next(&b'0') {
             self.step();
-            if self.check_digit() {
+            if self.check_digit().is_some() {
                 self.step();
                 return Err(self.error(ParseErrorCode::InvalidNumberValue));
             }
         } else {
             let len = self.step_digits();
             if len == 0 {
-                if !negative {
-                    self.step();
-                }
                 return Err(self.error(ParseErrorCode::InvalidNumberValue));
             }
         }
-        if self.check_next(b'.') {
+        if self.check_next(&b'.') {
             has_fraction = true;
             self.step();
             let len = self.step_digits();
@@ -557,10 +673,10 @@ impl<'a> Parser<'a> {
                 return Err(self.error(ParseErrorCode::InvalidNumberValue));
             }
         }
-        if self.check_next_either(b'E', b'e') {
+        if self.check_next_either(&b'E', &b'e').is_some() {
             has_exponent = true;
             self.step();
-            if self.check_next_either(b'+', b'-') {
+            if self.check_next_either(&b'+', &b'-').is_some() {
                 self.step();
             }
             let len = self.step_digits();
@@ -592,37 +708,42 @@ impl<'a> Parser<'a> {
     /// 1. Support for leading plus sign (e.g., `+123`)
     /// 2. Support for multiple leading zeros (e.g., `000123`)
     /// 3. Support for decimal point without digits on either side (e.g., `.123` or `123.`)
+    /// 4. Support for special values like `NaN`, `Infinity`, and `-Infinity` (case-insensitive)
+    /// 5. Support for hexadecimal notation with optional fractional part (e.g., `0xFF`, `0x1A.B`)
     ///
     /// Zero-allocation parsing strategy:
     /// 1. Uses direct digit accumulation without intermediate string conversions
     /// 2. For standard numeric types (Int64/UInt64), directly builds the value during parsing
-    /// 3. For decimal types, tracks scale and precision during the single-pass parse
-    /// 4. Falls back to Float64 parsing only when necessary
+    /// 3. For decimal types (requires `arbitrary_precision` feature), tracks scale and precision during the single-pass parse
+    /// 4. For hexadecimal numbers, uses specialized parsing with support for fractional parts
+    /// 5. Falls back to Float64 parsing only when necessary
     ///
     /// This implementation prioritizes performance through:
     /// - Single-pass approach with minimal branching
     /// - Avoiding heap allocations and string conversions
     /// - Optimized handling of common number formats
+    /// - Specialized handling for extended syntax elements
     fn parse_json_number(&mut self) -> Result<JsonAst<'a>> {
         // Store the starting position for potential fallback parsing
         let start_idx = self.idx;
+
         let mut negative = false;
-        let mut leading_zeros = false;
+        let mut leading_zeros = 0;
 
         // Handle sign prefix (+ or -), extending JSON to support leading plus sign
         let c = self.next()?;
-        if *c == b'-' {
+        if c == b'-' {
             negative = true;
             self.step();
-        } else if *c == b'+' {
+        } else if c == b'+' {
             // Extended syntax: Support for leading plus sign
             self.step();
         }
 
         // Extended syntax: Support for multiple leading zeros (e.g., 000123)
         loop {
-            if self.check_next(b'0') {
-                leading_zeros = true;
+            if self.check_next(&b'0') {
+                leading_zeros += 1;
                 self.step();
             } else {
                 break;
@@ -639,20 +760,18 @@ impl<'a> Parser<'a> {
 
         // Parse digits, supporting up to MAX_DECIMAL256_PRECISION digits
         while precision < MAX_DECIMAL256_PRECISION {
-            if self.check_digit() {
+            if let Some(digit) = self.check_digit() {
                 // Parse digit and accumulate value
-                let digit = (self.buf[self.idx] - b'0') as i128;
-
                 // Store in hi_value or lo_value based on precision
                 if precision < MAX_DECIMAL128_PRECISION {
                     hi_value = unsafe { hi_value.unchecked_mul(10_i128) };
-                    hi_value = unsafe { hi_value.unchecked_add(digit) };
+                    hi_value = unsafe { hi_value.unchecked_add(digit as i128) };
                 } else {
                     lo_value = unsafe { lo_value.unchecked_mul(10_i128) };
-                    lo_value = unsafe { lo_value.unchecked_add(digit) };
+                    lo_value = unsafe { lo_value.unchecked_add(digit as i128) };
                 }
                 self.step();
-            } else if self.check_next(b'.') {
+            } else if self.check_next(&b'.') {
                 // Handle decimal point - can only appear once
                 if has_fraction {
                     return Err(self.error(ParseErrorCode::InvalidNumberValue));
@@ -678,7 +797,7 @@ impl<'a> Parser<'a> {
             if !has_fraction {
                 let len = self.step_digits();
                 precision += len;
-                if self.check_next(b'.') {
+                if self.check_next(&b'.') {
                     has_fraction = true;
                     self.step();
                 }
@@ -691,16 +810,146 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Handle empty precision
-        if !leading_zeros && precision == 0 {
+        if leading_zeros == 0 && precision == 0 {
+            // Handle special values
+            if !has_fraction {
+                if let Ok(c) = self.next() {
+                    match c {
+                        b'i' | b'I' => {
+                            let val = self.parse_json_infinity()?;
+                            if negative {
+                                return Ok(JsonAst::Number(Number::Float64(f64::NEG_INFINITY)));
+                            } else {
+                                return Ok(val);
+                            }
+                        }
+                        b'n' | b'N' => {
+                            let val = self.parse_json_nan()?;
+                            if negative {
+                                // `-Nan` is not allowed
+                                return Err(self.error(ParseErrorCode::InvalidNumberValue));
+                            } else {
+                                return Ok(val);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             return Err(self.error(ParseErrorCode::InvalidNumberValue));
+        } else if leading_zeros == 1 && precision == 0 && !has_fraction {
+            // Handle hexadecimal number (0x...)
+            if self.check_next_either(&b'x', &b'X').is_some() {
+                self.step();
+
+                // Mark the start position of hex digits
+                let hex_start = self.idx;
+                let int_len = self.step_hexdigits();
+                if int_len == 0 {
+                    return Err(self.error(ParseErrorCode::InvalidNumberValue));
+                }
+
+                // Check if we have a fractional part
+                if self.check_next(&b'.') {
+                    // Skip the decimal point
+                    self.step();
+
+                    // Mark the start of fractional digits
+                    let frac_start = self.idx;
+                    let frac_len = self.step_hexdigits();
+                    if frac_len == 0 {
+                        return Err(self.error(ParseErrorCode::InvalidNumberValue));
+                    }
+
+                    let int_str = std::str::from_utf8(&self.buf[hex_start..hex_start + int_len])
+                        .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+                    let frac_str =
+                        std::str::from_utf8(&self.buf[frac_start..frac_start + frac_len])
+                            .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+
+                    // Parse integer part
+                    let int_val = u128::from_str_radix(int_str, 16)
+                        .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+
+                    // Parse fractional part and calculate its value
+                    let frac_val = u128::from_str_radix(frac_str, 16)
+                        .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+                    let frac_divisor = 16.0_f64.powi(frac_len as i32);
+
+                    // Combine integer and fractional parts
+                    let mut final_val = int_val as f64 + (frac_val as f64 / frac_divisor);
+                    if negative {
+                        final_val = -final_val;
+                    }
+                    return Ok(JsonAst::Number(Number::Float64(final_val)));
+                } else {
+                    // Integer-only hex value
+                    let int_str = std::str::from_utf8(&self.buf[hex_start..self.idx])
+                        .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+
+                    // Parse the hex value
+                    let value = u128::from_str_radix(int_str, 16)
+                        .map_err(|_| self.error(ParseErrorCode::InvalidNumberValue))?;
+
+                    // Convert to appropriate number type based on size
+                    if negative {
+                        // Handle negative values
+                        if value <= (i64::MAX as u128 + 1) {
+                            let i_val = -(value as i64);
+                            return Ok(JsonAst::Number(Number::Int64(i_val)));
+                        }
+                        #[cfg(feature = "arbitrary_precision")]
+                        {
+                            if value <= (DECIMAL128_MAX as u128 + 1) {
+                                return Ok(JsonAst::Number(Number::Decimal128(Decimal128 {
+                                    scale: 0,
+                                    value: -(value as i128),
+                                })));
+                            } else {
+                                return Ok(JsonAst::Number(Number::Decimal256(Decimal256 {
+                                    scale: 0,
+                                    value: i256::from(value) * -1,
+                                })));
+                            }
+                        }
+                        #[cfg(not(feature = "arbitrary_precision"))]
+                        {
+                            return Ok(JsonAst::Number(Number::Float64(-(value as f64))));
+                        }
+                    } else {
+                        // Handle positive values
+                        if value <= u64::MAX as u128 {
+                            return Ok(JsonAst::Number(Number::UInt64(value as u64)));
+                        }
+                        #[cfg(feature = "arbitrary_precision")]
+                        {
+                            if value <= DECIMAL128_MAX as u128 {
+                                return Ok(JsonAst::Number(Number::Decimal128(Decimal128 {
+                                    scale: 0,
+                                    value: value as i128,
+                                })));
+                            } else {
+                                return Ok(JsonAst::Number(Number::Decimal256(Decimal256 {
+                                    scale: 0,
+                                    value: i256::from(value),
+                                })));
+                            }
+                        }
+                        #[cfg(not(feature = "arbitrary_precision"))]
+                        {
+                            return Ok(JsonAst::Number(Number::Float64(value as f64)));
+                        }
+                    }
+                }
+            }
         }
+
         // Handle exponent notation (e.g., 1e10, 1.5E-7)
-        if self.check_next_either(b'E', b'e') {
+        if self.check_next_either(&b'E', &b'e').is_some() {
             has_exponent = true;
             self.step();
             // Handle exponent sign
-            if self.check_next_either(b'+', b'-') {
+            if self.check_next_either(&b'+', &b'-').is_some() {
                 self.step();
             }
             // Parse exponent digits
@@ -767,20 +1016,38 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a JSON string value with support for escape sequences.
+    /// Parse a JSON string in standard mode
     ///
-    /// This function implements a high-performance JSON string parser that:
-    /// 1. Efficiently handles strings without escape sequences using direct memory access
-    /// 2. Falls back to a more complex parsing routine only when escape sequences are present
-    /// 3. Supports standard JSON escape sequences and Unicode escapes (\uXXXX and \u{XXXX})
-    ///
-    /// The implementation uses a two-pass approach for strings with escapes:
-    /// - First pass: Count escapes and determine string boundaries
-    /// - Second pass: Process escape sequences only when necessary
-    fn parse_json_string(&mut self) -> Result<JsonAst<'a>> {
-        // Ensure the string starts with a quote
-        self.must_is(b'"')?;
+    /// Only supports double quotes (") as string delimiters
+    /// and follows strict JSON specification.
+    #[inline]
+    fn parse_standard_json_string(&mut self) -> Result<JsonAst<'a>> {
+        self.must_is(&b'"')?;
+        let val = self.parse_quoted_string(b'"')?;
+        Ok(JsonAst::String(val))
+    }
 
+    /// Parse a JSON string with extended syntax support
+    ///
+    /// Extended syntax allows both double quotes (") and single quotes (')
+    /// as string delimiters, which is not allowed in standard JSON.
+    #[inline]
+    fn parse_json_string(&mut self) -> Result<JsonAst<'a>> {
+        let end_quote = self.must_either(&b'"', &b'\'')?;
+        let val = self.parse_quoted_string(end_quote)?;
+        Ok(JsonAst::String(val))
+    }
+
+    /// Parse a quoted string with support for escape sequences
+    ///
+    /// Handles both standard and extended Unicode escape sequences:
+    /// - Standard: \uXXXX (4 hex digits)
+    /// - Extended: \u{XXXX} (variable number of hex digits in braces)
+    ///
+    /// Uses a two-pass approach for efficiency:
+    /// 1. First pass: Find string boundaries and count escapes
+    /// 2. Second pass: Process escapes only when necessary
+    fn parse_quoted_string(&mut self, end_quote: u8) -> Result<Cow<'a, str>> {
         // Mark the starting position (after the opening quote)
         let start_idx = self.idx;
         let mut escapes = 0;
@@ -794,11 +1061,11 @@ impl<'a> Parser<'a> {
                     self.step();
                     escapes += 1;
                     let next_c = self.next()?;
-                    if *next_c == b'u' {
+                    if next_c == b'u' {
                         // Handle Unicode escape sequence
                         self.step();
                         let next_c = self.next()?;
-                        if *next_c == b'{' {
+                        if next_c == b'{' {
                             // Extended Unicode format: \u{XXXX}
                             self.step_by(UNICODE_LEN + 2);
                         } else {
@@ -809,16 +1076,14 @@ impl<'a> Parser<'a> {
                         // Simple escape sequence like \n, \t, etc.
                         self.step();
                     }
-                    continue;
                 }
-                b'"' => {
-                    // End of string found
+                _ => {
                     self.step();
-                    break;
+                    if c == end_quote {
+                        break;
+                    }
                 }
-                _ => {}
             }
-            self.step();
         }
 
         // Get the string data (excluding quotes)
@@ -837,59 +1102,97 @@ impl<'a> Parser<'a> {
                 .map(Cow::Borrowed)
                 .map_err(|_| self.error(ParseErrorCode::InvalidStringValue))?
         };
-        Ok(JsonAst::String(val))
+        Ok(val)
     }
 
-    /// Parse a JSON array with standard mode.
-    fn parse_standard_json_array(&mut self) -> Result<JsonAst<'a>> {
-        // Ensure the array starts with an opening bracket
-        self.must_is(b'[')?;
+    /// Parse an unquoted string literal for object keys
+    ///
+    /// Extended syntax feature that allows object keys without quotes.
+    ///
+    /// Restrictions:
+    /// - Only letters, numbers, underscore, dollar and UTF-8 multi-byte characters are allowed
+    /// - First character cannot be a number
+    /// - Must contain at least one character
+    fn parse_unquoted_string(&mut self) -> Result<Cow<'a, str>> {
+        let start_idx = self.idx;
 
-        let mut first = true;
-        let mut values = Vec::with_capacity(8);
+        let c = self.next()?;
+        if c.is_ascii_digit() {
+            self.step();
+            return Err(self.error(ParseErrorCode::ObjectKeyInvalidNumber));
+        }
 
-        // Parse array elements until closing bracket is found
         loop {
-            self.skip_unused();
             let c = self.next()?;
-
-            // Check for end of array
-            if *c == b']' {
+            if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'$') {
                 self.step();
+            } else if c >= 0x80 {
+                // Handle UTF-8 multi-byte characters (including Chinese)
+                // UTF-8 continuation bytes start with binary 10xxxxxx (0x80-0xBF)
+                // Determine how many continuation bytes to expect based on the first byte
+                let continuation_bytes = if c >= 0xF0 {
+                    4 // 4-byte sequence (U+10000 to U+10FFFF)
+                } else if c >= 0xE0 {
+                    3 // 3-byte sequence (U+0800 to U+FFFF) - includes most Chinese characters
+                } else if c >= 0xC0 {
+                    2 // 2-byte sequence (U+0080 to U+07FF)
+                } else {
+                    // Invalid UTF-8 start byte
+                    return Err(self.error(ParseErrorCode::ObjectKeyInvalidCharacter));
+                };
+
+                // Consume the expected continuation bytes
+                self.step_by(continuation_bytes);
+            } else {
                 break;
             }
-
-            // Handle comma separator between elements (not for the first element)
-            if !first {
-                if *c != b',' {
-                    return Err(self.error(ParseErrorCode::ExpectedArrayCommaOrEnd));
-                }
-                self.step();
-            }
-            first = false;
-
-            self.skip_unused();
-
-            // Parse a regular array element
-            let value = self.parse_json_value()?;
-            values.push(value);
         }
-        Ok(JsonAst::Array(values))
+        if self.idx == start_idx {
+            return Err(self.error(ParseErrorCode::ObjectKeyInvalidCharacter));
+        }
+
+        // Get the string data
+        let data = &self.buf[start_idx..self.idx];
+        let val = std::str::from_utf8(data)
+            .map(Cow::Borrowed)
+            .map_err(|_| self.error(ParseErrorCode::InvalidStringValue))?;
+        Ok(val)
     }
 
-    /// Parse a JSON array with extended syntax support.
+    /// Parse an array value with support for empty elements
     ///
-    /// This function implements a JSON array parser that:
-    /// 1. Handles standard JSON arrays with comma-separated values
-    /// 2. Extends JSON syntax to support empty elements (e.g., [1,,3]) which are parsed as null values
-    /// 3. Efficiently processes arrays of any size with minimal allocations
+    /// Extended syntax feature that treats empty elements as null:
+    /// - [1,,3] is parsed as [1,null,3]
+    /// - [1,2,] is parsed as [1,2,null]
     ///
-    /// Extended JSON array syntax support:
-    /// - Empty elements between commas (e.g., [1,,3]) which standard JSON doesn't allow
-    /// - Empty elements at the end of arrays (e.g., [1,2,]) which standard JSON doesn't allow
+    /// This is not allowed in standard JSON but supported in extended mode.
+    #[inline]
+    fn parse_array_value(&mut self) -> Result<JsonAst<'a>> {
+        if self.check_next_either(&b',', &b']').is_some() {
+            Ok(JsonAst::Null)
+        } else {
+            self.parse_json_value()
+        }
+    }
+
+    /// Parse a JSON array with support for both standard and extended syntax
+    ///
+    /// This function handles the common array parsing logic for both modes:
+    /// - Parses arrays enclosed in square brackets [...]
+    /// - Handles comma-separated values
+    /// - Validates proper syntax for separators and closing brackets
+    ///
+    /// The behavior differs between standard and extended mode through the function pointer:
+    /// - In standard mode: Uses parse_standard_json_value which enforces strict JSON rules
+    /// - In extended mode: Uses parse_array_value which allows empty elements (treated as null)
+    ///
+    /// Examples of valid arrays in extended mode:
+    /// - [1,2,3]     (standard JSON)
+    /// - [1,,3]      (empty element treated as null)
+    /// - [1,2,]      (trailing comma treated as null element)
     fn parse_json_array(&mut self) -> Result<JsonAst<'a>> {
         // Ensure the array starts with an opening bracket
-        self.must_is(b'[')?;
+        self.must_is(&b'[')?;
 
         let mut first = true;
         let mut values = Vec::with_capacity(8);
@@ -900,14 +1203,14 @@ impl<'a> Parser<'a> {
             let c = self.next()?;
 
             // Check for end of array
-            if *c == b']' {
+            if c == b']' {
                 self.step();
                 break;
             }
 
             // Handle comma separator between elements (not for the first element)
             if !first {
-                if *c != b',' {
+                if c != b',' {
                     return Err(self.error(ParseErrorCode::ExpectedArrayCommaOrEnd));
                 }
                 self.step();
@@ -915,36 +1218,64 @@ impl<'a> Parser<'a> {
             first = false;
 
             self.skip_unused();
-
-            // Extended syntax: Check for empty elements (consecutive commas or comma before closing bracket)
-            // This is where the parser extends standard JSON by allowing empty elements
-            if self.check_next_either(b',', b']') {
-                // Insert null for empty element
-                values.push(JsonAst::Null);
-                continue;
-            }
-
             // Parse a regular array element
-            let value = self.parse_json_value()?;
+            let value = (self.parse_array_value_fn)(self)?;
             values.push(value);
         }
         Ok(JsonAst::Array(values))
     }
 
-    /// Parse a JSON object with key-value pairs.
+    /// Parse an object key in standard mode
     ///
-    /// This function implements a standard-compliant JSON object parser that:
-    /// 1. Handles objects with string keys and any valid JSON values
-    /// 2. Enforces that keys must be strings as per JSON specification
-    /// 3. Efficiently builds a hash map representation of the object
+    /// Only supports double-quoted strings as keys,
+    /// following strict JSON specification.
+    #[inline]
+    fn parse_standard_object_key(&mut self) -> Result<Cow<'a, str>> {
+        self.must_is(&b'"')?;
+        self.parse_quoted_string(b'"')
+    }
+
+    /// Parse an object key with extended syntax support
     ///
-    /// The implementation follows standard JSON syntax requirements:
-    /// - Keys must be strings
-    /// - Keys and values are separated by colons
-    /// - Key-value pairs are separated by commas
+    /// Extended syntax allows:
+    /// 1. Double-quoted strings (")
+    /// 2. Single-quoted strings (')
+    /// 3. Unquoted identifiers (letters, numbers, underscore, dollar and UTF-8 characters)
+    ///    with the restriction that they cannot start with a number
+    #[inline]
+    fn parse_object_key(&mut self) -> Result<Cow<'a, str>> {
+        if let Some(end_quote) = self.check_next_either(&b'"', &b'\'') {
+            self.step();
+            self.parse_quoted_string(end_quote)
+        } else {
+            self.parse_unquoted_string()
+        }
+    }
+
+    /// Parse a JSON object with support for both standard and extended syntax
+    ///
+    /// This function handles the common object parsing logic for both modes:
+    /// - Parses objects enclosed in curly braces {...}
+    /// - Handles key-value pairs separated by colons
+    /// - Validates proper syntax for separators and closing braces
+    /// - Detects and reports duplicate keys
+    ///
+    /// The behavior differs between standard and extended mode through function pointers:
+    /// - In standard mode:
+    ///   * Uses parse_standard_object_key which only accepts double-quoted keys
+    ///   * Uses parse_standard_json_value which enforces strict JSON rules for values
+    /// - In extended mode:
+    ///   * Uses parse_object_key which accepts quoted (double/single) and unquoted keys
+    ///   * Uses parse_json_value which allows extended syntax for values
+    ///
+    /// Examples of valid objects in extended mode:
+    /// - {"key": "value"}      (standard JSON)
+    /// - {'key': 'value'}      (single quotes)
+    /// - {key: "value"}        (unquoted key)
+    /// - {_user123: 'value'}   (unquoted key with underscore)
     fn parse_json_object(&mut self) -> Result<JsonAst<'a>> {
         // Ensure the object starts with an opening brace
-        self.must_is(b'{')?;
+        self.must_is(&b'{')?;
 
         let mut first = true;
         let mut obj = Vec::with_capacity(16);
@@ -955,38 +1286,35 @@ impl<'a> Parser<'a> {
             let c = self.next()?;
 
             // Check for end of object
-            if *c == b'}' {
+            if c == b'}' {
                 self.step();
                 break;
             }
 
             // Handle comma separator between key-value pairs (not for the first pair)
             if !first {
-                if *c != b',' {
+                if c != b',' {
                     return Err(self.error(ParseErrorCode::ExpectedObjectCommaOrEnd));
                 }
                 self.step();
             }
             first = false;
 
-            // Parse the key (must be a string)
-            let key = self.parse_json_value()?;
-            let Some(key_str) = key.as_string() else {
-                return Err(self.error(ParseErrorCode::KeyMustBeAString));
-            };
+            self.skip_unused();
+            let key_str = (self.parse_object_key_fn)(self)?;
             let pos = self.idx;
 
             self.skip_unused();
 
             // Ensure key and value are separated by a colon
             let c = self.next()?;
-            if *c != b':' {
+            if c != b':' {
                 return Err(self.error(ParseErrorCode::ExpectedColon));
             }
             self.step();
 
             // Parse the value
-            let value = self.parse_json_value()?;
+            let value = (self.parse_value_fn)(self)?;
 
             // Add the key-value pair to the object
             obj.push((key_str, value, pos));
@@ -1011,7 +1339,134 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::collections::BTreeMap;
+    use std::fmt::Display;
+    use std::fmt::Formatter;
 
+    /// Json5Value represents the extended [JSON5 syntax](https://json5.org/) for testing purposes
+    ///
+    /// This enum is used to generate test data that conforms to the JSON5 specification,
+    /// including features like hexadecimal numbers, single-quoted strings, and unquoted object keys.
+    #[derive(Clone, PartialEq, Default, Eq, Debug)]
+    pub enum Json5Value {
+        #[default]
+        Null,
+        Bool(bool),
+        Number(Number),
+        HexNumber(String),
+        DoubleQuotedString(String),
+        SingleQuotedString(String),
+        Array(Vec<Json5Value>),
+        DoubleQuotedKeyObject(BTreeMap<String, Json5Value>),
+        SingleQuotedKeyObject(BTreeMap<String, Json5Value>),
+        UnquotedKeyObject(BTreeMap<String, Json5Value>),
+    }
+
+    /// Display implementation for Json5Value that formats values according to JSON5 syntax
+    ///
+    /// This implementation handles proper escaping of special characters in strings
+    /// and ensures the output conforms to the JSON5 specification.
+    impl Display for Json5Value {
+        fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+            match self {
+                Json5Value::Null => write!(f, "null"),
+                Json5Value::Bool(v) => {
+                    if *v {
+                        write!(f, "true")
+                    } else {
+                        write!(f, "false")
+                    }
+                }
+                Json5Value::Number(ref v) => write!(f, "{}", v),
+                Json5Value::HexNumber(ref v) => write!(f, "{}", v),
+                Json5Value::DoubleQuotedString(ref v) => {
+                    write!(f, "\"")?;
+                    for c in v.chars() {
+                        match c {
+                            '"' => write!(f, "\\\"")?,
+                            '\\' => write!(f, "\\\\")?,
+                            c => write!(f, "{}", c)?,
+                        }
+                    }
+                    write!(f, "\"")
+                }
+                Json5Value::SingleQuotedString(ref v) => {
+                    write!(f, "'")?;
+                    for c in v.chars() {
+                        match c {
+                            '\'' => write!(f, "\\\'")?,
+                            '\\' => write!(f, "\\\\")?,
+                            c => write!(f, "{}", c)?,
+                        }
+                    }
+                    write!(f, "'")
+                }
+                Json5Value::Array(ref vs) => {
+                    write!(f, "[")?;
+                    for (i, v) in vs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "{v}")?;
+                    }
+                    write!(f, "]")
+                }
+                Json5Value::DoubleQuotedKeyObject(ref vs) => {
+                    write!(f, "{{")?;
+                    for (i, (k, v)) in vs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "\"")?;
+                        for c in k.chars() {
+                            match c {
+                                '"' => write!(f, "\\\"")?,
+                                '\\' => write!(f, "\\\\")?,
+                                c => write!(f, "{}", c)?,
+                            }
+                        }
+                        write!(f, "\"")?;
+                        write!(f, ":{v}")?;
+                    }
+                    write!(f, "}}")
+                }
+                Json5Value::SingleQuotedKeyObject(ref vs) => {
+                    write!(f, "{{")?;
+                    for (i, (k, v)) in vs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "'")?;
+                        for c in k.chars() {
+                            match c {
+                                '\'' => write!(f, "\\\'")?,
+                                '\\' => write!(f, "\\\\")?,
+                                c => write!(f, "{}", c)?,
+                            }
+                        }
+                        write!(f, "'")?;
+                        write!(f, ":{v}")?;
+                    }
+                    write!(f, "}}")
+                }
+                Json5Value::UnquotedKeyObject(ref vs) => {
+                    write!(f, "{{")?;
+                    for (i, (k, v)) in vs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ",")?;
+                        }
+                        write!(f, "{k}:{v}")?;
+                    }
+                    write!(f, "}}")
+                }
+            }
+        }
+    }
+
+    /// Strategy to generate standard strings for testing
+    ///
+    /// Generates strings containing ASCII characters and CJK Unicode characters
+    /// for testing standard JSON string handling
     fn string_strategy() -> impl Strategy<Value = String> {
         let ascii = '!'..='~';
         // CJK Unified Ideographs
@@ -1022,6 +1477,51 @@ mod tests {
             .prop_map(|v| v.into_iter().collect())
     }
 
+    /// Strategy to generate strings suitable for quoted keys and values in JSON5
+    ///
+    /// Excludes quote characters (single and double) and backslashes to simplify testing
+    /// while still providing a diverse set of characters including CJK Unicode
+    fn quoted_string_strategy() -> impl Strategy<Value = String> {
+        // ignore ' " \
+        let ascii1 = '('..='[';
+        let ascii2 = ']'..='~';
+        // CJK Unified Ideographs
+        let cjk = '\u{4E00}'..='\u{9FFF}';
+
+        let chars: Vec<char> = ascii1.chain(ascii2).chain(cjk).collect();
+        prop::collection::vec(prop::sample::select(chars), 1..50)
+            .prop_map(|v| v.into_iter().collect())
+    }
+
+    /// Strategy to generate strings suitable for unquoted object keys in JSON5
+    ///
+    /// Generates strings containing alphanumeric characters, underscores, dollar signs,
+    /// and CJK Unicode characters that are valid as unquoted keys in JSON5.
+    /// This tests the parser's ability to handle extended syntax for object keys.
+    fn unquoted_string_strategy() -> impl Strategy<Value = String> {
+        let number = '0'..='9';
+        let lowercase = 'a'..='f';
+        let uppercase = 'A'..='F';
+        let underline = '_';
+        let dollar = '$';
+        // CJK Unified Ideographs
+        let cjk = '\u{4E00}'..='\u{9FFF}';
+
+        let mut chars: Vec<char> = number
+            .chain(lowercase)
+            .chain(uppercase)
+            .chain(cjk)
+            .collect();
+        chars.push(underline);
+        chars.push(dollar);
+        prop::collection::vec(prop::sample::select(chars), 1..50)
+            .prop_map(|v| v.into_iter().collect())
+    }
+
+    /// Strategy to generate standard JSON number values
+    ///
+    /// Generates integers (signed and unsigned) and floating-point numbers
+    /// while excluding special cases like -0.0 that might cause comparison issues
     fn standard_number_strategy() -> impl Strategy<Value = Number> {
         prop_oneof![
             any::<u64>().prop_map(Number::UInt64),
@@ -1032,6 +1532,13 @@ mod tests {
         ]
     }
 
+    /// Strategy to generate arbitrary precision number values when the feature is enabled
+    ///
+    /// Generates various numeric types including:
+    /// - Standard integers (i64, u64)
+    /// - Floating-point numbers (f64)
+    /// - Decimal types with different scales (Decimal64, Decimal128, Decimal256)
+    ///   This tests the parser's ability to handle the full range of numeric formats
     #[cfg(feature = "arbitrary_precision")]
     fn number_strategy() -> impl Strategy<Value = Number> {
         use crate::Decimal128;
@@ -1054,6 +1561,63 @@ mod tests {
         ]
     }
 
+    /// Strategy to generate random hexadecimal numbers for testing
+    ///
+    /// Generates hexadecimal numbers with 0x/0X prefix (e.g., "0xFF", "0X1A3")
+    /// to test the parser's ability to handle extended JSON5 hex number syntax
+    fn hex_number_strategy() -> impl Strategy<Value = String> {
+        let number = '0'..='9';
+        let lowercase = 'a'..='f';
+        let uppercase = 'A'..='F';
+
+        let hex_digit =
+            prop::sample::select(number.chain(lowercase).chain(uppercase).collect::<Vec<_>>());
+        let hex_prefix = prop::sample::select(vec!['x', 'X']);
+        let int_part = prop::collection::vec(hex_digit.clone(), 1..16)
+            .prop_map(|v| v.into_iter().collect::<String>());
+
+        (hex_prefix, int_part).prop_map(|(x, i)| format!("0{}{}", x, i))
+    }
+
+    /// Strategy to generate JSON5 values for testing the extended JSON parser
+    ///
+    /// Creates a comprehensive set of JSON5 values including all extended syntax features:
+    /// - Standard JSON literals (null, true, false)
+    /// - Numbers (standard format)
+    /// - Hexadecimal numbers (with 0x/0X prefix)
+    /// - Double-quoted strings
+    /// - Single-quoted strings
+    /// - Arrays
+    /// - Objects with different key styles (double-quoted, single-quoted, and unquoted)
+    ///
+    /// This strategy is used to verify that our parser correctly handles all JSON5 extensions
+    fn json5_strategy() -> impl Strategy<Value = Json5Value> {
+        let leaf = prop_oneof![
+            Just(Json5Value::Null),
+            any::<bool>().prop_map(Json5Value::Bool),
+            standard_number_strategy().prop_map(Json5Value::Number),
+            hex_number_strategy().prop_map(Json5Value::HexNumber),
+            quoted_string_strategy().prop_map(Json5Value::DoubleQuotedString),
+            quoted_string_strategy().prop_map(Json5Value::SingleQuotedString),
+        ];
+
+        leaf.prop_recursive(8, 256, 30, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..10).prop_map(Json5Value::Array),
+                prop::collection::btree_map(quoted_string_strategy(), inner.clone(), 0..20)
+                    .prop_map(Json5Value::DoubleQuotedKeyObject),
+                prop::collection::btree_map(quoted_string_strategy(), inner.clone(), 0..20)
+                    .prop_map(Json5Value::SingleQuotedKeyObject),
+                prop::collection::btree_map(unquoted_string_strategy(), inner, 0..20)
+                    .prop_map(Json5Value::UnquotedKeyObject),
+            ]
+        })
+    }
+
+    /// Strategy to generate standard JSON values with arbitrary precision when enabled
+    ///
+    /// Used for testing the parser's compatibility with standard JSON format
+    /// while supporting arbitrary precision numbers
     #[cfg(feature = "arbitrary_precision")]
     fn json_strategy() -> impl Strategy<Value = Value<'static>> {
         let leaf = prop_oneof![
@@ -1072,6 +1636,10 @@ mod tests {
         })
     }
 
+    /// Strategy to generate standard JSON values without arbitrary precision
+    ///
+    /// Used for testing the parser in standard mode to ensure it strictly
+    /// follows the JSON specification without any extensions
     fn standard_json_strategy() -> impl Strategy<Value = Value<'static>> {
         let leaf = prop_oneof![
             Just(Value::Null),
@@ -1090,6 +1658,33 @@ mod tests {
     }
 
     proptest! {
+        /// Tests the parser's ability to handle JSON5 syntax
+        ///
+        /// Generates JSON5 values and verifies that our parser produces
+        /// the same results as the json_five crate
+        #[test]
+        fn test_json5_parser(json in json5_strategy()) {
+            let source = format!("{}", json);
+
+            let res1 = json_five::from_str::<serde_json::Value>(&source);
+            let res2 = parse_value(source.as_bytes());
+            let res3 = parse_owned_jsonb(source.as_bytes());
+            assert_eq!(res1.is_ok(), res2.is_ok());
+            assert_eq!(res1.is_ok(), res3.is_ok());
+            if res1.is_ok() {
+                let res1 = format!("{}", res1.unwrap());
+                let res2 = format!("{}", res2.unwrap());
+                let res3 = format!("{}", res3.unwrap());
+                assert_eq!(res1, res2);
+                assert_eq!(res1, res3);
+            }
+        }
+    }
+
+    proptest! {
+        /// Tests the parser's ability to handle standard JSON with arbitrary precision
+        ///
+        /// Compares our parser's results with serde_json for standard JSON input
         #[test]
         #[cfg(feature = "arbitrary_precision")]
         fn test_json_parser(json in json_strategy()) {
@@ -1110,6 +1705,9 @@ mod tests {
     }
 
     proptest! {
+        /// Tests the parser in standard mode with standard JSON input
+        ///
+        /// Verifies that the parser strictly follows the JSON specification in standard mode
         #[test]
         fn test_standard_json_parser(json in standard_json_strategy()) {
             let source = format!("{}", json);

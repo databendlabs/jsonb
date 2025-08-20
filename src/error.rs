@@ -36,6 +36,8 @@ pub enum ParseErrorCode {
     InvalidSurrogateInHexEscape(u16),
     UnexpectedEndOfHexEscape,
     ObjectDuplicateKey(String),
+    ObjectKeyInvalidNumber,
+    ObjectKeyInvalidCharacter,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -71,6 +73,12 @@ impl Display for ParseErrorCode {
             ParseErrorCode::UnexpectedEndOfHexEscape => f.write_str("unexpected end of hex escape"),
             ParseErrorCode::ObjectDuplicateKey(key) => {
                 write!(f, "duplicate object attribute \"{}\"", key)
+            }
+            ParseErrorCode::ObjectKeyInvalidNumber => {
+                f.write_str("object attribute name cannot be a number")
+            }
+            ParseErrorCode::ObjectKeyInvalidCharacter => {
+                f.write_str("object attribute name cannot be invalid character")
             }
         }
     }
