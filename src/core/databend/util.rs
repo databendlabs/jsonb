@@ -68,7 +68,7 @@ impl<'a> JsonbItem<'a> {
 }
 
 impl<'a> RawJsonb<'a> {
-    pub(crate) fn jsonb_item_type(&self) -> Result<JsonbItemType> {
+    pub fn jsonb_item_type(&self) -> Result<JsonbItemType> {
         let mut index = 0;
         let (header_type, header_len) = self.read_header(index)?;
         index += 4;

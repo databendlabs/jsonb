@@ -23,7 +23,7 @@ use crate::RawJsonb;
 
 /// The value type of JSONB data.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum JsonbItemType {
+pub enum JsonbItemType {
     /// The Null JSONB type.
     Null,
     /// The Boolean JSONB type.
