@@ -35,23 +35,24 @@ use crate::OwnedJsonb;
 #[cfg(feature = "arbitrary_precision")]
 use ethnum::i256;
 
+use crate::constants::MAX_DECIMAL128_PRECISION;
+use crate::constants::MAX_DECIMAL256_PRECISION;
 #[cfg(feature = "arbitrary_precision")]
-const MAX_DECIMAL64_PRECISION: usize = 18;
-const MAX_DECIMAL128_PRECISION: usize = 38;
-const MAX_DECIMAL256_PRECISION: usize = 76;
+use crate::constants::MAX_DECIMAL64_PRECISION;
 
-const UINT64_MIN: i128 = 0i128;
-const UINT64_MAX: i128 = 18_446_744_073_709_551_615i128;
-const INT64_MIN: i128 = -9_223_372_036_854_775_808i128;
-const INT64_MAX: i128 = 9_223_372_036_854_775_807i128;
 #[cfg(feature = "arbitrary_precision")]
-const DECIMAL64_MIN: i128 = -999999999999999999i128;
+use crate::constants::DECIMAL128_MAX;
 #[cfg(feature = "arbitrary_precision")]
-const DECIMAL64_MAX: i128 = 999999999999999999i128;
+use crate::constants::DECIMAL128_MIN;
 #[cfg(feature = "arbitrary_precision")]
-const DECIMAL128_MIN: i128 = -99999999999999999999999999999999999999i128;
+use crate::constants::DECIMAL64_MAX;
 #[cfg(feature = "arbitrary_precision")]
-const DECIMAL128_MAX: i128 = 99999999999999999999999999999999999999i128;
+use crate::constants::DECIMAL64_MIN;
+
+use crate::constants::INT64_MAX;
+use crate::constants::INT64_MIN;
+use crate::constants::UINT64_MAX;
+use crate::constants::UINT64_MIN;
 
 // JSON literal constants
 const NULL_LOWERCASE: [u8; 4] = [b'n', b'u', b'l', b'l'];

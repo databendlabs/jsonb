@@ -35,12 +35,12 @@ impl<'a> ArrayIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == ARRAY_CONTAINER_TAG {
             let jentry_offset = 4;
-            let item_offset = 4 + 4 * header_len as usize;
+            let item_offset = 4 + 4 * header_len;
             Ok(Some(Self {
                 raw_jsonb,
                 jentry_offset,
                 item_offset,
-                length: header_len as usize,
+                length: header_len,
                 index: 0,
             }))
         } else {
@@ -97,12 +97,12 @@ impl<'a> ObjectKeyIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
             let jentry_offset = 4;
-            let item_offset = 4 + 8 * header_len as usize;
+            let item_offset = 4 + 8 * header_len;
             Ok(Some(Self {
                 raw_jsonb,
                 jentry_offset,
                 item_offset,
-                length: header_len as usize,
+                length: header_len,
                 index: 0,
             }))
         } else {
@@ -159,7 +159,7 @@ impl<'a> ObjectValueIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
             let mut jentry_offset = 4;
-            let mut item_offset = 4 + 8 * header_len as usize;
+            let mut item_offset = 4 + 8 * header_len;
             for _ in 0..header_len {
                 let key_jentry = raw_jsonb.read_jentry(jentry_offset)?;
                 jentry_offset += 4;
@@ -170,7 +170,7 @@ impl<'a> ObjectValueIterator<'a> {
                 raw_jsonb,
                 jentry_offset,
                 item_offset,
-                length: header_len as usize,
+                length: header_len,
                 index: 0,
             }))
         } else {
@@ -229,14 +229,14 @@ impl<'a> ObjectIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
             let mut jentry_offset = 4;
-            let mut key_jentries = VecDeque::with_capacity(header_len as usize);
+            let mut key_jentries = VecDeque::with_capacity(header_len);
             for _ in 0..header_len {
                 let key_jentry = raw_jsonb.read_jentry(jentry_offset)?;
                 jentry_offset += 4;
                 key_jentries.push_back(key_jentry);
             }
             let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
-            let key_offset = 4 + 8 * header_len as usize;
+            let key_offset = 4 + 8 * header_len;
             let val_offset = key_offset + key_length;
 
             Ok(Some(Self {
@@ -245,7 +245,7 @@ impl<'a> ObjectIterator<'a> {
                 jentry_offset,
                 key_offset,
                 val_offset,
-                length: header_len as usize,
+                length: header_len,
             }))
         } else {
             Ok(None)

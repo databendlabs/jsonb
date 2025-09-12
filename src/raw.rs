@@ -346,7 +346,7 @@ impl Ord for RawJsonb<'_> {
 /// use jsonb::RawJsonb;
 /// use serde::Deserialize;
 ///
-/// #[derive(Deserialize, Debug)]
+/// #[derive(Deserialize, Debug, PartialEq, Eq)]
 /// struct Person {
 ///     name: String,
 ///     age: u32,
@@ -356,6 +356,7 @@ impl Ord for RawJsonb<'_> {
 /// let raw_jsonb = owned_jsonb.as_raw();
 ///
 /// let person: Person = from_raw_jsonb(&raw_jsonb).unwrap();
+/// assert_eq!(person, Person { name: "Alice".to_string(), age: 20 });
 /// println!("{:?}", person); // Output: Person { name: "Alice", age: 20 }
 /// ```
 pub fn from_raw_jsonb<'de, T>(raw_jsonb: &'de RawJsonb) -> Result<T>

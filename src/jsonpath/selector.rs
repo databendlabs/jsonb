@@ -490,17 +490,34 @@ impl<'a> Selector<'a> {
     }
 
     fn select_object_values(&mut self, parent_item: JsonbItem<'a>) -> Result<()> {
-        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
+        let jsonb_item_type = parent_item.jsonb_item_type()?;
+        if !matches!(jsonb_item_type, JsonbItemType::Object(_)) {
             return Ok(());
         };
 
-        let object_val_iter_opt = ObjectValueIterator::new(curr_raw_jsonb)?;
-        if let Some(mut object_val_iter) = object_val_iter_opt {
-            for result in &mut object_val_iter {
-                let val_item = result?;
-                self.items.push_back(val_item);
+        match parent_item {
+            JsonbItem::Raw(raw) => {
+                let object_val_iter_opt = ObjectValueIterator::new(raw)?;
+                if let Some(mut object_val_iter) = object_val_iter_opt {
+                    for result in &mut object_val_iter {
+                        let val_item = result?;
+                        self.items.push_back(val_item);
+                    }
+                }
             }
+            JsonbItem::Owned(ref owned) => {
+                let object_val_iter_opt = ObjectValueIterator::new(owned.as_raw())?;
+                if let Some(mut object_val_iter) = object_val_iter_opt {
+                    for result in &mut object_val_iter {
+                        let val_item = result?;
+                        let owned_item = OwnedJsonb::from_item(val_item)?;
+                        self.items.push_back(JsonbItem::Owned(owned_item));
+                    }
+                }
+            }
+            _ => {}
         }
+
         Ok(())
     }
 
@@ -518,25 +535,58 @@ impl<'a> Selector<'a> {
         if is_match {
             self.items.push_back(parent_item.clone());
         }
-        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
-            return Ok(());
-        };
         if !should_continue {
             return Ok(());
         }
-        let object_val_iter_opt = ObjectValueIterator::new(curr_raw_jsonb)?;
-        if let Some(mut object_val_iter) = object_val_iter_opt {
-            for result in &mut object_val_iter {
-                let val_item = result?;
-                self.recursive_select_values(val_item, curr_level + 1, recursive_level_opt)?;
+
+        match parent_item {
+            JsonbItem::Raw(raw) => {
+                let object_val_iter_opt = ObjectValueIterator::new(raw)?;
+                if let Some(mut object_val_iter) = object_val_iter_opt {
+                    for result in &mut object_val_iter {
+                        let val_item = result?;
+                        self.recursive_select_values(
+                            val_item,
+                            curr_level + 1,
+                            recursive_level_opt,
+                        )?;
+                    }
+                }
+                let array_iter_opt = ArrayIterator::new(raw)?;
+                if let Some(mut array_iter) = array_iter_opt {
+                    for item_result in &mut array_iter {
+                        let item = item_result?;
+                        self.recursive_select_values(item, curr_level + 1, recursive_level_opt)?;
+                    }
+                }
             }
-        }
-        let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
-        if let Some(mut array_iter) = array_iter_opt {
-            for item_result in &mut array_iter {
-                let item = item_result?;
-                self.recursive_select_values(item, curr_level + 1, recursive_level_opt)?;
+            JsonbItem::Owned(ref owned) => {
+                let object_val_iter_opt = ObjectValueIterator::new(owned.as_raw())?;
+                if let Some(mut object_val_iter) = object_val_iter_opt {
+                    for result in &mut object_val_iter {
+                        let val_item = result?;
+                        let owned_item = OwnedJsonb::from_item(val_item)?;
+                        self.recursive_select_values(
+                            JsonbItem::Owned(owned_item),
+                            curr_level + 1,
+                            recursive_level_opt,
+                        )?;
+                    }
+                }
+                let array_iter_opt = ArrayIterator::new(owned.as_raw())?;
+                if let Some(mut array_iter) = array_iter_opt {
+                    for item_result in &mut array_iter {
+                        let item = item_result?;
+                        let owned_item = OwnedJsonb::from_item(item)?;
+                        self.recursive_select_values(
+                            JsonbItem::Owned(owned_item),
+                            curr_level + 1,
+                            recursive_level_opt,
+                        )?;
+                    }
+                }
             }
+            _ => {}
         }
         Ok(())
     }
@@ -546,37 +596,63 @@ impl<'a> Selector<'a> {
         parent_item: JsonbItem<'a>,
         name: &'a str,
     ) -> Result<()> {
-        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
+        let jsonb_item_type = parent_item.jsonb_item_type()?;
+        if !matches!(jsonb_item_type, JsonbItemType::Object(_)) {
             return Ok(());
         };
 
         let key_name = Cow::Borrowed(name);
-        if let Some(val_item) =
-            curr_raw_jsonb.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
-        {
-            self.items.push_back(val_item);
+        match parent_item {
+            JsonbItem::Raw(raw) => {
+                if let Some(val_item) =
+                    raw.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
+                {
+                    self.items.push_back(val_item);
+                }
+            }
+            JsonbItem::Owned(ref owned) => {
+                let raw = owned.as_raw();
+                if let Some(val_item) =
+                    raw.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
+                {
+                    let owned_item = OwnedJsonb::from_item(val_item)?;
+                    self.items.push_back(JsonbItem::Owned(owned_item));
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 
     fn select_array_values(&mut self, parent_item: JsonbItem<'a>) -> Result<()> {
-        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
+        let jsonb_item_type = parent_item.jsonb_item_type()?;
+        if !matches!(jsonb_item_type, JsonbItemType::Array(_)) {
             // In lax mode, bracket wildcard allow Scalar and Object value.
             self.items.push_back(parent_item);
             return Ok(());
         };
 
-        let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
-        if let Some(mut array_iter) = array_iter_opt {
-            for item_result in &mut array_iter {
-                let item = item_result?;
-                self.items.push_back(item);
+        match parent_item {
+            JsonbItem::Raw(raw) => {
+                let array_iter_opt = ArrayIterator::new(raw)?;
+                if let Some(mut array_iter) = array_iter_opt {
+                    for item_result in &mut array_iter {
+                        let item = item_result?;
+                        self.items.push_back(item);
+                    }
+                }
             }
-        } else {
-            // In lax mode, bracket wildcard allow Scalar and Object value.
-            // convert to Jsonb item to compare with other path values.
-            let item = JsonbItem::from_raw_jsonb(curr_raw_jsonb)?;
-            self.items.push_back(item);
+            JsonbItem::Owned(ref owned) => {
+                let array_iter_opt = ArrayIterator::new(owned.as_raw())?;
+                if let Some(mut array_iter) = array_iter_opt {
+                    for item_result in &mut array_iter {
+                        let item = item_result?;
+                        let owned_item = OwnedJsonb::from_item(item)?;
+                        self.items.push_back(JsonbItem::Owned(owned_item));
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -586,11 +662,7 @@ impl<'a> Selector<'a> {
         parent_item: JsonbItem<'a>,
         array_indices: &Vec<ArrayIndex>,
     ) -> Result<()> {
-        let Some(curr_raw_jsonb) = parent_item.as_raw_jsonb() else {
-            return Ok(());
-        };
-
-        let jsonb_item_type = curr_raw_jsonb.jsonb_item_type()?;
+        let jsonb_item_type = parent_item.jsonb_item_type()?;
         let JsonbItemType::Array(arr_len) = jsonb_item_type else {
             return Ok(());
         };
@@ -599,14 +671,31 @@ impl<'a> Selector<'a> {
             if indices.is_empty() {
                 continue;
             }
-            let array_iter_opt = ArrayIterator::new(curr_raw_jsonb)?;
-            if let Some(array_iter) = array_iter_opt {
-                for (i, item_result) in &mut array_iter.enumerate() {
-                    let item = item_result?;
-                    if indices.contains(&i) {
-                        self.items.push_back(item);
+            match parent_item {
+                JsonbItem::Raw(raw) => {
+                    let array_iter_opt = ArrayIterator::new(raw)?;
+                    if let Some(array_iter) = array_iter_opt {
+                        for (i, item_result) in &mut array_iter.enumerate() {
+                            let item = item_result?;
+                            if indices.contains(&i) {
+                                self.items.push_back(item);
+                            }
+                        }
                     }
                 }
+                JsonbItem::Owned(ref owned) => {
+                    let array_iter_opt = ArrayIterator::new(owned.as_raw())?;
+                    if let Some(array_iter) = array_iter_opt {
+                        for (i, item_result) in &mut array_iter.enumerate() {
+                            let item = item_result?;
+                            if indices.contains(&i) {
+                                let owned_item = OwnedJsonb::from_item(item)?;
+                                self.items.push_back(JsonbItem::Owned(owned_item));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -836,13 +925,11 @@ impl<'a> Selector<'a> {
                     let value = match item {
                         JsonbItem::Null => PathValue::Null,
                         JsonbItem::Boolean(v) => PathValue::Boolean(v),
-                        JsonbItem::Number(data) => {
-                            let n = Number::decode(data)?;
+                        JsonbItem::Number(num) => {
+                            let n = num.as_number()?;
                             PathValue::Number(n)
                         }
-                        JsonbItem::String(data) => PathValue::String(Cow::Borrowed(unsafe {
-                            std::str::from_utf8_unchecked(data)
-                        })),
+                        JsonbItem::String(s) => PathValue::String(s),
                         JsonbItem::Raw(raw) => {
                             // collect values in the array.
                             let array_iter_opt = ArrayIterator::new(raw)?;
@@ -852,15 +939,11 @@ impl<'a> Selector<'a> {
                                     let value = match item {
                                         JsonbItem::Null => PathValue::Null,
                                         JsonbItem::Boolean(v) => PathValue::Boolean(v),
-                                        JsonbItem::Number(data) => {
-                                            let n = Number::decode(data)?;
+                                        JsonbItem::Number(num) => {
+                                            let n = num.as_number()?;
                                             PathValue::Number(n)
                                         }
-                                        JsonbItem::String(data) => {
-                                            PathValue::String(Cow::Borrowed(unsafe {
-                                                std::str::from_utf8_unchecked(data)
-                                            }))
-                                        }
+                                        JsonbItem::String(s) => PathValue::String(s),
                                         JsonbItem::Raw(raw) => PathValue::Raw(raw),
                                         _ => {
                                             continue;
@@ -869,7 +952,21 @@ impl<'a> Selector<'a> {
                                     values.push(value);
                                 }
                             } else {
-                                values.push(PathValue::Raw(raw));
+                                let jsonb_item = JsonbItem::from_raw_jsonb(raw)?;
+                                let value = match jsonb_item {
+                                    JsonbItem::Null => PathValue::Null,
+                                    JsonbItem::Boolean(v) => PathValue::Boolean(v),
+                                    JsonbItem::Number(num) => {
+                                        let n = num.as_number()?;
+                                        PathValue::Number(n)
+                                    }
+                                    JsonbItem::String(s) => PathValue::String(s),
+                                    JsonbItem::Raw(raw) => PathValue::Raw(raw),
+                                    _ => {
+                                        continue;
+                                    }
+                                };
+                                values.push(value);
                             }
                             continue;
                         }
@@ -949,6 +1046,8 @@ impl<'a> Selector<'a> {
                 }
             };
             Some(res)
+        } else if matches!(op, BinaryOperator::NotEq) {
+            Some(true)
         } else {
             None
         }

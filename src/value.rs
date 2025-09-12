@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::core::JsonbItemType;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::mem::discriminant;
 
+use crate::ExtensionValue;
 use rand::distr::Alphanumeric;
 use rand::distr::SampleString;
 use rand::rng;
@@ -43,7 +46,7 @@ pub type Object<'a> = BTreeMap<String, Value<'a>>;
 /// The extended types provide additional functionality beyond the JSON specification,
 /// making this implementation more suitable for database applications and other
 /// systems requiring richer data type support.
-#[derive(Clone, PartialEq, Default, Eq)]
+#[derive(Clone, Default)]
 pub enum Value<'a> {
     /// Represents a JSON null value
     #[default]
@@ -73,6 +76,70 @@ pub enum Value<'a> {
     Array(Vec<Value<'a>>),
     /// Represents a JSON object as key-value pairs
     Object(Object<'a>),
+}
+
+impl Eq for Value<'_> {}
+
+impl PartialEq for Value<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let result = self.cmp(other);
+        result == Ordering::Equal
+    }
+}
+
+impl PartialOrd for Value<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Value<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_type = self.jsonb_item_type();
+        let other_type = other.jsonb_item_type();
+
+        if let Some(ord) = self_type.partial_cmp(&other_type) {
+            return ord;
+        }
+
+        match (self, other) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Bool(v1), Value::Bool(v2)) => v1.cmp(v2),
+            (Value::Number(v1), Value::Number(v2)) => v1.cmp(v2),
+            (Value::String(v1), Value::String(v2)) => v1.cmp(v2),
+            (Value::Array(arr1), Value::Array(arr2)) => {
+                for (v1, v2) in arr1.iter().zip(arr2.iter()) {
+                    let ord = v1.cmp(v2);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+                arr1.len().cmp(&arr2.len())
+            }
+            (Value::Object(obj1), Value::Object(obj2)) => {
+                for ((k1, v1), (k2, v2)) in obj1.iter().zip(obj2.iter()) {
+                    let ord = k1.cmp(k2);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                    let ord = v1.cmp(v2);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+                obj1.len().cmp(&obj2.len())
+            }
+            (_, _) => match (self.as_extension_value(), other.as_extension_value()) {
+                (Some(self_ext), Some(other_ext)) => {
+                    if let Some(ord) = self_ext.partial_cmp(&other_ext) {
+                        return ord;
+                    }
+                    Ordering::Equal
+                }
+                (_, _) => Ordering::Equal,
+            },
+        }
+    }
 }
 
 impl Debug for Value<'_> {
@@ -456,5 +523,32 @@ impl<'a> Value<'a> {
             _ => Value::Null,
         };
         val
+    }
+
+    fn jsonb_item_type(&self) -> JsonbItemType {
+        match self {
+            Value::Null => JsonbItemType::Null,
+            Value::Bool(_) => JsonbItemType::Boolean,
+            Value::Number(_) => JsonbItemType::Number,
+            Value::String(_) => JsonbItemType::String,
+            Value::Binary(_) => JsonbItemType::Extension,
+            Value::Date(_) => JsonbItemType::Extension,
+            Value::Timestamp(_) => JsonbItemType::Extension,
+            Value::TimestampTz(_) => JsonbItemType::Extension,
+            Value::Interval(_) => JsonbItemType::Extension,
+            Value::Array(arr) => JsonbItemType::Array(arr.len()),
+            Value::Object(obj) => JsonbItemType::Object(obj.len()),
+        }
+    }
+
+    fn as_extension_value(&self) -> Option<ExtensionValue<'_>> {
+        match self {
+            Value::Binary(v) => Some(ExtensionValue::Binary(v)),
+            Value::Date(v) => Some(ExtensionValue::Date(v.clone())),
+            Value::Timestamp(v) => Some(ExtensionValue::Timestamp(v.clone())),
+            Value::TimestampTz(v) => Some(ExtensionValue::TimestampTz(v.clone())),
+            Value::Interval(v) => Some(ExtensionValue::Interval(v.clone())),
+            _ => None,
+        }
     }
 }

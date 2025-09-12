@@ -34,13 +34,13 @@ use crate::Error;
 
 /// Represents a set of key path chains.
 /// Compatible with PostgreSQL extracts JSON sub-object paths syntax.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct KeyPaths<'a> {
     pub paths: Vec<KeyPath<'a>>,
 }
 
 /// Represents a valid key path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum KeyPath<'a> {
     /// represents the index of an Array, allow negative indexing.
     Index(i32),
