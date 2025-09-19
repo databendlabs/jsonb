@@ -1233,13 +1233,14 @@ impl<'a> JsonAstEncoder<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "arbitrary_precision")]
     use ethnum::i256;
     use serde::Serialize;
     use std::collections::HashMap;
 
-    use crate::{
-        core::databend::ser::Serializer, Decimal128, Decimal256, Decimal64, Number, Value,
-    };
+    use crate::{core::databend::ser::Serializer, Value};
+    #[cfg(feature = "arbitrary_precision")]
+    use crate::{Decimal128, Decimal256, Decimal64, Number};
 
     // Basic struct with different field types
     #[derive(Serialize)]
@@ -1505,6 +1506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "arbitrary_precision")]
     fn test_number_struct_serialization() {
         // Test with a value that should be serialized as Decimal64
         let decimal64_struct = Number::Decimal64(Decimal64 {
