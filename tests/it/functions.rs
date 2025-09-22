@@ -18,10 +18,13 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use ethnum::I256;
+use jsonb::core::JsonbItemType;
 use jsonb::from_raw_jsonb;
 use jsonb::from_slice;
 use jsonb::jsonpath::parse_json_path;
 use jsonb::keypath::parse_key_paths;
+use jsonb::keypath::KeyPath;
+use jsonb::keypath::KeyPaths;
 use jsonb::parse_value;
 use jsonb::Date;
 use jsonb::Decimal128;
@@ -227,7 +230,7 @@ fn test_path_exists_expr() {
 
 #[test]
 fn test_select_by_path() {
-    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab","numbers":[2,3,4]}"#;
+    let source = r#"{"name":"Fred","phones":[{"type":"home","number":3720453},{"type":"work","number":5062051}],"car_no":123,"测试\"\uD83D\uDC8E":"ab","numbers":[2,3,4],"key":null}"#;
 
     let paths = vec![
         (r#"$.name"#, vec![r#""Fred""#]),
@@ -298,6 +301,10 @@ fn test_select_by_path() {
         (
             r#"$.phones[0 to last]?(@.number == 3720453 && @.type == "work")"#,
             vec![],
+        ),
+        (
+            r#"$.car_no?($.name == "Fred" && $.car_no != null)"#,
+            vec![r#"123"#],
         ),
         (r#"$.car_no"#, vec![r#"123"#]),
         (r#"$.测试\"\uD83D\uDC8E"#, vec![r#""ab""#]),
@@ -1884,6 +1891,299 @@ fn test_to_serde_json() {
         } else {
             assert!(serde_json_obj_val.is_err());
         }
+    }
+}
+
+#[test]
+fn test_extract_scalar_key_values() {
+    // Test case 1: Simple object with scalar values
+    let json = r#"{"name": "John", "age": 30, "active": true}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+
+    let result = raw_jsonb.extract_scalar_key_values().unwrap();
+    assert_eq!(result.len(), 3);
+
+    let expected = vec![
+        (
+            KeyPaths {
+                paths: vec![KeyPath::Name(Cow::Borrowed("active"))],
+            },
+            Value::Bool(true),
+        ),
+        (
+            KeyPaths {
+                paths: vec![KeyPath::Name(Cow::Borrowed("age"))],
+            },
+            Value::Number(Number::UInt64(30)),
+        ),
+        (
+            KeyPaths {
+                paths: vec![KeyPath::Name(Cow::Borrowed("name"))],
+            },
+            Value::String(Cow::Borrowed("John")),
+        ),
+    ];
+    for ((key_paths, value), (expected_key_paths, expected_value)) in
+        result.into_iter().zip(expected.into_iter())
+    {
+        assert_eq!(key_paths, expected_key_paths);
+        assert_eq!(value, expected_value);
+    }
+
+    // Test case 2: Nested object with array
+    let json = r#"{"user": {"name": "Alice", "scores": [85, 92, 78]}}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+
+    let result = raw_jsonb.extract_scalar_key_values().unwrap();
+    assert_eq!(result.len(), 4);
+
+    let expected = vec![
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("user")),
+                    KeyPath::Name(Cow::Borrowed("name")),
+                ],
+            },
+            Value::String(Cow::Borrowed("Alice")),
+        ),
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("user")),
+                    KeyPath::Name(Cow::Borrowed("scores")),
+                    KeyPath::Index(0),
+                ],
+            },
+            Value::Number(Number::UInt64(85)),
+        ),
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("user")),
+                    KeyPath::Name(Cow::Borrowed("scores")),
+                    KeyPath::Index(1),
+                ],
+            },
+            Value::Number(Number::UInt64(92)),
+        ),
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("user")),
+                    KeyPath::Name(Cow::Borrowed("scores")),
+                    KeyPath::Index(2),
+                ],
+            },
+            Value::Number(Number::UInt64(78)),
+        ),
+    ];
+    for ((key_paths, value), (expected_key_paths, expected_value)) in
+        result.into_iter().zip(expected.into_iter())
+    {
+        assert_eq!(key_paths, expected_key_paths);
+        assert_eq!(value, expected_value);
+    }
+
+    // Test case 3: Complex nested structure
+    let json = r#"{"k1": [{"k2": "v2"}, {"k3": "v3"}]}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+
+    let result = raw_jsonb.extract_scalar_key_values().unwrap();
+    assert_eq!(result.len(), 2);
+
+    let expected = vec![
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("k1")),
+                    KeyPath::Index(0),
+                    KeyPath::Name(Cow::Borrowed("k2")),
+                ],
+            },
+            Value::String(Cow::Borrowed("v2")),
+        ),
+        (
+            KeyPaths {
+                paths: vec![
+                    KeyPath::Name(Cow::Borrowed("k1")),
+                    KeyPath::Index(1),
+                    KeyPath::Name(Cow::Borrowed("k3")),
+                ],
+            },
+            Value::String(Cow::Borrowed("v3")),
+        ),
+    ];
+    for ((key_paths, value), (expected_key_paths, expected_value)) in
+        result.into_iter().zip(expected.into_iter())
+    {
+        assert_eq!(key_paths, expected_key_paths);
+        assert_eq!(value, expected_value);
+    }
+}
+
+#[test]
+fn test_jsonb_item_type() {
+    // Test null value
+    let json = "null";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Null));
+
+    // Test boolean values
+    let json = "true";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Boolean));
+
+    let json = "false";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Boolean));
+
+    // Test number value
+    let json = "123.45";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Number));
+
+    // Test string value
+    let json = r#""hello world""#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::String));
+
+    // Test array value
+    let json = "[1, 2, 3, 4, 5]";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Array(5)));
+
+    // Test empty array
+    let json = "[]";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Array(0)));
+
+    // Test object value
+    let json = r#"{"name": "Alice", "age": 30, "active": true}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Object(3)));
+
+    // Test empty object
+    let json = "{}";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let item_type = raw_jsonb.jsonb_item_type().unwrap();
+    assert!(matches!(item_type, JsonbItemType::Object(0)));
+}
+
+#[test]
+fn test_to_value() {
+    // Test null value
+    let json = "null";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert!(value.is_null());
+
+    // Test boolean values
+    let json = "true";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert!(value.as_bool().unwrap());
+
+    let json = "false";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert!(!value.as_bool().unwrap());
+
+    // Test number values
+    let json = "123";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert_eq!(value.as_i64().unwrap(), 123);
+
+    let json = "123.45";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert_eq!(value.as_f64().unwrap(), 123.45);
+
+    // Test string value
+    let json = r#""hello world""#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    assert_eq!(value.as_str().unwrap(), "hello world");
+
+    // Test array value
+    let json = "[1, 2, 3, 4, 5]";
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    if let Value::Array(arr) = value {
+        assert_eq!(arr.len(), 5);
+        for (i, val) in arr.iter().enumerate() {
+            assert_eq!(val.as_i64().unwrap(), (i + 1) as i64);
+        }
+    } else {
+        panic!("Expected array value");
+    }
+
+    // Test simple object
+    let json = r#"{"name": "Alice", "age": 30, "active": true}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    if let Value::Object(obj) = value {
+        assert_eq!(obj.len(), 3);
+        assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "Alice");
+        assert_eq!(obj.get("age").unwrap().as_i64().unwrap(), 30);
+        assert!(obj.get("active").unwrap().as_bool().unwrap());
+    } else {
+        panic!("Expected object value");
+    }
+
+    // Test nested object with array
+    let json = r#"{"user": {"name": "Bob", "scores": [85, 90, 95]}}"#;
+    let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    let raw_jsonb = jsonb.as_raw();
+    let value = raw_jsonb.to_value().unwrap();
+    if let Value::Object(obj) = value {
+        assert_eq!(obj.len(), 1);
+        if let Value::Object(user) = obj.get("user").unwrap() {
+            assert_eq!(user.len(), 2);
+            assert_eq!(user.get("name").unwrap().as_str().unwrap(), "Bob");
+
+            if let Value::Array(scores) = user.get("scores").unwrap() {
+                assert_eq!(scores.len(), 3);
+                assert_eq!(scores[0].as_i64().unwrap(), 85);
+                assert_eq!(scores[1].as_i64().unwrap(), 90);
+                assert_eq!(scores[2].as_i64().unwrap(), 95);
+            } else {
+                panic!("Expected array for scores");
+            }
+        } else {
+            panic!("Expected object for user");
+        }
+    } else {
+        panic!("Expected object value");
     }
 }
 

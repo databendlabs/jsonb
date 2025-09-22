@@ -14,6 +14,7 @@
 
 // This file contains functions that don't neatly fit into other categories.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
@@ -21,6 +22,7 @@ use std::collections::VecDeque;
 use crate::constants::*;
 use crate::core::ArrayBuilder;
 use crate::core::ArrayIterator;
+use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::core::ObjectBuilder;
@@ -96,8 +98,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Number => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Number(data) => {
-                        let val = Number::decode(data)?;
+                    JsonbItem::Number(num) => {
+                        let val = num.as_number()?;
                         match val {
                             Number::UInt64(_) | Number::Int64(_) => Ok(TYPE_INTEGER),
                             Number::Decimal64(_)
@@ -113,8 +115,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::Binary(_v) => Ok(TYPE_BINARY),
                             ExtensionValue::Date(_v) => Ok(TYPE_DATE),
@@ -656,7 +658,7 @@ impl RawJsonb<'_> {
                 let mut object_iter = ObjectIterator::new(*self)?.unwrap();
                 for result in &mut object_iter {
                     let (key, val_item) = result?;
-                    let key_item = JsonbItem::String(key.as_bytes());
+                    let key_item = JsonbItem::String(Cow::Borrowed(key));
                     self.jsonb_item_to_comparable_impl(depth + 1, key_item, buf)?;
                     self.jsonb_item_to_comparable_impl(depth + 1, val_item, buf)?;
                 }
@@ -688,10 +690,10 @@ impl RawJsonb<'_> {
                     buf.push(FALSE_LEVEL);
                 }
             }
-            JsonbItem::Number(data) => {
+            JsonbItem::Number(num_item) => {
                 buf.push(depth);
                 buf.push(NUMBER_LEVEL);
-                let num = Number::decode(data)?;
+                let num = num_item.as_number()?;
                 let n = num.as_f64().unwrap();
                 // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
                 let s = n.to_bits() as i64;
@@ -701,16 +703,23 @@ impl RawJsonb<'_> {
                 b[0] ^= 0x80;
                 buf.extend_from_slice(&b);
             }
-            JsonbItem::String(data) => {
+            JsonbItem::String(s) => {
                 buf.push(depth);
                 buf.push(STRING_LEVEL);
-                buf.extend_from_slice(data);
+                buf.extend_from_slice(s.as_bytes());
                 buf.push(0);
             }
-            JsonbItem::Extension(data) => {
+            JsonbItem::Extension(ext_item) => {
                 buf.push(depth);
                 buf.push(EXTENSION_LEVEL);
-                buf.extend_from_slice(data);
+                match ext_item {
+                    ExtensionItem::Raw(data) => {
+                        buf.extend_from_slice(data);
+                    }
+                    ExtensionItem::Extension(value) => {
+                        value.compact_encode(&mut *buf)?;
+                    }
+                }
                 buf.push(0);
             }
             JsonbItem::Raw(raw) => {

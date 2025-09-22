@@ -67,7 +67,7 @@ impl<'de> Deserializer<'de> {
         self.index == self.raw.len()
     }
 
-    fn read_header(&mut self) -> Result<(u32, u32)> {
+    fn read_header(&mut self) -> Result<(u32, usize)> {
         let header = self.raw.read_header(self.index)?;
         self.index += 4;
         Ok(header)
@@ -377,12 +377,11 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
                     }
                 }
                 ARRAY_CONTAINER_TAG => {
-                    let jentries = self.read_array_jentries(header_len as usize)?;
+                    let jentries = self.read_array_jentries(header_len)?;
                     visitor.visit_seq(ArrayDeserializer::new(self, jentries))
                 }
                 OBJECT_CONTAINER_TAG => {
-                    let (key_jentries, value_jentries) =
-                        self.read_object_jentries(header_len as usize)?;
+                    let (key_jentries, value_jentries) = self.read_object_jentries(header_len)?;
 
                     let origin_index = self.index;
                     let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
@@ -564,7 +563,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         let (header_type, header_len) = self.read_header()?;
         match header_type {
             ARRAY_CONTAINER_TAG => {
-                let jentries = self.read_array_jentries(header_len as usize)?;
+                let jentries = self.read_array_jentries(header_len)?;
                 visitor.visit_seq(ArrayDeserializer::new(self, jentries))
             }
             SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Err(Error::UnexpectedType),
@@ -598,8 +597,7 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         let (header_type, header_len) = self.read_header()?;
         match header_type {
             OBJECT_CONTAINER_TAG => {
-                let (key_jentries, value_jentries) =
-                    self.read_object_jentries(header_len as usize)?;
+                let (key_jentries, value_jentries) = self.read_object_jentries(header_len)?;
 
                 let origin_index = self.index;
                 let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
@@ -861,7 +859,7 @@ impl<'de> de::VariantAccess<'de> for EnumDeserializer<'_, 'de> {
             let (header_type, header_len) = self.de.read_header()?;
             match header_type {
                 ARRAY_CONTAINER_TAG => {
-                    let jentries = self.de.read_array_jentries(header_len as usize)?;
+                    let jentries = self.de.read_array_jentries(header_len)?;
                     visitor.visit_seq(ArrayDeserializer::new(self.de, jentries))
                 }
                 SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Err(Error::UnexpectedType),
@@ -883,7 +881,7 @@ impl<'de> de::VariantAccess<'de> for EnumDeserializer<'_, 'de> {
             match header_type {
                 OBJECT_CONTAINER_TAG => {
                     let (key_jentries, value_jentries) =
-                        self.de.read_object_jentries(header_len as usize)?;
+                        self.de.read_object_jentries(header_len)?;
 
                     let origin_index = self.de.index;
                     let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();

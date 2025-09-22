@@ -29,8 +29,11 @@ use crate::error::*;
 use crate::jsonpath::JsonPath;
 use crate::jsonpath::Selector;
 use crate::keypath::KeyPath;
+use crate::keypath::KeyPaths;
+use crate::ExtensionValue;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
+use crate::Value;
 
 impl RawJsonb<'_> {
     /// Gets the element at the specified index in a JSONB array.
@@ -619,6 +622,7 @@ impl RawJsonb<'_> {
     /// // Deleting from an object
     /// let obj_jsonb = r#"{"a": 1, "b": "hello", "c": 3}"#.parse::<OwnedJsonb>().unwrap();
     /// let raw_jsonb = obj_jsonb.as_raw();
+    ///
     /// let deleted = raw_jsonb.delete_by_name("b").unwrap();
     /// assert_eq!(deleted.to_string(), r#"{"a":1,"c":3}"#);
     ///
@@ -1040,5 +1044,120 @@ impl RawJsonb<'_> {
             }
         }
         Ok(false)
+    }
+
+    /// Extracts all scalar values from a JSONB value along with their key paths.
+    ///
+    /// This function recursively traverses the JSONB structure (both objects and arrays)
+    /// and collects all leaf node scalar values (null, boolean, number, string, etc.)
+    /// along with their corresponding key paths. The key path represents the navigation
+    /// path from the root to reach each scalar value.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Vec<(KeyPaths<'_>, Value<'_>)>>` - A vector of tuples, each containing:
+    ///   - `KeyPaths`: The path to reach the scalar value
+    ///   - `Value`: The scalar value itself
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::OwnedJsonb;
+    ///
+    /// let json = r#"{"user": {"name": "Alice", "scores": [85, 92, 78]}}"#;
+    /// let jsonb = json.parse::<OwnedJsonb>().unwrap();
+    /// let raw_jsonb = jsonb.as_raw();
+    /// let result = raw_jsonb.extract_scalar_key_values();
+    /// assert!(result.is_ok());
+    /// let result = result.unwrap();
+    /// assert_eq!(result.len(), 4);
+    /// // Result contains:
+    /// // - path: "user", "name" -> value: "Alice"
+    /// // - path: "user", "scores", 0 -> value: 85
+    /// // - path: "user", "scores", 1 -> value: 92
+    /// // - path: "user", "scores", 2 -> value: 78
+    /// ```
+    pub fn extract_scalar_key_values(&self) -> Result<Vec<(KeyPaths<'_>, Value<'_>)>> {
+        let item = JsonbItem::from_raw_jsonb(*self)?;
+        let mut result = Vec::with_capacity(16);
+        let mut current_paths = Vec::with_capacity(3);
+        Self::extract_scalar_key_values_recursive(item, &mut current_paths, &mut result)?;
+        Ok(result)
+    }
+
+    /// Helper function for `extract_scalar_key_values` that recursively traverses the JSONB structure.
+    ///
+    /// This function implements a depth-first traversal of the JSONB document, building up the
+    /// key path as it goes and collecting scalar values when it reaches leaf nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_item` - The current JSONB item being processed
+    /// * `current_paths` - The current path from the root to this item (modified during traversal)
+    /// * `result` - The collection where extracted key-value pairs are stored
+    ///
+    /// # Returns
+    ///
+    /// * `Result<()>` - Success or error during traversal
+    fn extract_scalar_key_values_recursive<'a>(
+        current_item: JsonbItem<'a>,
+        current_paths: &mut Vec<KeyPath<'a>>,
+        result: &mut Vec<(KeyPaths<'a>, Value<'a>)>,
+    ) -> Result<()> {
+        match current_item {
+            JsonbItem::Raw(raw) => {
+                let object_iter_opt = ObjectIterator::new(raw)?;
+                if let Some(mut object_iter) = object_iter_opt {
+                    for object_result in &mut object_iter {
+                        let (key, val_item) = object_result?;
+                        current_paths.push(KeyPath::Name(Cow::Borrowed(key)));
+                        // Recursively handle object values
+                        Self::extract_scalar_key_values_recursive(val_item, current_paths, result)?;
+                        current_paths.pop();
+                    }
+                    return Ok(());
+                }
+                let array_iter_opt = ArrayIterator::new(raw)?;
+                if let Some(array_iter) = array_iter_opt {
+                    for (index, array_result) in &mut array_iter.enumerate() {
+                        let val_item = array_result?;
+                        current_paths.push(KeyPath::Index(index as i32));
+                        // Recursively handle array values
+                        Self::extract_scalar_key_values_recursive(val_item, current_paths, result)?;
+                        current_paths.pop();
+                    }
+                }
+            }
+            JsonbItem::Owned(_) => unreachable!(),
+            _ => {
+                // ignore scalar value
+                if current_paths.is_empty() {
+                    return Ok(());
+                }
+                let key_paths = KeyPaths {
+                    paths: current_paths.clone(),
+                };
+                let value = match current_item {
+                    JsonbItem::Null => Value::Null,
+                    JsonbItem::Boolean(val) => Value::Bool(val),
+                    JsonbItem::String(val) => Value::String(val),
+                    JsonbItem::Number(num) => Value::Number(num.as_number()?),
+                    JsonbItem::Extension(ext) => {
+                        let ext_val = ext.as_extension_value()?;
+                        match ext_val {
+                            ExtensionValue::Binary(val) => Value::Binary(val),
+                            ExtensionValue::Date(val) => Value::Date(val),
+                            ExtensionValue::Timestamp(val) => Value::Timestamp(val),
+                            ExtensionValue::TimestampTz(val) => Value::TimestampTz(val),
+                            ExtensionValue::Interval(val) => Value::Interval(val),
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                // Add the path and scalar value
+                result.push((key_paths, value));
+            }
+        }
+        Ok(())
     }
 }

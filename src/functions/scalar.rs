@@ -309,11 +309,10 @@ impl RawJsonb<'_> {
             JsonbItem::Boolean(v) => {
                 return Ok(v);
             }
-            JsonbItem::String(data) => {
-                let s = String::from_utf8_lossy(data);
-                if &s.to_lowercase() == "true" {
+            JsonbItem::String(s) => {
+                if s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("yes") {
                     return Ok(true);
-                } else if &s.to_lowercase() == "false" {
+                } else if s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("no") {
                     return Ok(false);
                 }
             }
@@ -453,9 +452,9 @@ impl RawJsonb<'_> {
     pub fn as_number(&self) -> Result<Option<Number>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                Ok(Some(num))
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                Ok(Some(value))
             }
             _ => Ok(None),
         }
@@ -560,9 +559,9 @@ impl RawJsonb<'_> {
     pub fn as_i64(&self) -> Result<Option<i64>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                Ok(num.as_i64())
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                Ok(value.as_i64())
             }
             _ => Ok(None),
         }
@@ -646,14 +645,13 @@ impl RawJsonb<'_> {
                     return Ok(0_i64);
                 }
             }
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                if let Some(v) = num.as_i64() {
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                if let Some(v) = value.as_i64() {
                     return Ok(v);
                 }
             }
-            JsonbItem::String(data) => {
-                let s = String::from_utf8_lossy(data);
+            JsonbItem::String(s) => {
                 if let Ok(v) = s.parse::<i64>() {
                     return Ok(v);
                 }
@@ -794,9 +792,9 @@ impl RawJsonb<'_> {
     pub fn as_u64(&self) -> Result<Option<u64>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                Ok(num.as_u64())
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                Ok(value.as_u64())
             }
             _ => Ok(None),
         }
@@ -884,14 +882,13 @@ impl RawJsonb<'_> {
                     return Ok(0_u64);
                 }
             }
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                if let Some(v) = num.as_u64() {
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                if let Some(v) = value.as_u64() {
                     return Ok(v);
                 }
             }
-            JsonbItem::String(data) => {
-                let s = String::from_utf8_lossy(data);
+            JsonbItem::String(s) => {
                 if let Ok(v) = s.parse::<u64>() {
                     return Ok(v);
                 }
@@ -1024,9 +1021,9 @@ impl RawJsonb<'_> {
     pub fn as_f64(&self) -> Result<Option<f64>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                Ok(num.as_f64())
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                Ok(value.as_f64())
             }
             _ => Ok(None),
         }
@@ -1107,14 +1104,13 @@ impl RawJsonb<'_> {
                     return Ok(0_f64);
                 }
             }
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                if let Some(v) = num.as_f64() {
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                if let Some(v) = value.as_f64() {
                     return Ok(v);
                 }
             }
-            JsonbItem::String(data) => {
-                let s = String::from_utf8_lossy(data);
+            JsonbItem::String(s) => {
                 if let Ok(v) = s.parse::<f64>() {
                     return Ok(v);
                 }
@@ -1243,10 +1239,7 @@ impl RawJsonb<'_> {
     pub fn as_str(&self) -> Result<Option<Cow<'_, str>>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::String(data) => {
-                let s = unsafe { std::str::from_utf8_unchecked(data) };
-                Ok(Some(Cow::Borrowed(s)))
-            }
+            JsonbItem::String(s) => Ok(Some(s)),
             _ => Ok(None),
         }
     }
@@ -1317,14 +1310,11 @@ impl RawJsonb<'_> {
                     Ok("false".to_string())
                 }
             }
-            JsonbItem::Number(data) => {
-                let num = Number::decode(data)?;
-                Ok(format!("{}", num))
+            JsonbItem::Number(num) => {
+                let value = num.as_number()?;
+                Ok(format!("{}", value))
             }
-            JsonbItem::String(data) => {
-                let s = unsafe { String::from_utf8_unchecked(data.to_vec()) };
-                Ok(s)
-            }
+            JsonbItem::String(s) => Ok(s.to_string()),
             _ => Err(Error::InvalidCast),
         }
     }
@@ -1502,8 +1492,8 @@ impl RawJsonb<'_> {
     pub fn as_extension_value(&self) -> Result<Option<ExtensionValue<'_>>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 Ok(Some(val))
             }
             _ => Ok(None),
@@ -1542,8 +1532,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::Binary(_v) => Ok(true),
                             _ => Ok(false),
@@ -1585,8 +1575,8 @@ impl RawJsonb<'_> {
     pub fn as_binary(&self) -> Result<Option<Vec<u8>>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::Binary(v) => Ok(Some(v.to_vec())),
                     _ => Ok(None),
@@ -1629,8 +1619,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::Date(_v) => Ok(true),
                             _ => Ok(false),
@@ -1673,8 +1663,8 @@ impl RawJsonb<'_> {
     pub fn as_date(&self) -> Result<Option<Date>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::Date(v) => Ok(Some(v)),
                     _ => Ok(None),
@@ -1717,8 +1707,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::Timestamp(_v) => Ok(true),
                             _ => Ok(false),
@@ -1761,8 +1751,8 @@ impl RawJsonb<'_> {
     pub fn as_timestamp(&self) -> Result<Option<Timestamp>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::Timestamp(v) => Ok(Some(v)),
                     _ => Ok(None),
@@ -1805,8 +1795,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::TimestampTz(_v) => Ok(true),
                             _ => Ok(false),
@@ -1849,8 +1839,8 @@ impl RawJsonb<'_> {
     pub fn as_timestamp_tz(&self) -> Result<Option<TimestampTz>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::TimestampTz(v) => Ok(Some(v)),
                     _ => Ok(None),
@@ -1893,8 +1883,8 @@ impl RawJsonb<'_> {
             JsonbItemType::Extension => {
                 let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
                 match jsonb_item {
-                    JsonbItem::Extension(data) => {
-                        let val = ExtensionValue::decode(data)?;
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
                         match val {
                             ExtensionValue::Interval(_v) => Ok(true),
                             _ => Ok(false),
@@ -1937,8 +1927,8 @@ impl RawJsonb<'_> {
     pub fn as_interval(&self) -> Result<Option<Interval>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
         match jsonb_item {
-            JsonbItem::Extension(data) => {
-                let val = ExtensionValue::decode(data)?;
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::Interval(v) => Ok(Some(v)),
                     _ => Ok(None),

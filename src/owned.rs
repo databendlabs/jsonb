@@ -334,7 +334,7 @@ impl Ord for OwnedJsonb {
 /// };
 ///
 /// let owned_jsonb: OwnedJsonb = to_owned_jsonb(&person).unwrap();
-///
+/// assert_eq!(format!("{}", owned_jsonb), "{\"age\":42,\"name\":\"Bob\"}");
 /// println!("JSONB data: {}", owned_jsonb);
 /// ```
 pub fn to_owned_jsonb<T>(value: &T) -> Result<OwnedJsonb>

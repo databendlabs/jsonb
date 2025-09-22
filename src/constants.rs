@@ -48,3 +48,22 @@ pub(crate) const TYPE_DATE: &str = "DATE";
 pub(crate) const TYPE_TIMESTAMP: &str = "TIMESTAMP";
 pub(crate) const TYPE_TIMESTAMP_TZ: &str = "TIMESTAMP_TZ";
 pub(crate) const TYPE_INTERVAL: &str = "INTERVAL";
+
+pub(crate) const MAX_DECIMAL64_PRECISION: usize = 18;
+pub(crate) const MAX_DECIMAL128_PRECISION: usize = 38;
+pub(crate) const MAX_DECIMAL256_PRECISION: usize = 76;
+
+pub(crate) const UINT64_MIN: i128 = 0i128;
+pub(crate) const UINT64_MAX: i128 = 18_446_744_073_709_551_615i128;
+pub(crate) const INT64_MIN: i128 = -9_223_372_036_854_775_808i128;
+pub(crate) const INT64_MAX: i128 = 9_223_372_036_854_775_807i128;
+pub(crate) const DECIMAL64_MIN: i128 = -999_999_999_999_999_999i128;
+pub(crate) const DECIMAL64_MAX: i128 = 999_999_999_999_999_999i128;
+pub(crate) const DECIMAL128_MIN: i128 = -99_999_999_999_999_999_999_999_999_999_999_999_999i128;
+pub(crate) const DECIMAL128_MAX: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999i128;
+
+pub(crate) const NUMBER_STRUCT_TOKEN: &str = "$jsonb::private::Number";
+pub(crate) const NUMBER_STRUCT_FIELD_SCALE: &str = "$jsonb::private::Number::Scale";
+pub(crate) const NUMBER_STRUCT_FIELD_VALUE: &str = "$jsonb::private::Number::Value";
+pub(crate) const NUMBER_STRUCT_FIELD_HIGH_VALUE: &str = "$jsonb::private::Number::High_Value";
+pub(crate) const NUMBER_STRUCT_FIELD_LOW_VALUE: &str = "$jsonb::private::Number::Low_Value";

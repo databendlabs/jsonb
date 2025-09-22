@@ -288,52 +288,98 @@ impl Serialize for Number {
                 use std::io::Write;
                 const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
-                struct WriteAdapter<'a>(&'a mut std::io::Cursor<&'a mut [u8]>);
+                if serializer.is_human_readable() {
+                    struct WriteAdapter<'a>(&'a mut std::io::Cursor<&'a mut [u8]>);
 
-                impl std::fmt::Write for WriteAdapter<'_> {
-                    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-                        self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
+                    impl std::fmt::Write for WriteAdapter<'_> {
+                        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                            self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
+                        }
                     }
+
+                    impl WriteAdapter<'_> {
+                        fn position(&self) -> usize {
+                            self.0.position() as usize
+                        }
+                    }
+
+                    let mut buffer = [0u8; 128];
+                    let mut cursor = std::io::Cursor::new(&mut buffer[..]);
+                    let mut adapter = WriteAdapter(&mut cursor);
+
+                    match self {
+                        Number::Decimal64(v) => {
+                            format_decimal_i128(&mut adapter, v.value as i128, v.scale as usize)
+                                .map_err(|e| {
+                                    serde::ser::Error::custom(format!(
+                                        "Format decimal64 error: {e}"
+                                    ))
+                                })?;
+                        }
+                        Number::Decimal128(v) => {
+                            format_decimal_i128(&mut adapter, v.value, v.scale as usize).map_err(
+                                |e| {
+                                    serde::ser::Error::custom(format!(
+                                        "Format decimal128 error: {e}"
+                                    ))
+                                },
+                            )?;
+                        }
+                        Number::Decimal256(v) => {
+                            format_decimal_i256(&mut adapter, v.value, v.scale as usize).map_err(
+                                |e| {
+                                    serde::ser::Error::custom(format!(
+                                        "Format decimal256 error: {e}"
+                                    ))
+                                },
+                            )?;
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    let pos = adapter.position();
+                    let num_str = std::str::from_utf8(&buffer[..pos]).map_err(|e| {
+                        serde::ser::Error::custom(format!("Invalid decimal number: {e}"))
+                    })?;
+
+                    let mut serialize_struct = serializer.serialize_struct(NUMBER_TOKEN, 1)?;
+                    serialize_struct.serialize_field(NUMBER_TOKEN, num_str)?;
+                    serialize_struct.end()
+                } else {
+                    use crate::constants::NUMBER_STRUCT_FIELD_HIGH_VALUE;
+                    use crate::constants::NUMBER_STRUCT_FIELD_LOW_VALUE;
+                    use crate::constants::NUMBER_STRUCT_FIELD_SCALE;
+                    use crate::constants::NUMBER_STRUCT_FIELD_VALUE;
+                    use crate::constants::NUMBER_STRUCT_TOKEN;
+
+                    let mut serialize_struct =
+                        serializer.serialize_struct(NUMBER_STRUCT_TOKEN, 2)?;
+                    match self {
+                        Number::Decimal64(v) => {
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_SCALE, &v.scale)?;
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_VALUE, &v.value)?;
+                        }
+                        Number::Decimal128(v) => {
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_SCALE, &v.scale)?;
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_VALUE, &v.value)?;
+                        }
+                        Number::Decimal256(v) => {
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_SCALE, &v.scale)?;
+                            let (high_value, low_value) = v.value.into_words();
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_HIGH_VALUE, &high_value)?;
+                            serialize_struct
+                                .serialize_field(NUMBER_STRUCT_FIELD_LOW_VALUE, &low_value)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                    serialize_struct.end()
                 }
-
-                impl WriteAdapter<'_> {
-                    fn position(&self) -> usize {
-                        self.0.position() as usize
-                    }
-                }
-
-                let mut buffer = [0u8; 128];
-                let mut cursor = std::io::Cursor::new(&mut buffer[..]);
-                let mut adapter = WriteAdapter(&mut cursor);
-
-                match self {
-                    Number::Decimal64(v) => {
-                        format_decimal_i128(&mut adapter, v.value as i128, v.scale as usize)
-                            .map_err(|e| {
-                                serde::ser::Error::custom(format!("Format decimal64 error: {e}"))
-                            })?;
-                    }
-                    Number::Decimal128(v) => {
-                        format_decimal_i128(&mut adapter, v.value, v.scale as usize).map_err(
-                            |e| serde::ser::Error::custom(format!("Format decimal128 error: {e}")),
-                        )?;
-                    }
-                    Number::Decimal256(v) => {
-                        format_decimal_i256(&mut adapter, v.value, v.scale as usize).map_err(
-                            |e| serde::ser::Error::custom(format!("Format decimal256 error: {e}")),
-                        )?;
-                    }
-                    _ => unreachable!(),
-                }
-
-                let pos = adapter.position();
-                let num_str = std::str::from_utf8(&buffer[..pos]).map_err(|e| {
-                    serde::ser::Error::custom(format!("Invalid decimal number: {e}"))
-                })?;
-
-                let mut serialize_struct = serializer.serialize_struct(NUMBER_TOKEN, 1)?;
-                serialize_struct.serialize_field(NUMBER_TOKEN, num_str)?;
-                serialize_struct.end()
             }
             #[cfg(not(feature = "arbitrary_precision"))]
             Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
@@ -352,6 +398,41 @@ impl Serialize for Number {
 }
 
 impl Number {
+    /// Returns the i128 representation of the number, if possible.
+    ///
+    /// This method returns None if the number cannot be represented as an i64.
+    pub fn as_i128(&self) -> Option<i128> {
+        match self {
+            Number::Int64(v) => Some(*v as i128),
+            Number::UInt64(v) => Some(*v as i128),
+            Number::Float64(_) => None,
+            Number::Decimal64(v) => {
+                if v.scale == 0 {
+                    Some(v.value as i128)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal128(v) => {
+                if v.scale == 0 {
+                    Some(v.value)
+                } else {
+                    None
+                }
+            }
+            Number::Decimal256(v) => {
+                if v.scale == 0
+                    && v.value >= i256::from(i128::MIN)
+                    && v.value <= i256::from(i128::MAX)
+                {
+                    Some(v.value.as_i128())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Returns the i64 representation of the number, if possible.
     ///
     /// This method returns None if the number cannot be represented as an i64.

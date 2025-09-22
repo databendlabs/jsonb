@@ -20,7 +20,9 @@ use byteorder::WriteBytesExt;
 
 use super::constants::*;
 use super::jentry::JEntry;
+use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
+use crate::core::NumberItem;
 use crate::error::Error;
 use crate::error::Result;
 use crate::OwnedJsonb;
@@ -189,21 +191,35 @@ fn append_jsonb_item(buf: &mut Vec<u8>, jentry_index: &mut usize, item: JsonbIte
             };
             replace_jentry(buf, jentry, jentry_index);
         }
-        JsonbItem::Number(data) => {
-            let jentry = JEntry::make_number_jentry(data.len());
-            replace_jentry(buf, jentry, jentry_index);
-            buf.extend_from_slice(data);
-        }
+        JsonbItem::Number(num) => match num {
+            NumberItem::Raw(data) => {
+                let jentry = JEntry::make_number_jentry(data.len());
+                replace_jentry(buf, jentry, jentry_index);
+                buf.extend_from_slice(data);
+            }
+            NumberItem::Number(num) => {
+                let len = num.compact_encode(&mut *buf)?;
+                let jentry = JEntry::make_number_jentry(len);
+                replace_jentry(buf, jentry, jentry_index);
+            }
+        },
         JsonbItem::String(data) => {
             let jentry = JEntry::make_string_jentry(data.len());
             replace_jentry(buf, jentry, jentry_index);
-            buf.extend_from_slice(data);
+            buf.extend_from_slice(data.as_bytes());
         }
-        JsonbItem::Extension(data) => {
-            let jentry = JEntry::make_extension_jentry(data.len());
-            replace_jentry(buf, jentry, jentry_index);
-            buf.extend_from_slice(data);
-        }
+        JsonbItem::Extension(ext) => match ext {
+            ExtensionItem::Raw(data) => {
+                let jentry = JEntry::make_extension_jentry(data.len());
+                replace_jentry(buf, jentry, jentry_index);
+                buf.extend_from_slice(data);
+            }
+            ExtensionItem::Extension(ext) => {
+                let len = ext.compact_encode(&mut *buf)?;
+                let jentry = JEntry::make_extension_jentry(len);
+                replace_jentry(buf, jentry, jentry_index);
+            }
+        },
         JsonbItem::Raw(raw_jsonb) => {
             append_raw_jsonb_data(buf, jentry_index, raw_jsonb)?;
         }
