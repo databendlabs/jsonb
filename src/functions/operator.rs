@@ -694,7 +694,7 @@ impl RawJsonb<'_> {
                 buf.push(depth);
                 buf.push(NUMBER_LEVEL);
                 let num = num_item.as_number()?;
-                let n = num.as_f64().unwrap();
+                let n = num.as_f64();
                 // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
                 let s = n.to_bits() as i64;
                 let v = s ^ (((s >> 63) as u64) >> 1) as i64;

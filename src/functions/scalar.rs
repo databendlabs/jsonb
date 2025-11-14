@@ -1023,7 +1023,7 @@ impl RawJsonb<'_> {
         match jsonb_item {
             JsonbItem::Number(num) => {
                 let value = num.as_number()?;
-                Ok(value.as_f64())
+                Ok(Some(value.as_f64()))
             }
             _ => Ok(None),
         }
@@ -1106,9 +1106,8 @@ impl RawJsonb<'_> {
             }
             JsonbItem::Number(num) => {
                 let value = num.as_number()?;
-                if let Some(v) = value.as_f64() {
-                    return Ok(v);
-                }
+                let v = value.as_f64();
+                return Ok(v);
             }
             JsonbItem::String(s) => {
                 if let Ok(v) = s.parse::<f64>() {

@@ -518,23 +518,14 @@ impl Number {
     /// Returns the f64 representation of the number.
     ///
     /// This method always returns a value, but may lose precision for very large numbers.
-    pub fn as_f64(&self) -> Option<f64> {
+    pub fn as_f64(&self) -> f64 {
         match self {
-            Number::Int64(v) => Some(*v as f64),
-            Number::UInt64(v) => Some(*v as f64),
-            Number::Float64(v) => Some(*v),
-            Number::Decimal64(v) => {
-                let val = v.to_float64();
-                Some(val)
-            }
-            Number::Decimal128(v) => {
-                let val = v.to_float64();
-                Some(val)
-            }
-            Number::Decimal256(v) => {
-                let val = v.to_float64();
-                Some(val)
-            }
+            Number::Int64(v) => *v as f64,
+            Number::UInt64(v) => *v as f64,
+            Number::Float64(v) => *v,
+            Number::Decimal64(v) => v.to_float64(),
+            Number::Decimal128(v) => v.to_float64(),
+            Number::Decimal256(v) => v.to_float64(),
         }
     }
 
@@ -623,8 +614,8 @@ impl Number {
             }
             (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a + b)),
             (a, b) => {
-                let a_float = a.as_f64().unwrap();
-                let b_float = b.as_f64().unwrap();
+                let a_float = a.as_f64();
+                let b_float = b.as_f64();
                 Ok(Number::Float64(a_float + b_float))
             }
         }
@@ -653,8 +644,8 @@ impl Number {
                 .ok_or(Error::Message("Int64 overflow".to_string())),
             (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a - b)),
             (a, b) => {
-                let a_float = a.as_f64().unwrap();
-                let b_float = b.as_f64().unwrap();
+                let a_float = a.as_f64();
+                let b_float = b.as_f64();
                 Ok(Number::Float64(a_float - b_float))
             }
         }
@@ -699,8 +690,8 @@ impl Number {
             }
             (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a * b)),
             (a, b) => {
-                let a_float = a.as_f64().unwrap();
-                let b_float = b.as_f64().unwrap();
+                let a_float = a.as_f64();
+                let b_float = b.as_f64();
                 Ok(Number::Float64(a_float * b_float))
             }
         }
@@ -710,8 +701,8 @@ impl Number {
     ///
     /// This method returns an error if the divisor is zero.
     pub fn div(&self, other: Number) -> Result<Number> {
-        let a_float = self.as_f64().unwrap();
-        let b_float = other.as_f64().unwrap();
+        let a_float = self.as_f64();
+        let b_float = other.as_f64();
         if b_float == 0.0 {
             return Err(Error::Message("Division by zero".to_string()));
         }
@@ -776,8 +767,8 @@ impl Number {
                 Ok(Number::Float64(a % b))
             }
             (a, b) => {
-                let a_float = a.as_f64().unwrap();
-                let b_float = b.as_f64().unwrap();
+                let a_float = a.as_f64();
+                let b_float = b.as_f64();
                 if b_float == 0.0 {
                     return Err(Error::Message("Division by zero".to_string()));
                 }
@@ -886,8 +877,8 @@ impl Ord for Number {
                     {
                         l_val.cmp(&r_val)
                     } else {
-                        let l = OrderedFloat(self.as_f64().unwrap());
-                        let r = OrderedFloat(other.as_f64().unwrap());
+                        let l = OrderedFloat(self.as_f64());
+                        let r = OrderedFloat(other.as_f64());
                         l.cmp(&r)
                     }
                 }
@@ -903,8 +894,8 @@ impl Ord for Number {
                     {
                         l_val.cmp(&r_val)
                     } else {
-                        let l = OrderedFloat(self.as_f64().unwrap());
-                        let r = OrderedFloat(other.as_f64().unwrap());
+                        let l = OrderedFloat(self.as_f64());
+                        let r = OrderedFloat(other.as_f64());
                         l.cmp(&r)
                     }
                 }
@@ -930,8 +921,8 @@ impl Ord for Number {
                         }
                     }
                     // multiply overflow, fallback to used float compare
-                    let l = OrderedFloat(self.as_f64().unwrap());
-                    let r = OrderedFloat(other.as_f64().unwrap());
+                    let l = OrderedFloat(self.as_f64());
+                    let r = OrderedFloat(other.as_f64());
                     l.cmp(&r)
                 }
             }
@@ -1126,8 +1117,8 @@ impl Ord for Number {
 
             // Fall back to float comparison for any other combinations
             (_, _) => {
-                let l = OrderedFloat(self.as_f64().unwrap());
-                let r = OrderedFloat(other.as_f64().unwrap());
+                let l = OrderedFloat(self.as_f64());
+                let r = OrderedFloat(other.as_f64());
                 l.cmp(&r)
             }
         }
