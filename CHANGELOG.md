@@ -1,3 +1,14 @@
+## [v0.5.5] - 2025-11-17
+
+### Added
+
+- Feat: Support function `extract_scalar_key_values` (#95)
+- Feat: Make JsonbItemType public so users can compare (#94)
+
+### Fixed
+
+- Fix: fix `serde_json` infinite Number convert to Jsonb Value unwrap panic (#96)
+
 ## [v0.5.4] - 2025-08-20
 
 ### Added
@@ -151,6 +162,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.5]: https://github.com/databendlabs/jsonb/compare/v0.5.4...v0.5.5
 [v0.5.4]: https://github.com/databendlabs/jsonb/compare/v0.5.3...v0.5.4
 [v0.5.3]: https://github.com/databendlabs/jsonb/compare/v0.5.2...v0.5.3
 [v0.5.2]: https://github.com/databendlabs/jsonb/compare/v0.5.1...v0.5.2
