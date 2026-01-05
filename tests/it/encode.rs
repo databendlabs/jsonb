@@ -177,11 +177,11 @@ fn test_encode_array() {
             Value::Binary(&[100, 101, 102, 103]),
             Value::Date(Date {value: 20381 }),
             Value::Timestamp(Timestamp { value: 1540230120000000 }),
-            Value::TimestampTz(TimestampTz { offset: 8, value: 1670389100000000 }),
+            Value::TimestampTz(TimestampTz { offset: 8 * 3600, value: 1670389100000000 }),
             Value::Interval(Interval { months: 2, days: 10, micros: 500000000 }),
             Value::Number(Number::Decimal256(Decimal256 { scale: 2, value: I256::new(1234) })),
         ]).to_vec(),
-        b"\x80\0\0\x07\x30\0\0\0\x60\0\0\x05\x60\0\0\x05\x60\0\0\x09\x60\0\0\x0A\x60\0\0\x11\x20\0\0\x22\0\x64\x65\x66\x67\x10\0\0\x4F\x9D\x20\0\x05\x78\xD4\xC5\x2C\xCA\0\x30\0\x05\xEF\x35\xC4\xF1\x33\0\x08\x40\0\0\0\x02\0\0\0\x0A\0\0\0\0\x1D\xCD\x65\0\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x02",
+        b"\x80\0\0\x07\x30\0\0\0\x60\0\0\x05\x60\0\0\x05\x60\0\0\x09\x60\0\0\x0D\x60\0\0\x11\x20\0\0\x22\0\x64\x65\x66\x67\x10\0\0\x4F\x9D\x20\0\x05\x78\xD4\xC5\x2C\xCA\0\x30\0\x05\xEF\x35\xC4\xF1\x33\0\0\0\x70\x80\x40\0\0\0\x02\0\0\0\x0A\0\0\0\0\x1D\xCD\x65\0\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x02",
     );
 }
 
@@ -207,7 +207,7 @@ fn test_encode_object() {
     obj2.insert(
         "k5".to_string(),
         Value::TimestampTz(TimestampTz {
-            offset: 8,
+            offset: 8 * 3600,
             value: 1670389100000000,
         }),
     );
@@ -229,7 +229,7 @@ fn test_encode_object() {
 
     assert_eq!(
         &Value::Object(obj2).to_vec(),
-        b"\x40\0\0\x07\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x60\0\0\x05\x60\0\0\x05\x60\0\0\x09\x60\0\0\x0A\x60\0\0\x11\x20\0\0\x22\x6B\x31\x6B\x32\x6B\x33\x6B\x34\x6B\x35\x6B\x36\x6B\x37\x76\x31\0\xC8\xC9\xCA\xCB\x10\0\0\x4F\x9D\x20\0\x05\x78\xD4\xC5\x2C\xCA\0\x30\0\x05\xEF\x35\xC4\xF1\x33\0\x08\x40\0\0\0\x02\0\0\0\x0A\0\0\0\0\x1D\xCD\x65\0\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x02"
+        b"\x40\0\0\x07\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x10\0\0\x02\x60\0\0\x05\x60\0\0\x05\x60\0\0\x09\x60\0\0\x0D\x60\0\0\x11\x20\0\0\x22\x6B\x31\x6B\x32\x6B\x33\x6B\x34\x6B\x35\x6B\x36\x6B\x37\x76\x31\0\xC8\xC9\xCA\xCB\x10\0\0\x4F\x9D\x20\0\x05\x78\xD4\xC5\x2C\xCA\0\x30\0\x05\xEF\x35\xC4\xF1\x33\0\0\0\x70\x80\x40\0\0\0\x02\0\0\0\x0A\0\0\0\0\x1D\xCD\x65\0\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x02"
     );
 }
 
@@ -252,11 +252,11 @@ fn test_encode_extension() {
     );
     assert_eq!(
         Value::TimestampTz(TimestampTz {
-            offset: 8,
+            offset: 8 * 3600,
             value: 1760140800000000
         })
         .to_vec(),
-        b"\x20\0\0\0\x60\0\0\x0a\x30\0\x06\x40\xd6\xb7\x23\x80\0\x08"
+        b"\x20\0\0\0\x60\0\0\x0d\x30\0\x06\x40\xd6\xb7\x23\x80\0\0\0\x70\x80"
     );
     assert_eq!(
         Value::Interval(Interval {

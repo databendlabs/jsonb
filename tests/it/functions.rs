@@ -826,7 +826,9 @@ fn test_to_string() {
 
     let extension_sources = vec![
         (Value::Binary(&[97, 98, 99]), r#""616263""#),
+        (Value::Binary(&[]), r#""""#),
         (Value::Date(Date { value: 90570 }), r#""2217-12-22""#),
+        (Value::Date(Date { value: -1 }), r#""1969-12-31""#),
         (
             Value::Timestamp(Timestamp {
                 value: 190390000000,
@@ -834,11 +836,22 @@ fn test_to_string() {
             r#""1970-01-03 04:53:10.000000""#,
         ),
         (
+            Value::Timestamp(Timestamp { value: 0 }),
+            r#""1970-01-01 00:00:00.000000""#,
+        ),
+        (
             Value::TimestampTz(TimestampTz {
-                offset: 8,
+                offset: 8 * 3600,
                 value: 190390000000,
             }),
-            r#""1970-01-03 12:53:10.000000""#,
+            r#""1970-01-03 12:53:10.000000 +0800""#,
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 90 * 60,
+                value: 0,
+            }),
+            r#""1970-01-01 01:30:00.000000 +0130""#,
         ),
         (
             Value::Interval(Interval {
@@ -849,11 +862,50 @@ fn test_to_string() {
             r#""10 months 20 days 00:05:00""#,
         ),
         (
+            Value::Interval(Interval {
+                months: -14,
+                days: -3,
+                micros: -90000000,
+            }),
+            r#""-1 year -2 months -3 days -00:01:30""#,
+        ),
+        (
+            Value::Interval(Interval {
+                months: -25,
+                days: -1,
+                micros: 0,
+            }),
+            r#""-2 years -1 month -1 day""#,
+        ),
+        (
+            Value::Interval(Interval {
+                months: 0,
+                days: -2,
+                micros: 5_000_000,
+            }),
+            r#""-2 days 00:00:05""#,
+        ),
+        (
+            Value::Interval(Interval {
+                months: 0,
+                days: 0,
+                micros: 0,
+            }),
+            r#""00:00:00""#,
+        ),
+        (
             Value::Number(Number::Decimal128(Decimal128 {
                 scale: 2,
                 value: 1234,
             })),
             r#"12.34"#,
+        ),
+        (
+            Value::Number(Number::Decimal64(Decimal64 {
+                scale: 2,
+                value: -765,
+            })),
+            r#"-7.65"#,
         ),
         (
             Value::Number(Number::Decimal256(Decimal256 {
@@ -870,7 +922,7 @@ fn test_to_string() {
                     value: 190390000000,
                 }),
                 Value::TimestampTz(TimestampTz {
-                    offset: 8,
+                    offset: 8 * 3600,
                     value: 190390000000,
                 }),
                 Value::Interval(Interval {
@@ -887,7 +939,7 @@ fn test_to_string() {
                     value: I256::new(981724),
                 })),
             ]),
-            r#"["616263","2217-12-22","1970-01-03 04:53:10.000000","1970-01-03 12:53:10.000000","10 months 20 days 00:05:00",12.34,9817.24]"#,
+            r#"["616263","2217-12-22","1970-01-03 04:53:10.000000","1970-01-03 12:53:10.000000 +0800","10 months 20 days 00:05:00",12.34,9817.24]"#,
         ),
         (
             Value::Object(BTreeMap::from([
@@ -902,7 +954,7 @@ fn test_to_string() {
                 (
                     "k4".to_string(),
                     Value::TimestampTz(TimestampTz {
-                        offset: 8,
+                        offset: 8 * 3600,
                         value: 190390000000,
                     }),
                 ),
@@ -929,7 +981,7 @@ fn test_to_string() {
                     })),
                 ),
             ])),
-            r#"{"k1":"616263","k2":"2217-12-22","k3":"1970-01-03 04:53:10.000000","k4":"1970-01-03 12:53:10.000000","k5":"10 months 20 days 00:05:00","k6":12.34,"k7":9817.24}"#,
+            r#"{"k1":"616263","k2":"2217-12-22","k3":"1970-01-03 04:53:10.000000","k4":"1970-01-03 12:53:10.000000 +0800","k5":"10 months 20 days 00:05:00","k6":12.34,"k7":9817.24}"#,
         ),
     ];
 
@@ -1117,7 +1169,7 @@ fn test_type_of() {
         ),
         (
             Value::TimestampTz(TimestampTz {
-                offset: 8,
+                offset: 8 * 3600,
                 value: 190390000000,
             }),
             "TIMESTAMP_TZ",

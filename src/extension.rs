@@ -28,6 +28,7 @@ const MICROS_PER_HOUR: i64 = 60 * MICROS_PER_MINUTE;
 const MONTHS_PER_YEAR: i32 = 12;
 
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.6f";
+const TIMESTAMP_TIMEZONE_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.6f %z";
 
 /// Represents extended JSON value types that are not supported in standard JSON.
 ///
@@ -80,8 +81,8 @@ pub struct Timestamp {
 /// Standard JSON has no native timezone-aware timestamp type.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct TimestampTz {
-    /// Timezone offset in hours from UTC
-    pub offset: i8,
+    /// Timezone offset in seconds from UTC
+    pub offset: i32,
     /// Microseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
     pub value: i64,
 }
@@ -149,58 +150,49 @@ impl Display for TimestampTz {
             nanos = 0;
         }
         let ts = jiff::Timestamp::new(secs, nanos as i32).unwrap();
-        let tz = Offset::constant(self.offset).to_time_zone();
+        let tz_offset = Offset::from_seconds(self.offset).expect("invalid timezone offset seconds");
+        let tz = tz_offset.to_time_zone();
         let zoned = ts.to_zoned(tz);
 
-        write!(f, "{}", strtime::format(TIMESTAMP_FORMAT, &zoned).unwrap())
+        write!(
+            f,
+            "{}",
+            strtime::format(TIMESTAMP_TIMEZONE_FORMAT, &zoned).unwrap()
+        )
     }
 }
 
 impl Display for Interval {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let mut date_parts = vec![];
+        let mut wrote_date_part = false;
         let years = self.months / MONTHS_PER_YEAR;
         let months = self.months % MONTHS_PER_YEAR;
-        match years.cmp(&1) {
-            Ordering::Equal => {
-                date_parts.push((years, "year"));
-            }
-            Ordering::Greater => {
-                date_parts.push((years, "years"));
-            }
-            _ => {}
-        }
-        match months.cmp(&1) {
-            Ordering::Equal => {
-                date_parts.push((months, "month"));
-            }
-            Ordering::Greater => {
-                date_parts.push((months, "months"));
-            }
-            _ => {}
-        }
-        match self.days.cmp(&1) {
-            Ordering::Equal => {
-                date_parts.push((self.days, "day"));
-            }
-            Ordering::Greater => {
-                date_parts.push((self.days, "days"));
-            }
-            _ => {}
-        }
-        if !date_parts.is_empty() {
-            for (i, (val, name)) in date_parts.into_iter().enumerate() {
-                if i > 0 {
+
+        let mut write_component = |value: i32, singular: &str, plural: &str| -> std::fmt::Result {
+            if value != 0 {
+                if wrote_date_part {
                     write!(f, " ")?;
                 }
-                write!(f, "{} {}", val, name)?;
+                let abs_val = value.abs();
+                let unit = if abs_val == 1 { singular } else { plural };
+                if value < 0 {
+                    write!(f, "-{} {}", abs_val, unit)?;
+                } else {
+                    write!(f, "{} {}", abs_val, unit)?;
+                }
+                wrote_date_part = true;
             }
-            if self.micros != 0 {
-                write!(f, " ")?;
-            }
-        }
+            Ok(())
+        };
+
+        write_component(years, "year", "years")?;
+        write_component(months, "month", "months")?;
+        write_component(self.days, "day", "days")?;
 
         if self.micros != 0 {
+            if wrote_date_part {
+                write!(f, " ")?;
+            }
             let mut micros = self.micros;
             if micros < 0 {
                 write!(f, "-")?;
@@ -221,7 +213,7 @@ impl Display for Interval {
             if micros != 0 {
                 write!(f, ".{:06}", micros)?;
             }
-        } else if self.months == 0 && self.days == 0 {
+        } else if !wrote_date_part {
             write!(f, "00:00:00")?;
         }
         Ok(())
