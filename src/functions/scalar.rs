@@ -1783,7 +1783,7 @@ impl RawJsonb<'_> {
     /// use jsonb::Value;
     ///
     /// // TimestampTz value
-    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8, value: 1760140800000000 });
+    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8 * 3600, value: 1760140800000000 });
     /// let buf = timestamp_tz_value.to_vec();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_timestamp_tz().unwrap());
@@ -1830,10 +1830,10 @@ impl RawJsonb<'_> {
     /// use jsonb::Value;
     ///
     /// // TimestampTz value
-    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8, value: 1760140800000000 });
+    /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8 * 3600, value: 1760140800000000 });
     /// let buf = timestamp_tz_value.to_vec();
     /// let raw_jsonb = RawJsonb::new(&buf);
-    /// assert_eq!(raw_jsonb.as_timestamp_tz().unwrap(), Some(TimestampTz { offset: 8, value: 1760140800000000 }));
+    /// assert_eq!(raw_jsonb.as_timestamp_tz().unwrap(), Some(TimestampTz { offset: 8 * 3600, value: 1760140800000000 }));
     /// ```
     pub fn as_timestamp_tz(&self) -> Result<Option<TimestampTz>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;

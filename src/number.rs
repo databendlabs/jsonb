@@ -1174,7 +1174,7 @@ impl Display for Number {
                 write!(f, "{}", s)
             }
             Number::Float64(v) => {
-                let mut buffer = ryu::Buffer::new();
+                let mut buffer = zmij::Buffer::new();
                 let s = buffer.format(*v);
                 write!(f, "{}", s)
             }

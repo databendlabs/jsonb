@@ -604,7 +604,7 @@ impl ExtensionValue<'_> {
                 writer.write_all(&[EXTENSION_TIMESTAMP_TZ])?;
                 writer.write_all(&v.value.to_be_bytes())?;
                 writer.write_all(&v.offset.to_be_bytes())?;
-                Ok(10)
+                Ok(13)
             }
             ExtensionValue::Interval(v) => {
                 writer.write_all(&[EXTENSION_INTERVAL])?;
@@ -645,11 +645,16 @@ impl ExtensionValue<'_> {
                 ExtensionValue::Timestamp(Timestamp { value })
             }
             EXTENSION_TIMESTAMP_TZ => {
-                if len != 9 {
+                if len != 9 && len != 12 {
                     return Err(Error::InvalidJsonbNumber);
                 }
                 let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
-                let offset = i8::from_be_bytes(bytes[9..10].try_into().unwrap());
+                let offset = if len == 9 {
+                    let hours = i8::from_be_bytes(bytes[9..10].try_into().unwrap());
+                    (hours as i32) * 3_600
+                } else {
+                    i32::from_be_bytes(bytes[9..13].try_into().unwrap())
+                };
 
                 ExtensionValue::TimestampTz(TimestampTz { offset, value })
             }
