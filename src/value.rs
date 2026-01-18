@@ -232,14 +232,17 @@ impl Display for Value<'_> {
 }
 
 impl<'a> Value<'a> {
+    /// Returns true if this value is not an array or object.
     pub fn is_scalar(&self) -> bool {
         !self.is_array() && !self.is_object()
     }
 
+    /// Returns true if this value is an object.
     pub fn is_object(&self) -> bool {
         matches!(self, Value::Object(_v))
     }
 
+    /// Returns the object map if this value is an object.
     pub fn as_object(&self) -> Option<&Object<'a>> {
         match self {
             Value::Object(ref obj) => Some(obj),
@@ -247,10 +250,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is an array.
     pub fn is_array(&self) -> bool {
         matches!(self, Value::Array(_v))
     }
 
+    /// Returns the array if this value is an array.
     pub fn as_array(&self) -> Option<&Vec<Value<'a>>> {
         match self {
             Value::Array(ref array) => Some(array),
@@ -258,10 +263,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a string.
     pub fn is_string(&self) -> bool {
         self.as_str().is_some()
     }
 
+    /// Returns the string if this value is a string.
     pub fn as_str(&self) -> Option<&Cow<'_, str>> {
         match self {
             Value::String(s) => Some(s),
@@ -269,10 +276,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a number.
     pub fn is_number(&self) -> bool {
         matches!(self, Value::Number(_))
     }
 
+    /// Returns the number if this value is a number.
     pub fn as_number(&self) -> Option<&Number> {
         match self {
             Value::Number(n) => Some(n),
@@ -280,18 +289,22 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value can be represented as i64.
     pub fn is_i64(&self) -> bool {
         self.as_i64().is_some()
     }
 
+    /// Returns true if this value can be represented as u64.
     pub fn is_u64(&self) -> bool {
         self.as_u64().is_some()
     }
 
+    /// Returns true if this value can be represented as f64.
     pub fn is_f64(&self) -> bool {
         self.as_f64().is_some()
     }
 
+    /// Returns the number as i64 if it fits.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Value::Number(n) => n.as_i64(),
@@ -299,6 +312,7 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns the number as u64 if it fits.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Value::Number(n) => n.as_u64(),
@@ -306,6 +320,7 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns the number as f64 if it is a number.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Value::Number(n) => Some(n.as_f64()),
@@ -313,10 +328,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a boolean.
     pub fn is_boolean(&self) -> bool {
         matches!(self, Value::Bool(_v))
     }
 
+    /// Returns the boolean if this value is a boolean.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(v) => Some(*v),
@@ -324,10 +341,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is null.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
 
+    /// Returns Some(()) if this value is null.
     pub fn as_null(&self) -> Option<()> {
         match self {
             Value::Null => Some(()),
@@ -335,10 +354,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a binary extension.
     pub fn is_binary(&self) -> bool {
         matches!(self, Value::Binary(_v))
     }
 
+    /// Returns the binary bytes if this value is a binary extension.
     pub fn as_binary(&self) -> Option<&[u8]> {
         match self {
             Value::Binary(v) => Some(v),
@@ -346,10 +367,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a date extension.
     pub fn is_date(&self) -> bool {
         matches!(self, Value::Date(_v))
     }
 
+    /// Returns the date if this value is a date extension.
     pub fn as_date(&self) -> Option<&Date> {
         match self {
             Value::Date(v) => Some(v),
@@ -357,10 +380,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a timestamp extension.
     pub fn is_timestamp(&self) -> bool {
         matches!(self, Value::Timestamp(_v))
     }
 
+    /// Returns the timestamp if this value is a timestamp extension.
     pub fn as_timestamp(&self) -> Option<&Timestamp> {
         match self {
             Value::Timestamp(v) => Some(v),
@@ -368,10 +393,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is a timestamp with time zone extension.
     pub fn is_timestamp_tz(&self) -> bool {
         matches!(self, Value::TimestampTz(_v))
     }
 
+    /// Returns the timestamp with time zone if this value is that extension.
     pub fn as_timestamp_tz(&self) -> Option<&TimestampTz> {
         match self {
             Value::TimestampTz(v) => Some(v),
@@ -379,10 +406,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if this value is an interval extension.
     pub fn is_interval(&self) -> bool {
         matches!(self, Value::Interval(_v))
     }
 
+    /// Returns the interval if this value is an interval extension.
     pub fn as_interval(&self) -> Option<&Interval> {
         match self {
             Value::Interval(v) => Some(v),
@@ -390,19 +419,20 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// Serialize the JSONB Value into a byte stream.
+    /// Serializes this value into JSONB bytes, appending to `buf`.
     pub fn write_to_vec(&self, buf: &mut Vec<u8>) {
         let mut encoder = Encoder::new(buf);
         encoder.encode(self);
     }
 
-    /// Serialize the JSONB Value into a byte stream.
+    /// Serializes this value into JSONB bytes and returns the buffer.
     pub fn to_vec(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.write_to_vec(&mut buf);
         buf
     }
 
+    /// Returns the value for a key, case-insensitive, if this value is an object.
     pub fn get_by_name_ignore_case(&self, name: &str) -> Option<&Value<'a>> {
         match self {
             Value::Object(obj) => match obj.get(name) {
@@ -420,6 +450,7 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns the array length if this value is an array.
     pub fn array_length(&self) -> Option<usize> {
         match self {
             Value::Array(arr) => Some(arr.len()),
@@ -427,6 +458,7 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns the object keys as a `Value::Array` of strings if this value is an object.
     pub fn object_keys(&self) -> Option<Value<'a>> {
         match self {
             Value::Object(obj) => {
@@ -440,11 +472,12 @@ impl<'a> Value<'a> {
         }
     }
 
+    /// Returns true if both values have the same enum variant.
     pub fn eq_variant(&self, other: &Value) -> bool {
         discriminant(self) == discriminant(other)
     }
 
-    /// generate random JSONB value
+    /// Generates a random JSONB value for testing.
     pub fn rand_value() -> Value<'static> {
         let mut rng = rng();
         let val = match rng.random_range(0..=2) {

@@ -50,6 +50,23 @@ pub enum KeyPath<'a> {
     Name(Cow<'a, str>),
 }
 
+/// Represents a set of owned key path chains.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct OwnedKeyPaths {
+    pub paths: Vec<OwnedKeyPath>,
+}
+
+/// Represents a valid owned key path.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum OwnedKeyPath {
+    /// represents the index of an Array, allow negative indexing.
+    Index(i32),
+    /// represents the quoted field name of an Object.
+    QuotedName(String),
+    /// represents the field name of an Object.
+    Name(String),
+}
+
 impl Display for KeyPaths<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{{")?;
@@ -78,6 +95,73 @@ impl Display for KeyPath<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl Display for OwnedKeyPaths {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+        for (i, path) in self.paths.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, "{path}")?;
+        }
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
+impl Display for OwnedKeyPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnedKeyPath::Index(idx) => {
+                write!(f, "{idx}")?;
+            }
+            OwnedKeyPath::QuotedName(name) => {
+                write!(f, "\"{name}\"")?;
+            }
+            OwnedKeyPath::Name(name) => {
+                write!(f, "{name}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> KeyPaths<'a> {
+    pub fn to_owned(&self) -> OwnedKeyPaths {
+        OwnedKeyPaths {
+            paths: self.paths.iter().map(KeyPath::to_owned).collect(),
+        }
+    }
+}
+
+impl OwnedKeyPaths {
+    pub fn as_key_paths(&self) -> KeyPaths<'_> {
+        KeyPaths {
+            paths: self.paths.iter().map(OwnedKeyPath::as_key_path).collect(),
+        }
+    }
+}
+
+impl<'a> KeyPath<'a> {
+    pub fn to_owned(&self) -> OwnedKeyPath {
+        match self {
+            KeyPath::Index(idx) => OwnedKeyPath::Index(*idx),
+            KeyPath::QuotedName(name) => OwnedKeyPath::QuotedName(name.to_string()),
+            KeyPath::Name(name) => OwnedKeyPath::Name(name.to_string()),
+        }
+    }
+}
+
+impl OwnedKeyPath {
+    pub fn as_key_path(&self) -> KeyPath<'_> {
+        match self {
+            OwnedKeyPath::Index(idx) => KeyPath::Index(*idx),
+            OwnedKeyPath::QuotedName(name) => KeyPath::QuotedName(Cow::Borrowed(name.as_str())),
+            OwnedKeyPath::Name(name) => KeyPath::Name(Cow::Borrowed(name.as_str())),
+        }
     }
 }
 
