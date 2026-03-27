@@ -826,6 +826,22 @@ fn test_to_type() {
             Some(-1.5_f64),
             Some("-1.5".to_string()),
         ),
+        (
+            r#""1.5e0""#,
+            None,
+            Some(2_i64),
+            Some(2_u64),
+            Some(1.5_f64),
+            Some("1.5e0".to_string()),
+        ),
+        (
+            r#""-1.5e0""#,
+            None,
+            Some(-2_i64),
+            None,
+            Some(-1.5_f64),
+            Some("-1.5e0".to_string()),
+        ),
     ];
 
     for (s, expect_bool, expect_i64, expect_u64, expect_f64, expect_str) in sources {

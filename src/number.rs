@@ -854,7 +854,7 @@ fn round_decimal_i128(value: i128, scale: u8) -> Option<i128> {
     let quotient = value / divisor;
     let remainder = value % divisor;
     let abs_remainder = remainder.unsigned_abs();
-    let divisor = divisor as u128;
+    let divisor = *divisor as u128;
     let round_up = abs_remainder >= divisor - abs_remainder;
 
     if !round_up {
