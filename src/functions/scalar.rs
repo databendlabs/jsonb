@@ -460,9 +460,9 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Checks if the JSONB value is an integer that can be represented as an i64.
+    /// Checks whether the JSONB value is an exact `i64`.
     ///
-    /// This function checks if the JSONB value is a number and can be converted to an `i64` without loss of information.
+    /// Decimal and floating-point numbers must already be integral.
     ///
     /// # Arguments
     ///
@@ -470,8 +470,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the value is an integer representable as an `i64`.
-    /// * `Ok(false)` - If the value is not an integer or cannot be represented as an `i64`.
+    /// * `Ok(true)` - If the value is an exact `i64`.
+    /// * `Ok(false)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -484,12 +484,16 @@ impl RawJsonb<'_> {
     /// let raw_i64 = i64_jsonb.as_raw();
     /// assert!(raw_i64.is_i64().unwrap());
     ///
-    /// let i64_jsonb = "-123456789012345678".parse::<OwnedJsonb>().unwrap();
+    /// let i64_jsonb = "-123456789012345678.0".parse::<OwnedJsonb>().unwrap();
     /// let raw_i64 = i64_jsonb.as_raw();
     /// assert!(raw_i64.is_i64().unwrap());
     ///
-    /// // Non-i64 values
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "1.5e0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_float = float_jsonb.as_raw();
+    /// assert!(!raw_float.is_i64().unwrap());
+    ///
+    /// // Out-of-range values
+    /// let float_jsonb = "1e100".parse::<OwnedJsonb>().unwrap();
     /// let raw_float = float_jsonb.as_raw();
     /// assert!(!raw_float.is_i64().unwrap());
     ///
@@ -507,11 +511,10 @@ impl RawJsonb<'_> {
         self.as_i64().map(|v| v.is_some())
     }
 
-    /// Extracts an i64 integer from a JSONB value.
+    /// Extracts an exact `i64` from a JSONB value.
     ///
-    /// This function attempts to extract an `i64` integer from the JSONB value.
-    /// If the JSONB value is a number and can be represented as an `i64` without loss of information, the integer value is returned.
-    /// Otherwise, `None` is returned.
+    /// Decimal and floating-point numbers are accepted only when they already
+    /// represent an integer.
     ///
     /// # Arguments
     ///
@@ -519,8 +522,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(i64))` - If the value is an integer that can be represented as an `i64`.
-    /// * `Ok(None)` - If the value is not an integer or cannot be represented as an `i64`.
+    /// * `Ok(Some(i64))` - If the value is an exact `i64`.
+    /// * `Ok(None)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -533,8 +536,16 @@ impl RawJsonb<'_> {
     /// let raw_i64 = i64_jsonb.as_raw();
     /// assert_eq!(raw_i64.as_i64().unwrap(), Some(123456789012345678));
     ///
+    /// let decimal_jsonb = "123.0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_decimal = decimal_jsonb.as_raw();
+    /// assert_eq!(raw_decimal.as_i64().unwrap(), Some(123));
+    ///
+    /// let float_jsonb = "123.0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_float = float_jsonb.as_raw();
+    /// assert_eq!(raw_float.as_i64().unwrap(), Some(123));
+    ///
     /// // Non-i64 values
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "123.1".parse::<OwnedJsonb>().unwrap();
     /// let raw_float = float_jsonb.as_raw();
     /// assert_eq!(raw_float.as_i64().unwrap(), None);
     ///
@@ -567,13 +578,10 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Converts a JSONB value to an i64 integer.
+    /// Converts a JSONB value to `i64`.
     ///
-    /// This function attempts to convert a JSONB value to an `i64` integer.
-    /// It prioritizes direct conversion from a number if possible.
-    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
-    /// If the value is a string that can be parsed as an `i64`, that parsed value is returned.
-    /// Otherwise, an error is returned.
+    /// Numbers are rounded to the nearest integer. Booleans map to `1` and
+    /// `0`. Strings are parsed as `i64`, or as `f64` and then rounded.
     ///
     /// # Arguments
     ///
@@ -581,7 +589,7 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(i64)` - The `i64` representation of the JSONB value.
+    /// * `Ok(i64)` - The converted value.
     /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `i64`.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
@@ -608,8 +616,18 @@ impl RawJsonb<'_> {
     /// let str_jsonb = r#""123""#.parse::<OwnedJsonb>().unwrap();
     /// assert_eq!(str_jsonb.as_raw().to_i64().unwrap(), 123);
     ///
+    /// // Decimal and float numbers are rounded before conversion
+    /// let decimal_jsonb = "123.5".parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(decimal_jsonb.as_raw().to_i64().unwrap(), 124);
+    ///
+    /// let float_jsonb = "1.5e0".parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(float_jsonb.as_raw().to_i64().unwrap(), 2);
+    ///
+    /// let str_jsonb = r#""1.5""#.parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(str_jsonb.as_raw().to_i64().unwrap(), 2);
+    ///
     /// // Invalid conversions
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "1e100".parse::<OwnedJsonb>().unwrap();
     /// let result = float_jsonb.as_raw().to_i64();
     /// assert!(result.is_err());
     ///
@@ -647,12 +665,12 @@ impl RawJsonb<'_> {
             }
             JsonbItem::Number(num) => {
                 let value = num.as_number()?;
-                if let Some(v) = value.as_i64() {
+                if let Some(v) = value.to_i64() {
                     return Ok(v);
                 }
             }
             JsonbItem::String(s) => {
-                if let Ok(v) = s.parse::<i64>() {
+                if let Some(v) = parse_string_to_i64(&s) {
                     return Ok(v);
                 }
             }
@@ -661,9 +679,9 @@ impl RawJsonb<'_> {
         Err(Error::InvalidCast)
     }
 
-    /// Checks if the JSONB value is an unsigned integer that can be represented as a u64.
+    /// Checks whether the JSONB value is an exact `u64`.
     ///
-    /// This function checks if the JSONB value is a number and can be converted to a `u64` without loss of information.
+    /// Decimal and floating-point numbers must already be integral.
     ///
     /// # Arguments
     ///
@@ -671,8 +689,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the value is an unsigned integer representable as a `u64`.
-    /// * `Ok(false)` - If the value is not an unsigned integer or cannot be represented as a `u64`.
+    /// * `Ok(true)` - If the value is an exact `u64`.
+    /// * `Ok(false)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -689,8 +707,12 @@ impl RawJsonb<'_> {
     /// let raw_u64 = u64_jsonb.as_raw();
     /// assert!(raw_u64.is_u64().unwrap());
     ///
+    /// let float_jsonb = "123.0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_float = float_jsonb.as_raw();
+    /// assert!(raw_float.is_u64().unwrap());
+    ///
     /// // Non-u64 values
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "123.1".parse::<OwnedJsonb>().unwrap();
     /// let raw_float = float_jsonb.as_raw();
     /// assert!(!raw_float.is_u64().unwrap());
     ///
@@ -728,11 +750,10 @@ impl RawJsonb<'_> {
         self.as_u64().map(|v| v.is_some())
     }
 
-    /// Extracts a u64 unsigned integer from a JSONB value.
+    /// Extracts an exact `u64` from a JSONB value.
     ///
-    /// This function attempts to extract a `u64` unsigned integer from the JSONB value.
-    /// If the JSONB value is a number and can be represented as a `u64` without loss of information (i.e., it's a non-negative integer within the `u64` range),
-    /// the unsigned integer value is returned. Otherwise, `None` is returned.
+    /// Decimal and floating-point numbers are accepted only when they already
+    /// represent a non-negative integer.
     ///
     /// # Arguments
     ///
@@ -740,8 +761,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(u64))` - If the value is an unsigned integer that can be represented as a `u64`.
-    /// * `Ok(None)` - If the value is not an unsigned integer or cannot be represented as a `u64`.
+    /// * `Ok(Some(u64))` - If the value is an exact `u64`.
+    /// * `Ok(None)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -754,8 +775,16 @@ impl RawJsonb<'_> {
     /// let raw_u64 = u64_jsonb.as_raw();
     /// assert_eq!(raw_u64.as_u64().unwrap(), Some(1234567890123456789));
     ///
+    /// let decimal_jsonb = "123.0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_decimal = decimal_jsonb.as_raw();
+    /// assert_eq!(raw_decimal.as_u64().unwrap(), Some(123));
+    ///
+    /// let float_jsonb = "123.0".parse::<OwnedJsonb>().unwrap();
+    /// let raw_float = float_jsonb.as_raw();
+    /// assert_eq!(raw_float.as_u64().unwrap(), Some(123));
+    ///
     /// // Non-u64 values
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "123.1".parse::<OwnedJsonb>().unwrap();
     /// let raw_float = float_jsonb.as_raw();
     /// assert_eq!(raw_float.as_u64().unwrap(), None);
     ///
@@ -800,13 +829,10 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Converts a JSONB value to a u64 unsigned integer.
+    /// Converts a JSONB value to `u64`.
     ///
-    /// This function attempts to convert a JSONB value to a `u64` unsigned integer.
-    /// It prioritizes direct conversion from a number if possible.
-    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
-    /// If the value is a string that can be parsed as a `u64`, that parsed value is returned.
-    /// Otherwise, an error is returned.
+    /// Numbers are rounded to the nearest integer. Booleans map to `1` and
+    /// `0`. Strings are parsed as `u64`, or as `f64` and then rounded.
     ///
     /// # Arguments
     ///
@@ -814,8 +840,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(u64)` - The `u64` representation of the JSONB value.
-    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to a `u64` (e.g., it's a floating-point number, a negative number, an array, an object, or a string that is not a valid unsigned integer).
+    /// * `Ok(u64)` - The converted value.
+    /// * `Err(Error::InvalidCast)` - If conversion fails.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -841,8 +867,18 @@ impl RawJsonb<'_> {
     /// let str_jsonb = r#""123""#.parse::<OwnedJsonb>().unwrap();
     /// assert_eq!(str_jsonb.as_raw().to_u64().unwrap(), 123);
     ///
+    /// // Decimal and float numbers are rounded before conversion
+    /// let decimal_jsonb = "123.5".parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(decimal_jsonb.as_raw().to_u64().unwrap(), 124);
+    ///
+    /// let float_jsonb = "1.5e0".parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(float_jsonb.as_raw().to_u64().unwrap(), 2);
+    ///
+    /// let str_jsonb = r#""1.5""#.parse::<OwnedJsonb>().unwrap();
+    /// assert_eq!(str_jsonb.as_raw().to_u64().unwrap(), 2);
+    ///
     /// // Invalid conversions
-    /// let float_jsonb = "123.45".parse::<OwnedJsonb>().unwrap();
+    /// let float_jsonb = "1e100".parse::<OwnedJsonb>().unwrap();
     /// let result = float_jsonb.as_raw().to_u64();
     /// assert!(result.is_err());
     ///
@@ -884,12 +920,12 @@ impl RawJsonb<'_> {
             }
             JsonbItem::Number(num) => {
                 let value = num.as_number()?;
-                if let Some(v) = value.as_u64() {
+                if let Some(v) = value.to_u64() {
                     return Ok(v);
                 }
             }
             JsonbItem::String(s) => {
-                if let Ok(v) = s.parse::<u64>() {
+                if let Some(v) = parse_string_to_u64(&s) {
                     return Ok(v);
                 }
             }
@@ -1936,4 +1972,24 @@ impl RawJsonb<'_> {
             _ => Ok(None),
         }
     }
+}
+
+fn parse_string_to_i64(s: &str) -> Option<i64> {
+    if let Ok(v) = s.parse::<i64>() {
+        return Some(v);
+    }
+
+    s.parse::<f64>()
+        .ok()
+        .and_then(|value| Number::Float64(value).to_i64())
+}
+
+fn parse_string_to_u64(s: &str) -> Option<u64> {
+    if let Ok(v) = s.parse::<u64>() {
+        return Some(v);
+    }
+
+    s.parse::<f64>()
+        .ok()
+        .and_then(|value| Number::Float64(value).to_u64())
 }

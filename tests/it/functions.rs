@@ -678,6 +678,31 @@ fn test_as_type() {
 }
 
 #[test]
+fn test_as_integer_type() {
+    let sources = vec![
+        (r#"123"#, Some(123_i64), Some(123_u64)),
+        (r#"123.0"#, Some(123_i64), Some(123_u64)),
+        (r#"123.1"#, None, None),
+        (r#"1.5e0"#, None, None),
+        (r#"-1.0"#, Some(-1_i64), None),
+        (r#"-1.1"#, None, None),
+    ];
+
+    for (s, expect_i64, expect_u64) in sources {
+        let owned_jsonb = s.parse::<OwnedJsonb>().unwrap();
+        let raw_jsonb = owned_jsonb.as_raw();
+
+        let res = raw_jsonb.as_i64();
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), expect_i64);
+
+        let res = raw_jsonb.as_u64();
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), expect_u64);
+    }
+}
+
+#[test]
 fn test_to_type() {
     let sources = vec![
         (r#"null"#, None, None, None, None, None),
@@ -716,10 +741,42 @@ fn test_to_type() {
         (
             r#"1.2"#,
             None,
-            None,
-            None,
+            Some(1_i64),
+            Some(1_u64),
             Some(1.2_f64),
             Some("1.2".to_string()),
+        ),
+        (
+            r#"1.5"#,
+            None,
+            Some(2_i64),
+            Some(2_u64),
+            Some(1.5_f64),
+            Some("1.5".to_string()),
+        ),
+        (
+            r#"-1.5"#,
+            None,
+            Some(-2_i64),
+            None,
+            Some(-1.5_f64),
+            Some("-1.5".to_string()),
+        ),
+        (
+            r#"1e-1"#,
+            None,
+            Some(0_i64),
+            Some(0_u64),
+            Some(0.1_f64),
+            Some("0.1".to_string()),
+        ),
+        (
+            r#"1.5e0"#,
+            None,
+            Some(2_i64),
+            Some(2_u64),
+            Some(1.5_f64),
+            Some("1.5".to_string()),
         ),
         (
             r#""true""#,
@@ -744,6 +801,46 @@ fn test_to_type() {
             None,
             None,
             Some("abcd".to_string()),
+        ),
+        (
+            r#""123.1""#,
+            None,
+            Some(123_i64),
+            Some(123_u64),
+            Some(123.1_f64),
+            Some("123.1".to_string()),
+        ),
+        (
+            r#""123.5""#,
+            None,
+            Some(124_i64),
+            Some(124_u64),
+            Some(123.5_f64),
+            Some("123.5".to_string()),
+        ),
+        (
+            r#""-1.5""#,
+            None,
+            Some(-2_i64),
+            None,
+            Some(-1.5_f64),
+            Some("-1.5".to_string()),
+        ),
+        (
+            r#""1.5e0""#,
+            None,
+            Some(2_i64),
+            Some(2_u64),
+            Some(1.5_f64),
+            Some("1.5e0".to_string()),
+        ),
+        (
+            r#""-1.5e0""#,
+            None,
+            Some(-2_i64),
+            None,
+            Some(-1.5_f64),
+            Some("-1.5e0".to_string()),
         ),
     ];
 
