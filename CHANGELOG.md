@@ -1,3 +1,14 @@
+## [v0.5.6] - 2026-03-27
+
+### Added
+
+- Feat: `timestamp_tz` offset support seconds (#98)
+- Feat: `extract_scalar_key_values` function support ignore array (#99)
+
+### Fixed
+
+- Fix: `to_i64` and `to_u64` function support rounded numeric conversion (#100)
+
 ## [v0.5.5] - 2025-11-17
 
 ### Added
@@ -162,6 +173,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.5.6]: https://github.com/databendlabs/jsonb/compare/v0.5.5...v0.5.6
 [v0.5.5]: https://github.com/databendlabs/jsonb/compare/v0.5.4...v0.5.5
 [v0.5.4]: https://github.com/databendlabs/jsonb/compare/v0.5.3...v0.5.4
 [v0.5.3]: https://github.com/databendlabs/jsonb/compare/v0.5.2...v0.5.3
