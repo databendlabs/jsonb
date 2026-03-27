@@ -23,6 +23,8 @@ use crate::Error;
 
 use ethnum::i256;
 use ethnum::U256;
+use num_traits::AsPrimitive;
+use num_traits::Bounded;
 use ordered_float::OrderedFloat;
 use serde::de;
 use serde::de::Deserialize;
@@ -409,7 +411,7 @@ impl Number {
         match self {
             Number::Int64(v) => Some(*v as i128),
             Number::UInt64(v) => Some(*v as i128),
-            Number::Float64(v) => exact_float_to_i128(*v),
+            Number::Float64(v) => exact_float_to_int(*v),
             Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale),
             Number::Decimal128(v) => exact_decimal_i128(v.value, v.scale),
             Number::Decimal256(v) => {
@@ -434,9 +436,7 @@ impl Number {
                     None
                 }
             }
-            Number::Float64(v) => {
-                exact_float_to_i128(*v).and_then(|value| i64::try_from(value).ok())
-            }
+            Number::Float64(v) => exact_float_to_int(*v),
             Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale)
                 .and_then(|value| i64::try_from(value).ok()),
             Number::Decimal128(v) => {
@@ -464,9 +464,7 @@ impl Number {
                 }
             }
             Number::UInt64(v) => Some(*v),
-            Number::Float64(v) => {
-                exact_float_to_i128(*v).and_then(|value| u64::try_from(value).ok())
-            }
+            Number::Float64(v) => exact_float_to_int(*v),
             Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale)
                 .and_then(|value| u64::try_from(value).ok()),
             Number::Decimal128(v) => {
@@ -487,7 +485,7 @@ impl Number {
         match self {
             Number::Int64(v) => Some(*v as i128),
             Number::UInt64(v) => Some(*v as i128),
-            Number::Float64(v) => round_float_to_i128(*v),
+            Number::Float64(v) => round_float_to_int(*v),
             Number::Decimal64(v) => round_decimal_i128(v.value as i128, v.scale),
             Number::Decimal128(v) => round_decimal_i128(v.value, v.scale),
             Number::Decimal256(v) => {
@@ -777,21 +775,54 @@ impl Number {
     }
 }
 
-fn exact_float_to_i128(value: f64) -> Option<i128> {
+fn exact_float_to_int<T>(value: f64) -> Option<T>
+where
+    T: Bounded + AsPrimitive<f64>,
+    f64: AsPrimitive<T>,
+{
     if !value.is_finite() || value.fract() != 0.0 {
         return None;
     }
 
-    format!("{value:.0}").parse::<i128>().ok()
+    if fits_float_target_range::<T>(value) {
+        Some(value.as_())
+    } else {
+        None
+    }
 }
 
-fn round_float_to_i128(value: f64) -> Option<i128> {
+fn round_float_to_int<T>(value: f64) -> Option<T>
+where
+    T: Bounded + AsPrimitive<f64>,
+    f64: AsPrimitive<T>,
+{
     if !value.is_finite() {
         return None;
     }
 
     let rounded = value.round();
-    format!("{rounded:.0}").parse::<i128>().ok()
+    if fits_float_target_range::<T>(rounded) {
+        Some(rounded.as_())
+    } else {
+        None
+    }
+}
+
+// Use a half-open range so the positive bound can be expressed as `-min` for
+// signed integers, which avoids relying on an imprecise `MAX as f64`.
+#[inline]
+fn fits_float_target_range<T>(value: f64) -> bool
+where
+    T: Bounded + AsPrimitive<f64>,
+{
+    let lower = T::min_value().as_();
+    let upper_exclusive = if lower < 0.0 {
+        -lower
+    } else {
+        T::max_value().as_() + 1.0
+    };
+
+    value >= lower && value < upper_exclusive
 }
 
 fn exact_decimal_i128(value: i128, scale: u8) -> Option<i128> {
@@ -799,7 +830,7 @@ fn exact_decimal_i128(value: i128, scale: u8) -> Option<i128> {
         return Some(value);
     }
 
-    let Some(&divisor) = I128_POWERS_OF_10.get(scale as usize) else {
+    let Some(divisor) = I128_POWERS_OF_10.get(scale as usize) else {
         return if value == 0 { Some(0) } else { None };
     };
 
@@ -815,7 +846,7 @@ fn round_decimal_i128(value: i128, scale: u8) -> Option<i128> {
         return Some(value);
     }
 
-    let Some(&divisor) = I128_POWERS_OF_10.get(scale as usize) else {
+    let Some(divisor) = I128_POWERS_OF_10.get(scale as usize) else {
         // 10^scale no longer fits in i128, so any i128-backed decimal rounds to 0.
         return Some(0);
     };
@@ -835,6 +866,16 @@ fn round_decimal_i128(value: i128, scale: u8) -> Option<i128> {
     }
 }
 
+#[inline]
+fn signed_i256_from_abs(abs: U256, negative: bool) -> Option<i256> {
+    let value = i256::try_from(abs).ok()?;
+    if negative {
+        i256::ZERO.checked_sub(value)
+    } else {
+        Some(value)
+    }
+}
+
 fn exact_decimal_i256(value: i256, scale: u8) -> Option<i256> {
     if scale == 0 {
         return Some(value);
@@ -848,6 +889,7 @@ fn exact_decimal_i256(value: i256, scale: u8) -> Option<i256> {
         };
     };
 
+    let negative = value < i256::ZERO;
     let abs_value = value.unsigned_abs();
     let quotient = abs_value / divisor;
     let remainder = abs_value % divisor;
@@ -855,12 +897,7 @@ fn exact_decimal_i256(value: i256, scale: u8) -> Option<i256> {
         return None;
     }
 
-    let quotient = i256::try_from(quotient).ok()?;
-    if value >= i256::ZERO {
-        Some(quotient)
-    } else {
-        i256::ZERO.checked_sub(quotient)
-    }
+    signed_i256_from_abs(quotient, negative)
 }
 
 fn round_decimal_i256(value: i256, scale: u8) -> Option<i256> {
@@ -873,6 +910,7 @@ fn round_decimal_i256(value: i256, scale: u8) -> Option<i256> {
         return Some(i256::ZERO);
     };
 
+    let negative = value < i256::ZERO;
     let abs_value = value.unsigned_abs();
     let quotient = abs_value / divisor;
     let remainder = abs_value % divisor;
@@ -882,13 +920,8 @@ fn round_decimal_i256(value: i256, scale: u8) -> Option<i256> {
     } else {
         quotient
     };
-    let rounded = i256::try_from(rounded).ok()?;
 
-    if value >= i256::ZERO {
-        Some(rounded)
-    } else {
-        i256::ZERO.checked_sub(rounded)
-    }
+    signed_i256_from_abs(rounded, negative)
 }
 
 impl Default for Number {
@@ -1797,6 +1830,9 @@ mod tests {
         assert_eq!(non_integer_float.as_i128(), None);
         assert_eq!(non_integer_float.as_i64(), None);
         assert_eq!(non_integer_float.as_u64(), None);
+
+        let u64_upper_bound = Number::Float64((u64::MAX as f64) + 1.0);
+        assert_eq!(u64_upper_bound.as_u64(), None);
     }
 
     #[test]
@@ -1865,6 +1901,11 @@ mod tests {
         assert_eq!(large.to_i128(), None);
         assert_eq!(large.to_i64(), None);
         assert_eq!(large.to_u64(), None);
+
+        let i64_upper_bound = Number::Float64(-(i64::MIN as f64));
+        assert_eq!(i64_upper_bound.to_i64(), None);
+        let u64_upper_bound = Number::Float64((u64::MAX as f64) + 1.0);
+        assert_eq!(u64_upper_bound.to_u64(), None);
 
         let overflowing_decimal128 = Number::Decimal128(Decimal128 {
             scale: 1,

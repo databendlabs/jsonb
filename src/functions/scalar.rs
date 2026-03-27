@@ -460,9 +460,9 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Checks if the JSONB value can be represented as an i64.
+    /// Checks whether the JSONB value is an exact `i64`.
     ///
-    /// Decimal numbers are rounded to the nearest integer before the range check.
+    /// Decimal and floating-point numbers must already be integral.
     ///
     /// # Arguments
     ///
@@ -470,8 +470,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the value can be represented as an `i64`.
-    /// * `Ok(false)` - If the value cannot be represented as an `i64`.
+    /// * `Ok(true)` - If the value is an exact `i64`.
+    /// * `Ok(false)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -511,12 +511,10 @@ impl RawJsonb<'_> {
         self.as_i64().map(|v| v.is_some())
     }
 
-    /// Extracts an i64 integer from a JSONB value.
+    /// Extracts an exact `i64` from a JSONB value.
     ///
-    /// This function attempts to extract an `i64` integer from the JSONB value.
-    /// Decimal numbers are converted only when their fractional part is zero.
-    /// Floating-point numbers are converted only when they already represent an
-    /// integer value. Otherwise, `None` is returned.
+    /// Decimal and floating-point numbers are accepted only when they already
+    /// represent an integer.
     ///
     /// # Arguments
     ///
@@ -524,8 +522,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(i64))` - If the value can be represented as an `i64`.
-    /// * `Ok(None)` - If the value cannot be represented as an `i64`.
+    /// * `Ok(Some(i64))` - If the value is an exact `i64`.
+    /// * `Ok(None)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -580,15 +578,10 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Converts a JSONB value to an i64 integer.
+    /// Converts a JSONB value to `i64`.
     ///
-    /// This function attempts to convert a JSONB value to an `i64` integer.
-    /// It prioritizes direct conversion from a number if possible.
-    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
-    /// If the value is a string that can be parsed as an `i64`, that parsed value is returned.
-    /// Otherwise, if the string can be parsed as a floating-point number, it is
-    /// rounded to the nearest integer before conversion.
-    /// Otherwise, an error is returned.
+    /// Numbers are rounded to the nearest integer. Booleans map to `1` and
+    /// `0`. Strings are parsed as `i64`, or as `f64` and then rounded.
     ///
     /// # Arguments
     ///
@@ -596,7 +589,7 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(i64)` - The `i64` representation of the JSONB value.
+    /// * `Ok(i64)` - The converted value.
     /// * `Err(Error::InvalidCast)` - If the value cannot be converted to an `i64`.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
@@ -686,11 +679,9 @@ impl RawJsonb<'_> {
         Err(Error::InvalidCast)
     }
 
-    /// Checks if the JSONB value can be represented as a u64.
+    /// Checks whether the JSONB value is an exact `u64`.
     ///
-    /// Decimal numbers are converted only when their fractional part is zero.
-    /// Floating-point numbers are converted only when they already represent an
-    /// integer value.
+    /// Decimal and floating-point numbers must already be integral.
     ///
     /// # Arguments
     ///
@@ -698,8 +689,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - If the value can be represented as a `u64`.
-    /// * `Ok(false)` - If the value cannot be represented as a `u64`.
+    /// * `Ok(true)` - If the value is an exact `u64`.
+    /// * `Ok(false)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -759,14 +750,10 @@ impl RawJsonb<'_> {
         self.as_u64().map(|v| v.is_some())
     }
 
-    /// Extracts a u64 unsigned integer from a JSONB value.
+    /// Extracts an exact `u64` from a JSONB value.
     ///
-    /// This function attempts to extract a `u64` unsigned integer from the JSONB value.
-    /// Decimal numbers are converted only when their fractional part is zero.
-    /// Floating-point numbers are converted only when they already represent an
-    /// integer value. If the JSONB value is a number and can be represented as
-    /// a `u64`,
-    /// the unsigned integer value is returned. Otherwise, `None` is returned.
+    /// Decimal and floating-point numbers are accepted only when they already
+    /// represent a non-negative integer.
     ///
     /// # Arguments
     ///
@@ -774,8 +761,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(u64))` - If the value can be represented as a `u64`.
-    /// * `Ok(None)` - If the value cannot be represented as a `u64`.
+    /// * `Ok(Some(u64))` - If the value is an exact `u64`.
+    /// * `Ok(None)` - Otherwise.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
@@ -842,15 +829,10 @@ impl RawJsonb<'_> {
         }
     }
 
-    /// Converts a JSONB value to a u64 unsigned integer.
+    /// Converts a JSONB value to `u64`.
     ///
-    /// This function attempts to convert a JSONB value to a `u64` unsigned integer.
-    /// It prioritizes direct conversion from a number if possible.
-    /// If the value is a boolean, it's converted to 1 (for `true`) or 0 (for `false`).
-    /// If the value is a string that can be parsed as a `u64`, that parsed value is returned.
-    /// Otherwise, if the string can be parsed as a floating-point number, it is
-    /// rounded to the nearest integer before conversion.
-    /// Otherwise, an error is returned.
+    /// Numbers are rounded to the nearest integer. Booleans map to `1` and
+    /// `0`. Strings are parsed as `u64`, or as `f64` and then rounded.
     ///
     /// # Arguments
     ///
@@ -858,8 +840,8 @@ impl RawJsonb<'_> {
     ///
     /// # Returns
     ///
-    /// * `Ok(u64)` - The `u64` representation of the JSONB value.
-    /// * `Err(Error::InvalidCast)` - If the value cannot be converted to a `u64` (e.g., it's a negative number after rounding, an array, an object, or a string that is not a valid number).
+    /// * `Ok(u64)` - The converted value.
+    /// * `Err(Error::InvalidCast)` - If conversion fails.
     /// * `Err(Error)` - If the JSONB data is invalid.
     ///
     /// # Examples
