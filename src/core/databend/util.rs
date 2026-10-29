@@ -22,10 +22,13 @@ use ethnum::i256;
 
 use super::constants::*;
 use super::jentry::JEntry;
+use crate::constants::enter_container;
+use crate::core::Entries;
 use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::core::NumberItem;
+use crate::core::RawEntry;
 use crate::error::*;
 use crate::extension::Date;
 use crate::extension::ExtensionValue;
@@ -40,33 +43,11 @@ use crate::Object;
 use crate::OwnedJsonb;
 use crate::RawJsonb;
 use crate::Value;
-use std::collections::VecDeque;
 
 impl<'a> JsonbItem<'a> {
     pub(crate) fn from_raw_jsonb(raw_jsonb: RawJsonb<'a>) -> Result<JsonbItem<'a>> {
-        let (header_type, _) = raw_jsonb.read_header(0)?;
-        match header_type {
-            SCALAR_CONTAINER_TAG => {
-                let (jentry, data) = raw_jsonb.read_jentry_and_data(4, 8)?;
-                let item = match jentry.type_code {
-                    NULL_TAG => JsonbItem::Null,
-                    TRUE_TAG => JsonbItem::Boolean(true),
-                    FALSE_TAG => JsonbItem::Boolean(false),
-                    NUMBER_TAG => JsonbItem::Number(NumberItem::Raw(data)),
-                    STRING_TAG => {
-                        let s = Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(data) });
-                        JsonbItem::String(s)
-                    }
-                    EXTENSION_TAG => JsonbItem::Extension(ExtensionItem::Raw(data)),
-                    _ => {
-                        return Err(Error::InvalidJsonb);
-                    }
-                };
-                Ok(item)
-            }
-            OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Ok(JsonbItem::Raw(raw_jsonb)),
-            _ => Err(Error::InvalidJsonb),
-        }
+        // A container decodes to itself, as `JsonbItem::Raw`.
+        RawEntry::from_jsonb(raw_jsonb)?.into_item()
     }
 }
 
@@ -112,19 +93,15 @@ impl<'a> RawJsonb<'a> {
     pub fn jsonb_item_type(&self) -> Result<JsonbItemType> {
         let (header_type, header_len) = self.read_header(0)?;
         match header_type {
-            SCALAR_CONTAINER_TAG => {
-                let jentry = self.read_jentry(4)?;
-
-                match jentry.type_code {
-                    NULL_TAG => Ok(JsonbItemType::Null),
-                    TRUE_TAG => Ok(JsonbItemType::Boolean),
-                    FALSE_TAG => Ok(JsonbItemType::Boolean),
-                    NUMBER_TAG => Ok(JsonbItemType::Number),
-                    STRING_TAG => Ok(JsonbItemType::String),
-                    EXTENSION_TAG => Ok(JsonbItemType::Extension),
-                    _ => Err(Error::InvalidJsonb),
-                }
-            }
+            SCALAR_CONTAINER_TAG => match self.read_jentry(4)?.type_code {
+                NULL_TAG => Ok(JsonbItemType::Null),
+                TRUE_TAG | FALSE_TAG => Ok(JsonbItemType::Boolean),
+                NUMBER_TAG => Ok(JsonbItemType::Number),
+                STRING_TAG => Ok(JsonbItemType::String),
+                EXTENSION_TAG => Ok(JsonbItemType::Extension),
+                // Including a container entry, which no encoder writes here.
+                _ => Err(Error::InvalidJsonb),
+            },
             ARRAY_CONTAINER_TAG => Ok(JsonbItemType::Array(header_len)),
             OBJECT_CONTAINER_TAG => Ok(JsonbItemType::Object(header_len)),
             _ => Err(Error::InvalidJsonb),
@@ -177,55 +154,41 @@ impl<'a> RawJsonb<'a> {
     /// }
     /// ```
     pub fn to_value(&self) -> Result<Value<'a>> {
-        let mut index = 0;
-        let (header_type, header_len) = self.read_header(index)?;
-        index += 4;
-        match header_type {
-            SCALAR_CONTAINER_TAG => {
-                let data_index = index + 4;
-                let (jentry, data) = self.read_jentry_and_data(index, data_index)?;
-                jentry_to_value(jentry, data)
-            }
-            ARRAY_CONTAINER_TAG => {
-                let mut arr = Vec::with_capacity(header_len);
-                let mut data_index = index + header_len * 4;
-                for _ in 0..header_len {
-                    let (jentry, data) = self.read_jentry_and_data(index, data_index)?;
-                    index += 4;
-                    data_index += jentry.length as usize;
+        self.value_with_depth(0)
+    }
 
-                    let value = jentry_to_value(jentry, data)?;
-                    arr.push(value);
+    /// Converts to a `Value`, where `depth` is the number of enclosing containers.
+    fn value_with_depth(&self, depth: usize) -> Result<Value<'a>> {
+        let (header_type, header_len) = self.read_header(0)?;
+        match header_type {
+            // `RawEntry::from_jsonb` rejects a container under a scalar header.
+            // Encoders never write one, and unwrapping it would recurse without
+            // counting depth, so nested wrappers could overflow the stack.
+            SCALAR_CONTAINER_TAG => RawEntry::from_jsonb(*self)?.into_value(depth),
+            ARRAY_CONTAINER_TAG => {
+                let depth = enter_container(depth)?;
+                let mut values = Vec::with_capacity(header_len);
+                for item in Entries::new(*self, header_len) {
+                    values.push(item?.into_value(depth)?);
                 }
-                Ok(Value::Array(arr))
+                Ok(Value::Array(values))
             }
             OBJECT_CONTAINER_TAG => {
+                let depth = enter_container(depth)?;
+                let (keys, values) = Entries::object(*self, header_len)?;
+                // Decode every key before any value, as the keys come first.
+                let mut key_strings = Vec::with_capacity(header_len);
+                for key in keys {
+                    let key = key?;
+                    if key.type_code != STRING_TAG {
+                        return Err(Error::InvalidJsonb);
+                    }
+                    key_strings.push(decode_str(key.payload)?.to_owned());
+                }
                 let mut obj = Object::new();
-                let mut keys = VecDeque::with_capacity(header_len);
-                let mut data_index = index + header_len * 8;
-                for _ in 0..header_len {
-                    let (jentry, data) = self.read_jentry_and_data(index, data_index)?;
-                    index += 4;
-                    data_index += jentry.length as usize;
-
-                    let key = match jentry.type_code {
-                        STRING_TAG => unsafe { String::from_utf8_unchecked(data.to_vec()) },
-                        _ => {
-                            return Err(Error::InvalidJsonb);
-                        }
-                    };
-                    keys.push_back(key);
+                for (key, value) in key_strings.into_iter().zip(values) {
+                    obj.insert(key, value?.into_value(depth)?);
                 }
-                for _ in 0..header_len {
-                    let key = keys.pop_front().unwrap();
-                    let (jentry, data) = self.read_jentry_and_data(index, data_index)?;
-                    index += 4;
-                    data_index += jentry.length as usize;
-
-                    let value = jentry_to_value(jentry, data)?;
-                    obj.insert(key, value);
-                }
-
                 Ok(Value::Object(obj))
             }
             _ => Err(Error::InvalidJsonb),
@@ -291,47 +254,41 @@ impl<'a> RawJsonb<'a> {
             end: item_offset + value_len,
         };
         let value_data = self.slice(value_range)?;
-        let value_item = jentry_to_jsonb_item(value_jentry, value_data);
+        let value_item = RawEntry {
+            type_code: value_jentry.type_code,
+            payload: value_data,
+        }
+        .into_item()?;
         Ok(Some(value_item))
     }
 
     pub(super) fn read_header(&self, index: usize) -> Result<(u32, usize)> {
         let header = self.read_u32(index)?;
         let header_type = header & CONTAINER_HEADER_TYPE_MASK;
-        match header_type {
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG => {}
-            _ => {
-                return Err(Error::InvalidJsonb);
-            }
+        let header_len = (header & CONTAINER_HEADER_LEN_MASK) as usize;
+        // The JEntries follow the header directly. Rejecting a length that cannot
+        // fit keeps every allocation sized from `header_len` bounded by the input.
+        let jentries_per_item = match header_type {
+            // A scalar header is always exactly `SCALAR_CONTAINER_TAG`. JSON text
+            // whose first byte maps to the scalar type never has zero length bits,
+            // so this rejects it before a JEntry read from text bytes can pass the
+            // payload bounds check.
+            SCALAR_CONTAINER_TAG if header_len != 0 => return Err(Error::InvalidJsonb),
+            SCALAR_CONTAINER_TAG => return Ok((header_type, header_len)),
+            ARRAY_CONTAINER_TAG => 1,
+            OBJECT_CONTAINER_TAG => 2,
+            _ => return Err(Error::InvalidJsonb),
+        };
+        let available = self.len().saturating_sub(index + 4) / 4;
+        if header_len > available / jentries_per_item {
+            return Err(Error::InvalidEOF);
         }
-        let header_len = header & CONTAINER_HEADER_LEN_MASK;
-        // A scalar header is always exactly `SCALAR_CONTAINER_TAG`. JSON text whose
-        // first byte maps to the scalar type never has zero length bits, so this rejects
-        // it before a jentry read from text bytes can pass the payload bounds check.
-        if header_type == SCALAR_CONTAINER_TAG && header_len != 0 {
-            return Err(Error::InvalidJsonb);
-        }
-        Ok((header_type, header_len as usize))
+        Ok((header_type, header_len))
     }
 
     pub(super) fn read_jentry(&self, index: usize) -> Result<JEntry> {
         let jentry_encoded = self.read_u32(index)?;
-        let jentry = JEntry::decode_jentry(jentry_encoded);
-        Ok(jentry)
-    }
-
-    pub(super) fn read_jentry_and_data(
-        &self,
-        index: usize,
-        data_index: usize,
-    ) -> Result<(JEntry, &'a [u8])> {
-        let jentry = self.read_jentry(index)?;
-        let range = Range {
-            start: data_index,
-            end: data_index + jentry.length as usize,
-        };
-        let data = self.slice(range)?;
-        Ok((jentry, data))
+        JEntry::decode_jentry(jentry_encoded)
     }
 
     pub(super) fn read_u32(&self, idx: usize) -> Result<u32> {
@@ -386,33 +343,33 @@ impl OwnedJsonb {
                     }
                     JsonbItem::Number(num) => match num {
                         NumberItem::Raw(data) => {
-                            let jentry = JEntry::make_number_jentry(data.len());
+                            let jentry = JEntry::make_number_jentry(data.len())?;
                             buf.write_u32::<BigEndian>(jentry.encoded())?;
                             buf.extend_from_slice(data);
                         }
                         NumberItem::Number(num) => {
                             let mut data = vec![];
                             let len = num.compact_encode(&mut data)?;
-                            let jentry = JEntry::make_number_jentry(len);
+                            let jentry = JEntry::make_number_jentry(len)?;
                             buf.write_u32::<BigEndian>(jentry.encoded())?;
                             buf.extend_from_slice(&data);
                         }
                     },
                     JsonbItem::String(s) => {
-                        let jentry = JEntry::make_string_jentry(s.len());
+                        let jentry = JEntry::make_string_jentry(s.len())?;
                         buf.write_u32::<BigEndian>(jentry.encoded())?;
                         buf.extend_from_slice(s.as_bytes());
                     }
                     JsonbItem::Extension(ext) => match ext {
                         ExtensionItem::Raw(data) => {
-                            let jentry = JEntry::make_extension_jentry(data.len());
+                            let jentry = JEntry::make_extension_jentry(data.len())?;
                             buf.write_u32::<BigEndian>(jentry.encoded())?;
                             buf.extend_from_slice(data);
                         }
                         ExtensionItem::Extension(ext) => {
                             let mut data = vec![];
                             let len = ext.compact_encode(&mut data)?;
-                            let jentry = JEntry::make_extension_jentry(len);
+                            let jentry = JEntry::make_extension_jentry(len)?;
                             buf.write_u32::<BigEndian>(jentry.encoded())?;
                             buf.extend_from_slice(&data);
                         }
@@ -508,11 +465,10 @@ impl Number {
 
     #[inline]
     pub(crate) fn decode(bytes: &[u8]) -> Result<Number> {
-        let mut len = bytes.len();
-        assert!(len > 0);
-        len -= 1;
-
-        let ty = bytes[0];
+        let Some((&ty, payload)) = bytes.split_first() else {
+            return Err(Error::InvalidJsonbNumber);
+        };
+        let len = payload.len();
         let num = match ty {
             NUMBER_ZERO => Number::UInt64(0),
             NUMBER_NAN => Number::Float64(f64::NAN),
@@ -536,7 +492,10 @@ impl Number {
                     return Err(Error::InvalidJsonbNumber);
                 }
             },
-            NUMBER_FLOAT => Number::Float64(f64::from_be_bytes(bytes[1..].try_into().unwrap())),
+            NUMBER_FLOAT => match payload.try_into() {
+                Ok(bytes) => Number::Float64(f64::from_be_bytes(bytes)),
+                Err(_) => return Err(Error::InvalidJsonbNumber),
+            },
             NUMBER_DECIMAL => match len {
                 9 => {
                     let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
@@ -620,16 +579,12 @@ impl ExtensionValue<'_> {
 
     #[inline]
     pub(crate) fn decode(bytes: &[u8]) -> Result<ExtensionValue<'_>> {
-        let mut len = bytes.len();
-        assert!(len > 0);
-        len -= 1;
-
-        let ty = bytes[0];
+        let Some((&ty, payload)) = bytes.split_first() else {
+            return Err(Error::InvalidJsonbExtension);
+        };
+        let len = payload.len();
         let val = match ty {
-            EXTENSION_BINARY => {
-                let v = &bytes[1..len + 1];
-                ExtensionValue::Binary(v)
-            }
+            EXTENSION_BINARY => ExtensionValue::Binary(payload),
             EXTENSION_DATE => {
                 if len != 4 {
                     return Err(Error::InvalidJsonbNumber);
@@ -681,49 +636,48 @@ impl ExtensionValue<'_> {
     }
 }
 
-pub(super) fn jentry_to_jsonb_item(jentry: JEntry, data: &[u8]) -> JsonbItem<'_> {
-    match jentry.type_code {
-        NULL_TAG => JsonbItem::Null,
-        TRUE_TAG => JsonbItem::Boolean(true),
-        FALSE_TAG => JsonbItem::Boolean(false),
-        NUMBER_TAG => JsonbItem::Number(NumberItem::Raw(data)),
-        STRING_TAG => {
-            let s = Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(data) });
-            JsonbItem::String(s)
-        }
-        EXTENSION_TAG => JsonbItem::Extension(ExtensionItem::Raw(data)),
-        CONTAINER_TAG => JsonbItem::Raw(RawJsonb::new(data)),
-        _ => unreachable!(),
+/// Decodes a JSONB string payload.
+///
+/// `RawJsonb` can wrap arbitrary bytes through safe constructors, so string
+/// payloads are untrusted and must be validated before being exposed as `str`.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidUtf8` if `data` is not valid UTF-8.
+#[inline]
+pub(super) fn decode_str(data: &[u8]) -> Result<&str> {
+    // Most strings are short and ASCII. `is_ascii` is inlined and checks a
+    // word at a time, which saves the call into `simdutf8` for each of them.
+    if data.is_ascii() {
+        // SAFETY: ASCII is valid UTF-8.
+        return Ok(unsafe { std::str::from_utf8_unchecked(data) });
     }
+    // `simdutf8` validates long strings several times faster than `std`, and
+    // falls back to `std` below 64 bytes.
+    simdutf8::basic::from_utf8(data).map_err(|_| Error::InvalidUtf8)
 }
 
-pub(super) fn jentry_to_value(jentry: JEntry, data: &[u8]) -> Result<Value<'_>> {
-    match jentry.type_code {
-        NULL_TAG => Ok(Value::Null),
-        TRUE_TAG => Ok(Value::Bool(true)),
-        FALSE_TAG => Ok(Value::Bool(false)),
-        NUMBER_TAG => {
-            let n = Number::decode(data)?;
-            Ok(Value::Number(n))
+impl<'a> RawEntry<'a> {
+    /// Converts this entry into a `Value`, decoding nested containers.
+    ///
+    /// `depth` is the number of containers enclosing this entry.
+    fn into_value(self, depth: usize) -> Result<Value<'a>> {
+        let data = self.payload;
+        match self.type_code {
+            NULL_TAG => Ok(Value::Null),
+            TRUE_TAG => Ok(Value::Bool(true)),
+            FALSE_TAG => Ok(Value::Bool(false)),
+            NUMBER_TAG => Ok(Value::Number(Number::decode(data)?)),
+            STRING_TAG => Ok(Value::String(Cow::Borrowed(decode_str(data)?))),
+            EXTENSION_TAG => Ok(match ExtensionValue::decode(data)? {
+                ExtensionValue::Binary(v) => Value::Binary(v),
+                ExtensionValue::Date(v) => Value::Date(v),
+                ExtensionValue::Timestamp(v) => Value::Timestamp(v),
+                ExtensionValue::TimestampTz(v) => Value::TimestampTz(v),
+                ExtensionValue::Interval(v) => Value::Interval(v),
+            }),
+            CONTAINER_TAG => self.container().value_with_depth(depth),
+            _ => Err(Error::InvalidJsonb),
         }
-        STRING_TAG => {
-            let s = Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(data) });
-            Ok(Value::String(s))
-        }
-        EXTENSION_TAG => {
-            let x = ExtensionValue::decode(data)?;
-            match x {
-                ExtensionValue::Binary(v) => Ok(Value::Binary(v)),
-                ExtensionValue::Date(v) => Ok(Value::Date(v)),
-                ExtensionValue::Timestamp(v) => Ok(Value::Timestamp(v)),
-                ExtensionValue::TimestampTz(v) => Ok(Value::TimestampTz(v)),
-                ExtensionValue::Interval(v) => Ok(Value::Interval(v)),
-            }
-        }
-        CONTAINER_TAG => {
-            let raw = RawJsonb::new(data);
-            raw.to_value()
-        }
-        _ => Err(Error::InvalidJsonb),
     }
 }

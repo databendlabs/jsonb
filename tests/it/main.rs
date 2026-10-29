@@ -15,7 +15,10 @@
 mod decode;
 mod encode;
 mod functions;
+mod invalid_utf8;
+mod json_text;
 mod jsonpath_parser;
 mod keypath_parser;
+mod malformed;
 mod number;
 mod parser;

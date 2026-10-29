@@ -14,19 +14,22 @@
 
 // This file contains functions that don't neatly fit into other categories.
 
-use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 
 use crate::constants::*;
+use crate::core::compare_entries;
 use crate::core::ArrayBuilder;
 use crate::core::ArrayIterator;
-use crate::core::ExtensionItem;
+use crate::core::Entries;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::core::ObjectBuilder;
 use crate::core::ObjectIterator;
+use crate::core::OrderedEntry;
+use crate::core::RawEntry;
 use crate::error::*;
 use crate::number::Number;
 use crate::ExtensionValue;
@@ -175,64 +178,63 @@ impl RawJsonb<'_> {
     /// assert!(left_raw.contains(&right_raw).unwrap());
     /// ```
     pub fn contains(&self, other: &RawJsonb) -> Result<bool> {
+        self.contains_with_depth(other, 0)
+    }
+
+    /// Implements [`RawJsonb::contains`], where `depth` is the number of enclosing containers.
+    fn contains_with_depth(&self, other: &RawJsonb, depth: usize) -> Result<bool> {
         let self_type = self.jsonb_item_type()?;
         let other_type = other.jsonb_item_type()?;
         match (self_type, other_type) {
             (JsonbItemType::Object(self_len), JsonbItemType::Object(other_len)) => {
+                let depth = enter_container(depth)?;
                 if self_len < other_len {
                     return Ok(false);
                 }
-                let mut self_object_iter = ObjectIterator::new(*self)?.unwrap();
+                let (keys, values) = Entries::object(*self, self_len)?;
                 let mut self_map = BTreeMap::new();
-                for result in &mut self_object_iter {
-                    let (key, val_item) = result?;
-                    self_map.insert(key, val_item);
+                for (key, value) in keys.zip(values) {
+                    self_map.insert(key?.payload, value?);
                 }
-                let mut other_object_iter = ObjectIterator::new(*other)?.unwrap();
-                for result in &mut other_object_iter {
-                    let (key, other_val_item) = result?;
-                    if let Some(self_val_item) = self_map.get(key) {
-                        let self_container = self_val_item.as_raw_jsonb();
-                        let other_container = other_val_item.as_raw_jsonb();
-                        match (self_container, other_container) {
-                            (Some(self_container), Some(other_container)) => {
-                                if !self_container.contains(&other_container)? {
-                                    return Ok(false);
-                                }
-                            }
-                            (_, _) => {
-                                if !self_val_item.eq(&other_val_item) {
-                                    return Ok(false);
-                                }
-                            }
-                        }
+                let (keys, values) = Entries::object(*other, other_len)?;
+                for (key, other_value) in keys.zip(values) {
+                    let (key, other_value) = (key?, other_value?);
+                    let Some(self_value) = self_map.get(key.payload) else {
+                        return Ok(false);
+                    };
+                    let contained = if self_value.is_container() && other_value.is_container() {
+                        let other_container = other_value.container();
+                        self_value
+                            .container()
+                            .contains_with_depth(&other_container, depth)?
                     } else {
+                        compare_entries(*self_value, other_value, depth) == Some(Ordering::Equal)
+                    };
+                    if !contained {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
-            (JsonbItemType::Array(_), JsonbItemType::Array(_)) => {
-                let mut self_array_iter = ArrayIterator::new(*self)?.unwrap();
-                let mut other_array_iter = ArrayIterator::new(*other)?.unwrap();
+            (JsonbItemType::Array(self_len), JsonbItemType::Array(other_len)) => {
+                let depth = enter_container(depth)?;
                 let mut self_scalar_set = BTreeSet::new();
                 let mut self_container_set = BTreeSet::new();
-                for item_result in &mut self_array_iter {
-                    let item = item_result?;
-                    if let Some(self_sub_item) = item.as_raw_jsonb() {
-                        if !self_container_set.contains(&self_sub_item) {
-                            self_container_set.insert(self_sub_item);
-                        }
-                    } else if !self_scalar_set.contains(&item) {
-                        self_scalar_set.insert(item);
+                for item in Entries::new(*self, self_len) {
+                    let item = item?;
+                    if item.is_container() {
+                        self_container_set.insert(item.container());
+                    } else {
+                        self_scalar_set.insert(OrderedEntry(item));
                     }
                 }
-                for item_result in &mut other_array_iter {
-                    let item = item_result?;
-                    if let Some(other_sub_item) = item.as_raw_jsonb() {
+                for item in Entries::new(*other, other_len) {
+                    let item = item?;
+                    if item.is_container() {
+                        let other_sub_item = item.container();
                         let mut contains = false;
                         for self_sub_item in self_container_set.iter() {
-                            if self_sub_item.contains(&other_sub_item)? {
+                            if self_sub_item.contains_with_depth(&other_sub_item, depth)? {
                                 contains = true;
                                 break;
                             }
@@ -240,31 +242,28 @@ impl RawJsonb<'_> {
                         if !contains {
                             return Ok(false);
                         }
-                    } else if !self_scalar_set.contains(&item) {
+                    } else if !self_scalar_set.contains(&OrderedEntry(item)) {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
             (
-                JsonbItemType::Array(_),
+                JsonbItemType::Array(self_len),
                 JsonbItemType::Null
                 | JsonbItemType::Boolean
                 | JsonbItemType::Number
                 | JsonbItemType::String,
             ) => {
-                let mut self_array_iter = ArrayIterator::new(*self)?.unwrap();
                 let mut self_item_set = BTreeSet::new();
-                for item_result in &mut self_array_iter {
-                    let item = item_result?;
+                for item in Entries::new(*self, self_len) {
+                    let item = item?;
                     // other value is scalar, ignore container items.
-                    if item.as_raw_jsonb().is_some() {
-                        continue;
-                    } else if !self_item_set.contains(&item) {
-                        self_item_set.insert(item);
+                    if !item.is_container() {
+                        self_item_set.insert(OrderedEntry(item));
                     }
                 }
-                let other_item = JsonbItem::from_raw_jsonb(*other)?;
+                let other_item = OrderedEntry(RawEntry::from_jsonb(*other)?);
                 Ok(self_item_set.contains(&other_item))
             }
             (
@@ -544,15 +543,21 @@ impl RawJsonb<'_> {
     /// assert_eq!(stripped.to_string(), "null"); // Remains unchanged
     /// ```
     pub fn strip_nulls(&self) -> Result<OwnedJsonb> {
+        self.strip_nulls_with_depth(0)
+    }
+
+    /// Implements [`RawJsonb::strip_nulls`], where `depth` is the number of enclosing containers.
+    fn strip_nulls_with_depth(&self, depth: usize) -> Result<OwnedJsonb> {
         let jsonb_item_type = self.jsonb_item_type()?;
         match jsonb_item_type {
             JsonbItemType::Array(_) => {
+                let depth = enter_container(depth)?;
                 let mut array_iter = ArrayIterator::new(*self)?.unwrap();
                 let mut builder = ArrayBuilder::with_capacity(array_iter.len());
                 for item_result in &mut array_iter {
                     let item = item_result?;
                     if let Some(sub_item) = item.as_raw_jsonb() {
-                        let no_nulls_item = sub_item.strip_nulls()?;
+                        let no_nulls_item = sub_item.strip_nulls_with_depth(depth)?;
                         builder.push_owned_jsonb(no_nulls_item);
                     } else {
                         builder.push_jsonb_item(item);
@@ -561,6 +566,7 @@ impl RawJsonb<'_> {
                 Ok(builder.build()?)
             }
             JsonbItemType::Object(_) => {
+                let depth = enter_container(depth)?;
                 let mut object_iter = ObjectIterator::new(*self)?.unwrap();
                 let mut builder = ObjectBuilder::new();
                 for result in &mut object_iter {
@@ -568,7 +574,7 @@ impl RawJsonb<'_> {
                     if val_item.as_null().is_some() {
                         continue;
                     } else if let Some(sub_item) = val_item.as_raw_jsonb() {
-                        let no_nulls_item = sub_item.strip_nulls()?;
+                        let no_nulls_item = sub_item.strip_nulls_with_depth(depth)?;
                         builder.push_owned_jsonb(key, no_nulls_item)?;
                     } else {
                         builder.push_jsonb_item(key, val_item)?;
@@ -590,6 +596,11 @@ impl RawJsonb<'_> {
     ///
     /// **Important:** The resulting byte array is *not* a valid JSONB format;
     /// it's specifically designed for comparison purposes and should not be interpreted as standard JSONB data.
+    /// The encoding may change between versions, so it is meant for in-memory
+    /// sorting and must not be persisted.
+    ///
+    /// Each value is prefixed with its nesting depth as a big-endian `u16`,
+    /// followed by a type level byte.
     ///
     /// # Arguments
     ///
@@ -633,68 +644,69 @@ impl RawJsonb<'_> {
     /// ```
     pub fn convert_to_comparable(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.len());
-        if let Ok(()) = self.convert_to_comparable_impl(0, &mut buf) {
-            buf
-        } else {
-            vec![]
+        match RawEntry::from_jsonb(*self).and_then(|entry| entry.write_comparable(0, &mut buf)) {
+            Ok(()) => buf,
+            Err(_) => vec![],
         }
     }
+}
 
-    fn convert_to_comparable_impl(&self, depth: u8, buf: &mut Vec<u8>) -> Result<()> {
-        let jsonb_item_type = self.jsonb_item_type()?;
-        match jsonb_item_type {
-            JsonbItemType::Array(_) => {
-                buf.push(depth);
-                buf.push(ARRAY_LEVEL);
-                let mut array_iter = ArrayIterator::new(*self)?.unwrap();
-                for result in &mut array_iter {
-                    let item = result?;
-                    self.jsonb_item_to_comparable_impl(depth + 1, item, buf)?;
+/// Appends the depth and type level that prefix every value in the comparable encoding.
+///
+/// The depth is written as a big-endian `u16` so that byte-wise comparison
+/// orders depths numerically: a smaller depth at the same position means the
+/// enclosing container has ended, which makes the shorter container sort first.
+///
+/// # Errors
+///
+/// Returns `Error::RecursionLimitExceeded` if `depth` does not fit in a `u16`,
+/// which [`MAX_NESTING_DEPTH`] already rules out.
+fn push_comparable_tag(buf: &mut Vec<u8>, depth: usize, level: u8) -> Result<()> {
+    let depth = u16::try_from(depth).map_err(|_| Error::RecursionLimitExceeded)?;
+    buf.extend_from_slice(&depth.to_be_bytes());
+    buf.push(level);
+    Ok(())
+}
+
+impl RawEntry<'_> {
+    /// Appends the comparable encoding of this entry to `buf`; see
+    /// [`RawJsonb::convert_to_comparable`]. `depth` is the number of
+    /// containers enclosing this entry.
+    fn write_comparable(self, depth: usize, buf: &mut Vec<u8>) -> Result<()> {
+        let entry = self.unwrap_scalar()?;
+        match entry.item_type()? {
+            JsonbItemType::Array(len) => {
+                let child_depth = enter_container(depth)?;
+                push_comparable_tag(buf, depth, ARRAY_LEVEL)?;
+                for item in Entries::new(entry.container(), len) {
+                    item?.write_comparable(child_depth, buf)?;
                 }
             }
-            JsonbItemType::Object(_) => {
-                buf.push(depth);
-                buf.push(OBJECT_LEVEL);
-                let mut object_iter = ObjectIterator::new(*self)?.unwrap();
-                for result in &mut object_iter {
-                    let (key, val_item) = result?;
-                    let key_item = JsonbItem::String(Cow::Borrowed(key));
-                    self.jsonb_item_to_comparable_impl(depth + 1, key_item, buf)?;
-                    self.jsonb_item_to_comparable_impl(depth + 1, val_item, buf)?;
+            JsonbItemType::Object(len) => {
+                let child_depth = enter_container(depth)?;
+                push_comparable_tag(buf, depth, OBJECT_LEVEL)?;
+                let (keys, values) = Entries::object(entry.container(), len)?;
+                for (key, value) in keys.zip(values) {
+                    push_comparable_tag(buf, child_depth, STRING_LEVEL)?;
+                    buf.extend_from_slice(key?.payload);
+                    buf.push(0);
+                    value?.write_comparable(child_depth, buf)?;
                 }
             }
-            _ => {
-                let item = JsonbItem::from_raw_jsonb(*self)?;
-                self.jsonb_item_to_comparable_impl(depth, item, buf)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn jsonb_item_to_comparable_impl(
-        &self,
-        depth: u8,
-        item: JsonbItem<'_>,
-        buf: &mut Vec<u8>,
-    ) -> Result<()> {
-        match item {
-            JsonbItem::Null => {
-                buf.push(depth);
-                buf.push(NULL_LEVEL);
-            }
-            JsonbItem::Boolean(v) => {
-                buf.push(depth);
-                if v {
-                    buf.push(TRUE_LEVEL);
+            JsonbItemType::Null => push_comparable_tag(buf, depth, NULL_LEVEL)?,
+            JsonbItemType::Boolean => {
+                let level = if entry.is_true() {
+                    TRUE_LEVEL
                 } else {
-                    buf.push(FALSE_LEVEL);
-                }
+                    FALSE_LEVEL
+                };
+                push_comparable_tag(buf, depth, level)?;
             }
-            JsonbItem::Number(num_item) => {
-                buf.push(depth);
-                buf.push(NUMBER_LEVEL);
-                let num = num_item.as_number()?;
-                let n = num.as_f64();
+            JsonbItemType::Number => {
+                push_comparable_tag(buf, depth, NUMBER_LEVEL)?;
+                let n = Number::decode(entry.payload)?.as_f64();
+                // `-0.0` equals `0` but has different bits; encode them alike.
+                let n = if n == 0.0 { 0.0 } else { n };
                 // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
                 let s = n.to_bits() as i64;
                 let v = s ^ (((s >> 63) as u64) >> 1) as i64;
@@ -703,31 +715,15 @@ impl RawJsonb<'_> {
                 b[0] ^= 0x80;
                 buf.extend_from_slice(&b);
             }
-            JsonbItem::String(s) => {
-                buf.push(depth);
-                buf.push(STRING_LEVEL);
-                buf.extend_from_slice(s.as_bytes());
+            JsonbItemType::String => {
+                push_comparable_tag(buf, depth, STRING_LEVEL)?;
+                buf.extend_from_slice(entry.payload);
                 buf.push(0);
             }
-            JsonbItem::Extension(ext_item) => {
-                buf.push(depth);
-                buf.push(EXTENSION_LEVEL);
-                match ext_item {
-                    ExtensionItem::Raw(data) => {
-                        buf.extend_from_slice(data);
-                    }
-                    ExtensionItem::Extension(value) => {
-                        value.compact_encode(&mut *buf)?;
-                    }
-                }
+            JsonbItemType::Extension => {
+                push_comparable_tag(buf, depth, EXTENSION_LEVEL)?;
+                buf.extend_from_slice(entry.payload);
                 buf.push(0);
-            }
-            JsonbItem::Raw(raw) => {
-                return raw.convert_to_comparable_impl(depth, buf);
-            }
-            JsonbItem::Owned(owned) => {
-                let raw = owned.as_raw();
-                return raw.convert_to_comparable_impl(depth, buf);
             }
         }
         Ok(())

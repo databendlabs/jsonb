@@ -16,6 +16,20 @@ use super::constants::*;
 use super::error::Error;
 use super::error::ParseErrorCode;
 
+/// Runs `write`, which appends to `buf`, and on error truncates `buf` back to
+/// its original length so that a failed write leaves nothing behind.
+pub(crate) fn append_or_restore(
+    buf: &mut Vec<u8>,
+    write: impl FnOnce(&mut Vec<u8>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let original_len = buf.len();
+    let result = write(buf);
+    if result.is_err() {
+        buf.truncate(original_len);
+    }
+    result
+}
+
 #[allow(clippy::zero_prefixed_literal)]
 static HEX: [u8; 256] = {
     const __: u8 = 255; // not a hex digit

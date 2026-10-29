@@ -13,14 +13,18 @@
 // limitations under the License.
 
 mod builder;
+mod compare;
 mod constants;
 mod de;
 mod iterator;
 mod jentry;
+mod json_writer;
 mod ser;
 mod util;
 
 pub(crate) use builder::*;
+pub(crate) use compare::*;
 pub use de::*;
 pub(crate) use iterator::*;
+pub(crate) use json_writer::JsonWriter;
 pub use ser::*;

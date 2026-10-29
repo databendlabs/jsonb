@@ -17,6 +17,7 @@
 use crate::core::ArrayBuilder;
 use crate::core::ArrayDistinctBuilder;
 use crate::core::ArrayIterator;
+use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
 use crate::error::*;
 use crate::OwnedJsonb;
@@ -177,22 +178,7 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err());
     /// ```
     pub fn array_distinct(&self) -> Result<OwnedJsonb> {
-        let array_iter_opt = ArrayIterator::new(*self)?;
-        match array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    builder.push_jsonb_item(item);
-                }
-                builder.build()
-            }
-            None => {
-                let mut builder = ArrayBuilder::with_capacity(1);
-                builder.push_raw_jsonb(*self);
-                builder.build()
-            }
-        }
+        self.element_counts()?.build()
     }
 
     /// Computes the intersection of two JSONB arrays or the containment check for objects and scalars.
@@ -261,43 +247,7 @@ impl RawJsonb<'_> {
     /// assert_eq!(contained.to_string(), "[]"); // Not contained
     /// ```
     pub fn array_intersection(&self, other: &RawJsonb) -> Result<OwnedJsonb> {
-        let other_array_iter_opt = ArrayIterator::new(*other)?;
-        let mut other_builder = match other_array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    builder.push_jsonb_item(item);
-                }
-                builder
-            }
-            None => {
-                let mut builder = ArrayDistinctBuilder::new(1);
-                builder.push_raw_jsonb(*other);
-                builder
-            }
-        };
-
-        let array_iter_opt = ArrayIterator::new(*self)?;
-        match array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    if other_builder.pop_jsonb_item(item.clone()).is_some() {
-                        builder.push_jsonb_item(item);
-                    }
-                }
-                builder.build()
-            }
-            None => {
-                let mut builder = ArrayBuilder::with_capacity(1);
-                if other_builder.pop_raw_jsonb(*self).is_some() {
-                    builder.push_raw_jsonb(*self);
-                }
-                builder.build()
-            }
-        }
+        self.retain_by_membership(other, true)
     }
 
     /// Computes the set difference between two JSONB arrays or checks for non-containment of objects and scalars.
@@ -360,43 +310,7 @@ impl RawJsonb<'_> {
     /// assert_eq!(not_contained.to_string(), "[1]"); // Not contained
     /// ```
     pub fn array_except(&self, other: &RawJsonb) -> Result<OwnedJsonb> {
-        let other_array_iter_opt = ArrayIterator::new(*other)?;
-        let mut other_builder = match other_array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    builder.push_jsonb_item(item);
-                }
-                builder
-            }
-            None => {
-                let mut builder = ArrayDistinctBuilder::new(1);
-                builder.push_raw_jsonb(*other);
-                builder
-            }
-        };
-
-        let array_iter_opt = ArrayIterator::new(*self)?;
-        match array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayBuilder::with_capacity(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    if other_builder.pop_jsonb_item(item.clone()).is_none() {
-                        builder.push_jsonb_item(item);
-                    }
-                }
-                builder.build()
-            }
-            None => {
-                let mut builder = ArrayBuilder::with_capacity(1);
-                if other_builder.pop_raw_jsonb(*self).is_none() {
-                    builder.push_raw_jsonb(*self);
-                }
-                builder.build()
-            }
-        }
+        self.retain_by_membership(other, false)
     }
 
     /// Checks if two JSONB arrays or a JSONB array and an object/scalar have any elements in common.
@@ -464,40 +378,13 @@ impl RawJsonb<'_> {
     /// assert!(result.is_err()); // Returns an error
     /// ```
     pub fn array_overlap(&self, other: &RawJsonb) -> Result<bool> {
-        let other_array_iter_opt = ArrayIterator::new(*other)?;
-        let mut other_builder = match other_array_iter_opt {
-            Some(mut array_iter) => {
-                let mut builder = ArrayDistinctBuilder::new(array_iter.len());
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    builder.push_jsonb_item(item);
-                }
-                builder
-            }
-            None => {
-                let mut builder = ArrayDistinctBuilder::new(1);
-                builder.push_raw_jsonb(*other);
-                builder
-            }
-        };
-
-        let array_iter_opt = ArrayIterator::new(*self)?;
-        match array_iter_opt {
-            Some(mut array_iter) => {
-                for item_result in &mut array_iter {
-                    let item = item_result?;
-                    if other_builder.pop_jsonb_item(item).is_some() {
-                        return Ok(true);
-                    }
-                }
-            }
-            None => {
-                if other_builder.pop_raw_jsonb(*self).is_some() {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
+        let mut other = other.element_counts()?;
+        let mut found = false;
+        self.for_each_element(|item| {
+            found = other.pop_jsonb_item(item).is_some();
+            !found
+        })?;
+        Ok(found)
     }
 
     /// Inserts a new element into a JSONB array at the specified position.
@@ -566,14 +453,10 @@ impl RawJsonb<'_> {
     pub fn array_insert(&self, pos: i32, new_val: &RawJsonb) -> Result<OwnedJsonb> {
         let len = self.array_length()?.unwrap_or(1);
 
-        let idx = if pos < 0 { len as i32 - pos.abs() } else { pos };
-        let idx = if idx < 0 {
-            0
-        } else if idx > len as i32 {
-            len
-        } else {
-            idx as usize
-        };
+        // `i64` keeps `len + pos` from overflowing for `i32::MIN`.
+        let pos = i64::from(pos);
+        let idx = if pos < 0 { len as i64 + pos } else { pos };
+        let idx = idx.clamp(0, len as i64) as usize;
 
         let mut builder = ArrayBuilder::with_capacity(len + 1);
         let array_iter_opt = ArrayIterator::new(*self)?;
@@ -602,6 +485,58 @@ impl RawJsonb<'_> {
                 }
             }
         }
+        builder.build()
+    }
+}
+
+impl<'a> RawJsonb<'a> {
+    /// Calls `f` on each element of this value, stopping when it returns
+    /// `false`; a value that is not an array is its only element.
+    fn for_each_element(&self, mut f: impl FnMut(JsonbItem<'a>) -> bool) -> Result<()> {
+        match ArrayIterator::new(*self)? {
+            Some(iter) => {
+                for item in iter {
+                    if !f(item?) {
+                        break;
+                    }
+                }
+            }
+            None => {
+                f(JsonbItem::Raw(*self));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the number of elements of this value; see
+    /// [`RawJsonb::for_each_element`].
+    fn element_count(&self) -> Result<usize> {
+        Ok(ArrayIterator::new(*self)?.map_or(1, |iter| iter.len()))
+    }
+
+    /// Collects the elements of this value with their multiplicities, so that
+    /// each occurrence can be matched once.
+    fn element_counts(&self) -> Result<ArrayDistinctBuilder<'a>> {
+        let mut counts = ArrayDistinctBuilder::new(self.element_count()?);
+        self.for_each_element(|item| {
+            counts.push_jsonb_item(item);
+            true
+        })?;
+        Ok(counts)
+    }
+
+    /// Builds an array of the elements of this value that occur in `other`, if
+    /// `keep_found`, or that do not, otherwise. Each element of `other` matches
+    /// one occurrence.
+    fn retain_by_membership(&self, other: &RawJsonb<'_>, keep_found: bool) -> Result<OwnedJsonb> {
+        let mut other = other.element_counts()?;
+        let mut builder = ArrayBuilder::with_capacity(self.element_count()?);
+        self.for_each_element(|item| {
+            if other.pop_jsonb_item(item.clone()).is_some() == keep_found {
+                builder.push_jsonb_item(item);
+            }
+            true
+        })?;
         builder.build()
     }
 }

@@ -108,7 +108,14 @@ pub struct Interval {
 impl Display for Date {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let dur = SignedDuration::from_hours(self.value as i64 * 24);
-        let date = date(1970, 1, 1).checked_add(dur).unwrap();
+        // Clamp out-of-range values to jiff's supported dates, like `Timestamp` does.
+        let date = date(1970, 1, 1)
+            .checked_add(dur)
+            .unwrap_or(if self.value < 0 {
+                jiff::civil::Date::MIN
+            } else {
+                jiff::civil::Date::MAX
+            });
         write!(f, "{}", date)
     }
 }
@@ -144,21 +151,32 @@ fn epoch_micros_to_datetime(micros: i64, offset_secs: i32) -> DateTime {
 impl Display for Timestamp {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let datetime = epoch_micros_to_datetime(self.value, 0);
-        write!(
-            f,
-            "{}",
-            strtime::format(TIMESTAMP_FORMAT, datetime).unwrap()
-        )
+        // `epoch_micros_to_datetime` saturates to a datetime within jiff's
+        // range, and the format only uses fields every civil datetime has.
+        let text = strtime::format(TIMESTAMP_FORMAT, datetime)
+            .expect("a civil datetime always formats with TIMESTAMP_FORMAT");
+        f.write_str(&text)
     }
 }
 
 impl Display for TimestampTz {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let tz_offset = Offset::from_seconds(self.offset).expect("invalid timezone offset seconds");
-        let mut tm = BrokenDownTime::from(epoch_micros_to_datetime(self.value, self.offset));
+        // Clamp out-of-range offsets to jiff's supported range, like the timestamp.
+        let offset = self
+            .offset
+            .clamp(Offset::MIN.seconds(), Offset::MAX.seconds());
+        let tz_offset =
+            Offset::from_seconds(offset).expect("the offset is clamped to jiff's range");
+        let local = epoch_micros_to_datetime(self.value, tz_offset.seconds());
+        let mut tm = BrokenDownTime::from(local);
         tm.set_offset(Some(tz_offset));
 
-        write!(f, "{}", tm.to_string(TIMESTAMP_TIMEZONE_FORMAT).unwrap())
+        // The datetime is saturated to jiff's range and the offset clamped to a
+        // valid one, so every field the format uses, including `%z`, is set.
+        let text = tm.to_string(TIMESTAMP_TIMEZONE_FORMAT).expect(
+            "a civil datetime with an offset always formats with TIMESTAMP_TIMEZONE_FORMAT",
+        );
+        f.write_str(&text)
     }
 }
 
@@ -173,7 +191,7 @@ impl Display for Interval {
                 if wrote_date_part {
                     write!(f, " ")?;
                 }
-                let abs_val = value.abs();
+                let abs_val = value.unsigned_abs();
                 let unit = if abs_val == 1 { singular } else { plural };
                 if value < 0 {
                     write!(f, "-{} {}", abs_val, unit)?;
@@ -193,17 +211,17 @@ impl Display for Interval {
             if wrote_date_part {
                 write!(f, " ")?;
             }
-            let mut micros = self.micros;
-            if micros < 0 {
+            if self.micros < 0 {
                 write!(f, "-")?;
-                micros = -micros;
             }
-            let hour = micros / MICROS_PER_HOUR;
-            micros -= hour * MICROS_PER_HOUR;
-            let min = micros / MICROS_PER_MINUTE;
-            micros -= min * MICROS_PER_MINUTE;
-            let sec = micros / MICROS_PER_SEC;
-            micros -= sec * MICROS_PER_SEC;
+            // `unsigned_abs` avoids overflow for `i64::MIN`.
+            let mut micros = self.micros.unsigned_abs();
+            let hour = micros / MICROS_PER_HOUR as u64;
+            micros -= hour * MICROS_PER_HOUR as u64;
+            let min = micros / MICROS_PER_MINUTE as u64;
+            micros -= min * MICROS_PER_MINUTE as u64;
+            let sec = micros / MICROS_PER_SEC as u64;
+            micros -= sec * MICROS_PER_SEC as u64;
 
             if hour < 100 {
                 write!(f, "{:02}:{:02}:{:02}", hour, min, sec)?;

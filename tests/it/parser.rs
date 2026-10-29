@@ -532,3 +532,60 @@ fn test_parse_object() {
     ];
     test_parse_ok(extended_tests);
 }
+
+#[test]
+fn test_value_display_is_json() {
+    // `Value` used to format strings with Rust's `{:?}` (`"\0"`, `"\u{7f}"`)
+    // and object keys without any escaping. It must write JSON, escaped the
+    // same way as `RawJsonb::to_string`.
+    let cases = [
+        r#""\u0000\u0008\u000c\n\r\t\u001f""#,
+        r#""\u007f\u2028\u00e9""#,
+        r#""quote \" backslash \\ slash /""#,
+        r#"{"k\"ey\\":"v","\u0000":[" \u0001 "]}"#,
+        r#"[{"a":{"":"\b"}}]"#,
+    ];
+    for text in cases {
+        let value = parse_value(text.as_bytes()).unwrap();
+        let formatted = value.to_string();
+        let raw = jsonb::RawJsonb::new(&value.to_vec().unwrap()).to_string();
+        assert_eq!(formatted, raw, "{text}");
+        let reparsed = parse_value_standard_mode(formatted.as_bytes()).unwrap();
+        assert_eq!(reparsed, value, "{text}");
+        serde_json::from_str::<serde_json::Value>(&formatted)
+            .unwrap_or_else(|err| panic!("{formatted} is not JSON: {err}"));
+    }
+}
+
+#[test]
+fn test_value_display_non_finite_floats_as_null() {
+    // JSON has no NaN or infinity. `Value` writes `null` for them, like
+    // `RawJsonb::to_string`, while `Number` keeps `NaN`/`inf` for JSONPath.
+    let value = parse_value(br#"[NaN, Infinity, -Infinity, 1e400, {"a": NaN}, 1.5]"#).unwrap();
+    let formatted = value.to_string();
+    assert_eq!(formatted, r#"[null,null,null,null,{"a":null},1.5]"#);
+    let raw = jsonb::RawJsonb::new(&value.to_vec().unwrap()).to_string();
+    assert_eq!(formatted, raw);
+    assert_eq!(Number::Float64(f64::NAN).to_string(), "NaN");
+    assert_eq!(Number::Float64(f64::NEG_INFINITY).to_string(), "-inf");
+
+    let path = jsonb::jsonpath::parse_json_path(b"$ ? (@ > -inf)").unwrap();
+    assert_eq!(path.to_string(), "$?(@ > -inf)");
+}
+
+#[test]
+fn test_parse_negative_hex_at_i64_min() {
+    // `-0x8000000000000000` is `i64::MIN`; negating its `i64` cast overflowed
+    // (a panic with overflow checks, found by fuzzing).
+    let value = parse_value(b"-0x8000000000000000").unwrap();
+    assert_eq!(value, Value::Number(Number::Int64(i64::MIN)));
+    let value = parse_value(b"-0x7fffffffffffffff").unwrap();
+    assert_eq!(value, Value::Number(Number::Int64(-i64::MAX)));
+    // One past `i64::MIN` needs a decimal, which only `arbitrary_precision`
+    // keeps exact.
+    #[cfg(feature = "arbitrary_precision")]
+    assert_eq!(
+        parse_value(b"-0x8000000000000001").unwrap().to_string(),
+        "-9223372036854775809"
+    );
+}

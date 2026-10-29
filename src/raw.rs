@@ -14,12 +14,10 @@
 
 use std::cmp::Ordering;
 
-use serde::Serialize;
-
-use crate::core::ArrayIterator;
+use crate::core::compare_entries;
 use crate::core::Deserializer;
-use crate::core::JsonbItemType;
-use crate::core::ObjectIterator;
+use crate::core::JsonWriter;
+use crate::core::RawEntry;
 use crate::error::*;
 use crate::OwnedJsonb;
 
@@ -123,19 +121,13 @@ impl<'a> RawJsonb<'a> {
     /// ```
     #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
-        let mut buf = Vec::with_capacity(self.len());
-        let formatter = serde_json::ser::CompactFormatter {};
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-        match self.serialize(&mut ser) {
-            Ok(_) => String::from_utf8(buf).unwrap(),
-            Err(_) => {
-                if self.data.is_empty() {
-                    "null".to_string()
-                } else {
-                    String::from_utf8_lossy(self.data).to_string()
-                }
+        self.write_json_text(false).unwrap_or_else(|| {
+            if self.data.is_empty() {
+                "null".to_string()
+            } else {
+                String::from_utf8_lossy(self.data).to_string()
             }
-        }
+        })
     }
 
     /// Converts the JSONB value to a pretty-printed JSON string.
@@ -177,13 +169,17 @@ impl<'a> RawJsonb<'a> {
     /// assert_eq!(invalid_raw_jsonb.to_pretty_string(), "null"); // Fails and returns "null"
     /// ```
     pub fn to_pretty_string(&self) -> String {
-        let mut buf = Vec::with_capacity(self.len());
-        let formatter = serde_json::ser::PrettyFormatter::new();
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-        match self.serialize(&mut ser) {
-            Ok(_) => String::from_utf8(buf).unwrap(),
-            Err(_) => "null".to_string(),
-        }
+        self.write_json_text(true)
+            .unwrap_or_else(|| "null".to_string())
+    }
+
+    /// Writes the value as JSON text, or returns `None` if the data is not
+    /// valid JSONB or holds a string that is not valid UTF-8.
+    ///
+    /// The output is the same as serializing with serde_json's
+    /// `CompactFormatter` or `PrettyFormatter`.
+    fn write_json_text(&self, pretty: bool) -> Option<String> {
+        JsonWriter::write(*self, pretty).ok()
     }
 }
 
@@ -226,82 +222,19 @@ impl PartialEq for RawJsonb<'_> {
 #[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for RawJsonb<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let self_type = self.jsonb_item_type().ok()?;
-        let other_type = other.jsonb_item_type().ok()?;
+        self.partial_cmp_with_depth(other, 0)
+    }
+}
 
-        // First use JSONB type to determine the order,
-        // different types must have different orders.
-        if let Some(ord) = self_type.partial_cmp(&other_type) {
-            return Some(ord);
-        }
-
-        match (self_type, other_type) {
-            (JsonbItemType::Array(self_len), JsonbItemType::Array(other_len)) => {
-                let self_array_iter = ArrayIterator::new(*self).ok()?.unwrap();
-                let mut other_array_iter = ArrayIterator::new(*other).ok()?.unwrap();
-                for (self_res, other_res) in &mut self_array_iter.zip(&mut other_array_iter) {
-                    let self_item = self_res.ok()?;
-                    let other_item = other_res.ok()?;
-
-                    let ord = self_item.partial_cmp(&other_item)?;
-                    if ord != Ordering::Equal {
-                        return Some(ord);
-                    }
-                }
-                Some(self_len.cmp(&other_len))
-            }
-            (JsonbItemType::Object(self_len), JsonbItemType::Object(other_len)) => {
-                let self_object_iter = ObjectIterator::new(*self).ok()?.unwrap();
-                let mut other_object_iter = ObjectIterator::new(*other).ok()?.unwrap();
-                for (self_res, other_res) in &mut self_object_iter.zip(&mut other_object_iter) {
-                    let (self_key, self_val) = self_res.ok()?;
-                    let (other_key, other_val) = other_res.ok()?;
-
-                    let key_ord = self_key.partial_cmp(other_key)?;
-                    if key_ord != Ordering::Equal {
-                        return Some(key_ord);
-                    }
-                    let val_ord = self_val.partial_cmp(&other_val)?;
-                    if val_ord != Ordering::Equal {
-                        return Some(val_ord);
-                    }
-                }
-                Some(self_len.cmp(&other_len))
-            }
-            (JsonbItemType::String, JsonbItemType::String) => {
-                let self_val = self.as_str();
-                let other_val = other.as_str();
-                match (self_val, other_val) {
-                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
-                    (_, _) => None,
-                }
-            }
-            (JsonbItemType::Number, JsonbItemType::Number) => {
-                let self_val = self.as_number();
-                let other_val = other.as_number();
-                match (self_val, other_val) {
-                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
-                    (_, _) => None,
-                }
-            }
-            (JsonbItemType::Boolean, JsonbItemType::Boolean) => {
-                let self_val = self.as_bool();
-                let other_val = other.as_bool();
-                match (self_val, other_val) {
-                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
-                    (_, _) => None,
-                }
-            }
-            (JsonbItemType::Extension, JsonbItemType::Extension) => {
-                let self_val = self.as_extension_value();
-                let other_val = other.as_extension_value();
-                match (self_val, other_val) {
-                    (Ok(Some(self_val)), Ok(Some(other_val))) => self_val.partial_cmp(&other_val),
-                    (_, _) => None,
-                }
-            }
-            (_, _) => None,
-        }
+impl RawJsonb<'_> {
+    /// Compares two values, where `depth` is the number of enclosing containers.
+    ///
+    /// Returns `None` for incomparable values, including containers nested
+    /// deeper than the recursion limit.
+    pub(crate) fn partial_cmp_with_depth(&self, other: &Self, depth: usize) -> Option<Ordering> {
+        let a = RawEntry::from_jsonb(*self).ok()?;
+        let b = RawEntry::from_jsonb(*other).ok()?;
+        compare_entries(a, b, depth)
     }
 }
 

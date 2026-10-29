@@ -19,10 +19,10 @@ use super::error::Error;
 use super::error::ParseErrorCode;
 use super::error::Result;
 use super::number::Number;
+use super::util::append_or_restore;
 use super::util::parse_string;
 use super::value::Object;
 use super::value::Value;
-use crate::core::Decoder;
 
 use crate::core::JsonAstEncoder;
 #[cfg(feature = "arbitrary_precision")]
@@ -32,9 +32,11 @@ use crate::Decimal256;
 #[cfg(feature = "arbitrary_precision")]
 use crate::Decimal64;
 use crate::OwnedJsonb;
+use crate::RawJsonb;
 #[cfg(feature = "arbitrary_precision")]
 use ethnum::i256;
 
+use crate::constants::enter_container;
 use crate::constants::MAX_DECIMAL128_PRECISION;
 use crate::constants::MAX_DECIMAL256_PRECISION;
 #[cfg(feature = "arbitrary_precision")]
@@ -187,18 +189,26 @@ impl<'a> JsonAst<'a> {
     /// 4. Preserving the performance benefits of the sorted keys and compact representation
     ///
     /// Returns a `OwnedJsonb` containing the binary JSONB representation.
-    fn into_owned_jsonb(self, size: usize) -> OwnedJsonb {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ValueTooLarge` if a value exceeds the JSONB length fields.
+    fn into_owned_jsonb(self, size: usize) -> Result<OwnedJsonb> {
         let mut buf = Vec::with_capacity(size);
         let mut encoder = JsonAstEncoder::new(&mut buf);
-        encoder.encode(&self);
-        OwnedJsonb::new(buf)
+        encoder.encode(&self)?;
+        Ok(OwnedJsonb::new(buf))
     }
 
     /// Converts the `JsonAst` to an owned JSONB representation with result buffer.
-    fn into_owned_jsonb_with_buffer(self, size: usize, result_buf: &mut Vec<u8>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ValueTooLarge` if a value exceeds the JSONB length fields;
+    /// `result_buf` is then restored to its original length.
+    fn into_owned_jsonb_with_buffer(self, size: usize, result_buf: &mut Vec<u8>) -> Result<()> {
         result_buf.reserve(size);
-        let mut encoder = JsonAstEncoder::new(result_buf);
-        encoder.encode(&self);
+        append_or_restore(result_buf, |buf| JsonAstEncoder::new(buf).encode(&self))
     }
 }
 
@@ -230,8 +240,7 @@ impl<'a> JsonAst<'a> {
 ///
 ///    Decode `JSONB` Value from binary bytes.
 pub fn from_slice(buf: &[u8]) -> Result<Value<'_>> {
-    let mut decoder = Decoder::new(buf);
-    match decoder.decode() {
+    match RawJsonb::new(buf).to_value() {
         Ok(value) => Ok(value),
         // for compatible with the first version of `JSON` text, parse it again
         Err(_) => parse_value(buf),
@@ -265,7 +274,7 @@ pub fn parse_owned_jsonb(buf: &[u8]) -> Result<OwnedJsonb> {
     let size = buf.len();
     let mut parser = Parser::new(buf);
     let json_ast = parser.parse()?;
-    Ok(json_ast.into_owned_jsonb(size))
+    json_ast.into_owned_jsonb(size)
 }
 
 /// Parses JSON text into an owned JSONB binary representation using standard JSON syntax rules.
@@ -274,7 +283,7 @@ pub fn parse_owned_jsonb_standard_mode(buf: &[u8]) -> Result<OwnedJsonb> {
     let size = buf.len();
     let mut parser = Parser::new_standard_mode(buf);
     let json_ast = parser.parse()?;
-    Ok(json_ast.into_owned_jsonb(size))
+    json_ast.into_owned_jsonb(size)
 }
 
 /// Parses JSON text into a provided buffer as JSONB binary representation.
@@ -283,8 +292,7 @@ pub fn parse_owned_jsonb_with_buf(buf: &[u8], result_buf: &mut Vec<u8>) -> Resul
     let size = buf.len();
     let mut parser = Parser::new(buf);
     let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb_with_buffer(size, result_buf);
-    Ok(())
+    json_ast.into_owned_jsonb_with_buffer(size, result_buf)
 }
 
 /// Parses JSON text into a provided buffer as JSONB binary representation using standard JSON syntax rules.
@@ -296,8 +304,7 @@ pub fn parse_owned_jsonb_standard_mode_with_buf(
     let size = buf.len();
     let mut parser = Parser::new_standard_mode(buf);
     let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb_with_buffer(size, result_buf);
-    Ok(())
+    json_ast.into_owned_jsonb_with_buffer(size, result_buf)
 }
 
 /// JSON parser with optimized parsing strategies.
@@ -315,6 +322,8 @@ struct Parser<'a> {
     parse_array_value_fn: fn(&mut Self) -> Result<JsonAst<'a>>,
     /// Function pointer for parsing object_key based on the mode
     parse_object_key_fn: fn(&mut Self) -> Result<Cow<'a, str>>,
+    /// Number of arrays and objects currently being parsed
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -325,6 +334,7 @@ impl<'a> Parser<'a> {
             parse_value_fn: Self::parse_json_value,
             parse_array_value_fn: Self::parse_array_value,
             parse_object_key_fn: Self::parse_object_key,
+            depth: 0,
         }
     }
 
@@ -335,6 +345,7 @@ impl<'a> Parser<'a> {
             parse_value_fn: Self::parse_standard_json_value,
             parse_array_value_fn: Self::parse_standard_json_value,
             parse_object_key_fn: Self::parse_standard_object_key,
+            depth: 0,
         }
     }
 
@@ -685,6 +696,8 @@ impl<'a> Parser<'a> {
                 return Err(self.error(ParseErrorCode::InvalidNumberValue));
             }
         }
+        // SAFETY: Every byte in `start_idx..self.idx` was accepted above as an ASCII
+        // sign, digit, decimal point, or exponent marker, so the range is valid UTF-8.
         let s = unsafe { std::str::from_utf8_unchecked(&self.buf[start_idx..self.idx]) };
 
         if !has_fraction && !has_exponent {
@@ -765,10 +778,16 @@ impl<'a> Parser<'a> {
                 // Parse digit and accumulate value
                 // Store in hi_value or lo_value based on precision
                 if precision < MAX_DECIMAL128_PRECISION {
+                    // SAFETY: At most 38 decimal digits accumulate here, and
+                    // 10^38 - 1 is below `i128::MAX`, so neither operation overflows.
                     hi_value = unsafe { hi_value.unchecked_mul(10_i128) };
+                    // SAFETY: Same bound as above; `digit` is in `0..=9`.
                     hi_value = unsafe { hi_value.unchecked_add(digit as i128) };
                 } else {
+                    // SAFETY: Precision is in `38..76`, so at most 38 decimal digits
+                    // accumulate here and stay below `i128::MAX`.
                     lo_value = unsafe { lo_value.unchecked_mul(10_i128) };
+                    // SAFETY: Same bound as above; `digit` is in `0..=9`.
                     lo_value = unsafe { lo_value.unchecked_add(digit as i128) };
                 }
                 self.step();
@@ -896,7 +915,9 @@ impl<'a> Parser<'a> {
                     if negative {
                         // Handle negative values
                         if value <= (i64::MAX as u128 + 1) {
-                            let i_val = -(value as i64);
+                            // Negate in `i128`: `value` may be 2^63, whose
+                            // `i64` cast is `i64::MIN` and cannot be negated.
+                            let i_val = -(value as i128) as i64;
                             return Ok(JsonAst::Number(Number::Int64(i_val)));
                         }
                         #[cfg(feature = "arbitrary_precision")]
@@ -1010,6 +1031,8 @@ impl<'a> Parser<'a> {
 
         // Final fallback strategy: Parse as Float64 using fast_float2 library
         // This handles scientific notation and very large/small numbers
+        // SAFETY: Hex and special-value paths return earlier; every byte left in
+        // `start_idx..self.idx` is an ASCII sign, digit, decimal point, or exponent marker.
         let s = unsafe { std::str::from_utf8_unchecked(&self.buf[start_idx..self.idx]) };
         match fast_float2::parse(s) {
             Ok(v) => Ok(JsonAst::Number(Number::Float64(v))),
@@ -1194,6 +1217,8 @@ impl<'a> Parser<'a> {
     fn parse_json_array(&mut self) -> Result<JsonAst<'a>> {
         // Ensure the array starts with an opening bracket
         self.must_is(&b'[')?;
+        // Errors abort the whole parse, so the depth only needs restoring on success.
+        self.depth = enter_container(self.depth)?;
 
         let mut first = true;
         let mut values = Vec::with_capacity(8);
@@ -1223,6 +1248,7 @@ impl<'a> Parser<'a> {
             let value = (self.parse_array_value_fn)(self)?;
             values.push(value);
         }
+        self.depth -= 1;
         Ok(JsonAst::Array(values))
     }
 
@@ -1277,6 +1303,8 @@ impl<'a> Parser<'a> {
     fn parse_json_object(&mut self) -> Result<JsonAst<'a>> {
         // Ensure the object starts with an opening brace
         self.must_is(&b'{')?;
+        // Errors abort the whole parse, so the depth only needs restoring on success.
+        self.depth = enter_container(self.depth)?;
 
         let mut first = true;
         let mut obj = Vec::with_capacity(16);
@@ -1320,6 +1348,7 @@ impl<'a> Parser<'a> {
             // Add the key-value pair to the object
             obj.push((key_str, value, pos));
         }
+        self.depth -= 1;
 
         // Sort the Object fields by key and check for duplicate keys.
         // Returns an error if duplicate keys are found.
