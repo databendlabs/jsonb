@@ -750,23 +750,24 @@ impl Serialize for RawJsonb<'_> {
 
                 let payload_start = index;
                 let payload_end = index + jentry.length as usize;
+                let payload = self
+                    .slice(payload_start..payload_end)
+                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
                 match jentry.type_code {
                     NULL_TAG => serializer.serialize_unit(),
                     TRUE_TAG => serializer.serialize_bool(true),
                     FALSE_TAG => serializer.serialize_bool(false),
                     NUMBER_TAG => {
-                        let num = Number::decode(&self.data[payload_start..payload_end])
+                        let num = Number::decode(payload)
                             .map_err(|e| ser::Error::custom(format!("{e}")))?;
                         num.serialize(serializer)
                     }
                     STRING_TAG => {
-                        let s = unsafe {
-                            std::str::from_utf8_unchecked(&self.data[payload_start..payload_end])
-                        };
+                        let s = unsafe { std::str::from_utf8_unchecked(payload) };
                         serializer.serialize_str(s)
                     }
                     EXTENSION_TAG => {
-                        let val = ExtensionValue::decode(&self.data[payload_start..payload_end])
+                        let val = ExtensionValue::decode(payload)
                             .map_err(|e| ser::Error::custom(format!("{e}")))?;
                         let s = format!("{}", val);
                         serializer.serialize_str(&s)
@@ -779,6 +780,10 @@ impl Serialize for RawJsonb<'_> {
                 }
             }
             ARRAY_CONTAINER_TAG => {
+                // Reject a length the data cannot hold before it sizes any allocation.
+                if index + 4 * header_len > self.len() {
+                    return Err(ser::Error::custom(format!("{}", Error::InvalidJsonb)));
+                }
                 let mut serialize_seq = serializer.serialize_seq(Some(header_len))?;
 
                 let mut payload_start = index + 4 * header_len;
@@ -789,33 +794,30 @@ impl Serialize for RawJsonb<'_> {
                     index += 4;
 
                     let payload_end = payload_start + jentry.length as usize;
+                    let payload = self
+                        .slice(payload_start..payload_end)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     match jentry.type_code {
                         NULL_TAG => serialize_seq.serialize_element(&())?,
                         TRUE_TAG => serialize_seq.serialize_element(&true)?,
                         FALSE_TAG => serialize_seq.serialize_element(&false)?,
                         NUMBER_TAG => {
-                            let num = Number::decode(&self.data[payload_start..payload_end])
+                            let num = Number::decode(payload)
                                 .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             serialize_seq.serialize_element(&num)?;
                         }
                         STRING_TAG => {
-                            let s = unsafe {
-                                std::str::from_utf8_unchecked(
-                                    &self.data[payload_start..payload_end],
-                                )
-                            };
+                            let s = unsafe { std::str::from_utf8_unchecked(payload) };
                             serialize_seq.serialize_element(&s)?;
                         }
                         EXTENSION_TAG => {
-                            let val =
-                                ExtensionValue::decode(&self.data[payload_start..payload_end])
-                                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
+                            let val = ExtensionValue::decode(payload)
+                                .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             let s = format!("{}", val);
                             serialize_seq.serialize_element(&s)?;
                         }
                         CONTAINER_TAG => {
-                            let inner_raw_jsonb =
-                                RawJsonb::new(&self.data[payload_start..payload_end]);
+                            let inner_raw_jsonb = RawJsonb::new(payload);
                             serialize_seq.serialize_element(&inner_raw_jsonb)?;
                         }
                         _ => {
@@ -827,6 +829,9 @@ impl Serialize for RawJsonb<'_> {
                 serialize_seq.end()
             }
             OBJECT_CONTAINER_TAG => {
+                if index + 8 * header_len > self.len() {
+                    return Err(ser::Error::custom(format!("{}", Error::InvalidJsonb)));
+                }
                 let mut serialize_map = serializer.serialize_map(Some(header_len))?;
 
                 let mut keys = VecDeque::with_capacity(header_len);
@@ -838,13 +843,12 @@ impl Serialize for RawJsonb<'_> {
                     index += 4;
 
                     let payload_end = payload_start + jentry.length as usize;
+                    let payload = self
+                        .slice(payload_start..payload_end)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     match jentry.type_code {
                         STRING_TAG => {
-                            let s = unsafe {
-                                std::str::from_utf8_unchecked(
-                                    &self.data[payload_start..payload_end],
-                                )
-                            };
+                            let s = unsafe { std::str::from_utf8_unchecked(payload) };
                             keys.push_back(s);
                         }
                         _ => {
@@ -861,34 +865,31 @@ impl Serialize for RawJsonb<'_> {
                     index += 4;
 
                     let payload_end = payload_start + jentry.length as usize;
+                    let payload = self
+                        .slice(payload_start..payload_end)
+                        .map_err(|e| ser::Error::custom(format!("{e}")))?;
                     let k = keys.pop_front().unwrap();
                     match jentry.type_code {
                         NULL_TAG => serialize_map.serialize_entry(&k, &())?,
                         TRUE_TAG => serialize_map.serialize_entry(&k, &true)?,
                         FALSE_TAG => serialize_map.serialize_entry(&k, &false)?,
                         NUMBER_TAG => {
-                            let num = Number::decode(&self.data[payload_start..payload_end])
+                            let num = Number::decode(payload)
                                 .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             serialize_map.serialize_entry(&k, &num)?;
                         }
                         STRING_TAG => {
-                            let s = unsafe {
-                                std::str::from_utf8_unchecked(
-                                    &self.data[payload_start..payload_end],
-                                )
-                            };
+                            let s = unsafe { std::str::from_utf8_unchecked(payload) };
                             serialize_map.serialize_entry(&k, &s)?;
                         }
                         EXTENSION_TAG => {
-                            let val =
-                                ExtensionValue::decode(&self.data[payload_start..payload_end])
-                                    .map_err(|e| ser::Error::custom(format!("{e}")))?;
+                            let val = ExtensionValue::decode(payload)
+                                .map_err(|e| ser::Error::custom(format!("{e}")))?;
                             let s = format!("{}", val);
                             serialize_map.serialize_entry(&k, &s)?;
                         }
                         CONTAINER_TAG => {
-                            let inner_raw_jsonb =
-                                RawJsonb::new(&self.data[payload_start..payload_end]);
+                            let inner_raw_jsonb = RawJsonb::new(payload);
                             serialize_map.serialize_entry(&k, &inner_raw_jsonb)?;
                         }
                         _ => {

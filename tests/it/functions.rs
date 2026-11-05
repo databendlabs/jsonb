@@ -1092,6 +1092,27 @@ fn test_to_string() {
 }
 
 #[test]
+fn test_serialize_invalid_jsonb() {
+    let mut truncated = parse_value(br#"{"k":"value"}"#).unwrap().to_vec();
+    truncated.pop();
+    let invalid: Vec<&[u8]> = vec![
+        // JSON text whose first bytes decode as a scalar header with an
+        // out-of-range payload length.
+        br#""hello world""#,
+        b"        null",
+        // JSON text whose first byte decodes as an object header with a
+        // length the data cannot hold.
+        b"[1,2,3]",
+        &truncated,
+    ];
+    for data in invalid {
+        let raw = RawJsonb::new(data);
+        assert!(serde_json::to_string(&raw).is_err(), "{data:?}");
+        assert_eq!(raw.to_string(), String::from_utf8_lossy(data));
+    }
+}
+
+#[test]
 fn test_to_pretty_string() {
     let sources = vec![
         (r#"null"#, r#"null"#),
