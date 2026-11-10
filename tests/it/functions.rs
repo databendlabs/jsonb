@@ -1113,6 +1113,20 @@ fn test_serialize_invalid_jsonb() {
 }
 
 #[test]
+fn test_json_text_with_in_bounds_scalar_header() {
+    // Bytes 4..8 read as a `false` jentry with payload length 0x212121, which
+    // the data holds, so only the scalar header check rejects it as jsonb.
+    let mut text = br#""abc0!!!"#.to_vec();
+    text.resize(8 + 0x212121, b'a');
+    text.push(b'"');
+
+    assert!(serde_json::to_string(&RawJsonb::new(&text)).is_err());
+    let value = from_slice(&text).unwrap();
+    assert_eq!(value, parse_value(&text).unwrap());
+    assert!(value.is_string());
+}
+
+#[test]
 fn test_to_pretty_string() {
     let sources = vec![
         (r#"null"#, r#"null"#),

@@ -935,6 +935,10 @@ impl<'a> Decoder<'a> {
         let container_header = self.buf.read_u32::<BigEndian>()?;
 
         match container_header & CONTAINER_HEADER_TYPE_MASK {
+            // See `RawJsonb::read_header` for why the length bits must be zero.
+            SCALAR_CONTAINER_TAG if container_header != SCALAR_CONTAINER_TAG => {
+                Err(Error::InvalidJsonbHeader)
+            }
             SCALAR_CONTAINER_TAG => {
                 let encoded = self.buf.read_u32::<BigEndian>()?;
                 let jentry = JEntry::decode_jentry(encoded);
