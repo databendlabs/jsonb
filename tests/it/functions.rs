@@ -1093,18 +1093,30 @@ fn test_to_string() {
 
 #[test]
 fn test_serialize_invalid_jsonb() {
-    let mut truncated = parse_value(br#"{"k":"value"}"#).unwrap().to_vec();
-    truncated.pop();
-    let invalid: Vec<&[u8]> = vec![
-        // JSON text whose first bytes decode as a scalar header with an
-        // out-of-range payload length.
+    // Truncated binary jsonb, so the scalar, array element, object value and
+    // object key payload reads each run past the end of the data.
+    let truncated: Vec<Vec<u8>> = [
+        &br#""value""#[..],
+        br#"["value"]"#,
+        br#"{"k":"value"}"#,
+        br#"{"k":null}"#,
+    ]
+    .into_iter()
+    .map(|json| {
+        let mut data = parse_value(json).unwrap().to_vec();
+        data.pop();
+        data
+    })
+    .collect();
+    let mut invalid: Vec<&[u8]> = vec![
+        // JSON text whose first bytes decode as a scalar header.
         br#""hello world""#,
         b"        null",
         // JSON text whose first byte decodes as an object header with a
         // length the data cannot hold.
         b"[1,2,3]",
-        &truncated,
     ];
+    invalid.extend(truncated.iter().map(Vec::as_slice));
     for data in invalid {
         let raw = RawJsonb::new(data);
         assert!(serde_json::to_string(&raw).is_err(), "{data:?}");
