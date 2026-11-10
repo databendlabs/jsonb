@@ -781,7 +781,7 @@ impl Serialize for RawJsonb<'_> {
             }
             ARRAY_CONTAINER_TAG => {
                 // Reject a length the data cannot hold before it sizes any allocation.
-                if index + 4 * header_len > self.len() {
+                if header_len > (self.len() - index) / 4 {
                     return Err(ser::Error::custom(format!("{}", Error::InvalidJsonb)));
                 }
                 let mut serialize_seq = serializer.serialize_seq(Some(header_len))?;
@@ -829,7 +829,7 @@ impl Serialize for RawJsonb<'_> {
                 serialize_seq.end()
             }
             OBJECT_CONTAINER_TAG => {
-                if index + 8 * header_len > self.len() {
+                if header_len > (self.len() - index) / 8 {
                     return Err(ser::Error::custom(format!("{}", Error::InvalidJsonb)));
                 }
                 let mut serialize_map = serializer.serialize_map(Some(header_len))?;

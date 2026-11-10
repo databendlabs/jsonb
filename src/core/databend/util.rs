@@ -345,11 +345,7 @@ impl<'a> RawJsonb<'a> {
     }
 
     pub(super) fn slice(&self, range: Range<usize>) -> Result<&'a [u8]> {
-        // Check for potential out-of-bounds access before creating item
-        if range.end > self.len() {
-            return Err(Error::InvalidJsonb);
-        }
-        Ok(&self.data[range])
+        self.data.get(range).ok_or(Error::InvalidJsonb)
     }
 }
 
