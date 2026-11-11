@@ -305,6 +305,12 @@ impl<'a> RawJsonb<'a> {
             }
         }
         let header_len = header & CONTAINER_HEADER_LEN_MASK;
+        // A scalar header is always exactly `SCALAR_CONTAINER_TAG`. JSON text whose
+        // first byte maps to the scalar type never has zero length bits, so this rejects
+        // it before a jentry read from text bytes can pass the payload bounds check.
+        if header_type == SCALAR_CONTAINER_TAG && header_len != 0 {
+            return Err(Error::InvalidJsonb);
+        }
         Ok((header_type, header_len as usize))
     }
 
@@ -339,11 +345,7 @@ impl<'a> RawJsonb<'a> {
     }
 
     pub(super) fn slice(&self, range: Range<usize>) -> Result<&'a [u8]> {
-        // Check for potential out-of-bounds access before creating item
-        if range.end > self.len() {
-            return Err(Error::InvalidJsonb);
-        }
-        Ok(&self.data[range])
+        self.data.get(range).ok_or(Error::InvalidJsonb)
     }
 }
 
