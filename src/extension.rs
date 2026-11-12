@@ -18,7 +18,9 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 use jiff::civil::date;
+use jiff::civil::DateTime;
 use jiff::fmt::strtime;
+use jiff::fmt::strtime::BrokenDownTime;
 use jiff::tz::Offset;
 use jiff::SignedDuration;
 
@@ -111,54 +113,52 @@ impl Display for Date {
     }
 }
 
+/// Converts microseconds since the Unix epoch, shifted by `offset_secs`, into a
+/// civil datetime.
+///
+/// `jiff::Timestamp` cannot be used here: its range ends at
+/// `9999-12-30T22:00:00Z` so that it stays valid in every offset, which is
+/// earlier than the last representable timestamp `9999-12-31 23:59:59.999999`.
+/// A civil datetime covers years -9999 to 9999. Values outside that range
+/// saturate to `DateTime::MIN` or `DateTime::MAX`, so formatting never panics.
+fn epoch_micros_to_datetime(micros: i64, offset_secs: i32) -> DateTime {
+    let saturated = if micros < 0 {
+        DateTime::MIN
+    } else {
+        DateTime::MAX
+    };
+    let Some(local_micros) = i64::from(offset_secs)
+        .checked_mul(MICROS_PER_SEC)
+        .and_then(|offset_micros| micros.checked_add(offset_micros))
+    else {
+        return saturated;
+    };
+    let epoch = DateTime::constant(1970, 1, 1, 0, 0, 0, 0);
+    match epoch.checked_add(SignedDuration::from_micros(local_micros)) {
+        Ok(datetime) => datetime,
+        Err(_) if local_micros < 0 => DateTime::MIN,
+        Err(_) => DateTime::MAX,
+    }
+}
+
 impl Display for Timestamp {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let micros = self.value;
-        let (mut secs, mut nanos) = (micros / MICROS_PER_SEC, (micros % MICROS_PER_SEC) * 1_000);
-        if nanos < 0 {
-            secs -= 1;
-            nanos += 1_000_000_000;
-        }
-
-        if secs > 253402207200 {
-            secs = 253402207200;
-            nanos = 0;
-        } else if secs < -377705023201 {
-            secs = -377705023201;
-            nanos = 0;
-        }
-        let ts = jiff::Timestamp::new(secs, nanos as i32).unwrap();
-
-        write!(f, "{}", strtime::format(TIMESTAMP_FORMAT, ts).unwrap())
+        let datetime = epoch_micros_to_datetime(self.value, 0);
+        write!(
+            f,
+            "{}",
+            strtime::format(TIMESTAMP_FORMAT, datetime).unwrap()
+        )
     }
 }
 
 impl Display for TimestampTz {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let micros = self.value;
-        let (mut secs, mut nanos) = (micros / MICROS_PER_SEC, (micros % MICROS_PER_SEC) * 1_000);
-        if nanos < 0 {
-            secs -= 1;
-            nanos += 1_000_000_000;
-        }
-
-        if secs > 253402207200 {
-            secs = 253402207200;
-            nanos = 0;
-        } else if secs < -377705023201 {
-            secs = -377705023201;
-            nanos = 0;
-        }
-        let ts = jiff::Timestamp::new(secs, nanos as i32).unwrap();
         let tz_offset = Offset::from_seconds(self.offset).expect("invalid timezone offset seconds");
-        let tz = tz_offset.to_time_zone();
-        let zoned = ts.to_zoned(tz);
+        let mut tm = BrokenDownTime::from(epoch_micros_to_datetime(self.value, self.offset));
+        tm.set_offset(Some(tz_offset));
 
-        write!(
-            f,
-            "{}",
-            strtime::format(TIMESTAMP_TIMEZONE_FORMAT, &zoned).unwrap()
-        )
+        write!(f, "{}", tm.to_string(TIMESTAMP_TIMEZONE_FORMAT).unwrap())
     }
 }
 
