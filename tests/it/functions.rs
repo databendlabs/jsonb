@@ -1158,6 +1158,53 @@ fn test_to_string() {
 }
 
 #[test]
+fn test_serialize_invalid_jsonb() {
+    // Truncated binary jsonb, so the scalar, array element, object value and
+    // object key payload reads each run past the end of the data.
+    let truncated: Vec<Vec<u8>> = [
+        &br#""value""#[..],
+        br#"["value"]"#,
+        br#"{"k":"value"}"#,
+        br#"{"k":null}"#,
+    ]
+    .into_iter()
+    .map(|json| {
+        let mut data = parse_value(json).unwrap().to_vec();
+        data.pop();
+        data
+    })
+    .collect();
+    let mut invalid: Vec<&[u8]> = vec![
+        // JSON text whose first bytes decode as a scalar header.
+        br#""hello world""#,
+        b"        null",
+        // JSON text whose first byte decodes as an object header with a
+        // length the data cannot hold.
+        b"[1,2,3]",
+    ];
+    invalid.extend(truncated.iter().map(Vec::as_slice));
+    for data in invalid {
+        let raw = RawJsonb::new(data);
+        assert!(serde_json::to_string(&raw).is_err(), "{data:?}");
+        assert_eq!(raw.to_string(), String::from_utf8_lossy(data));
+    }
+}
+
+#[test]
+fn test_json_text_with_in_bounds_scalar_header() {
+    // Bytes 4..8 read as a `false` jentry with payload length 0x212121, which
+    // the data holds, so only the scalar header check rejects it as jsonb.
+    let mut text = br#""abc0!!!"#.to_vec();
+    text.resize(8 + 0x212121, b'a');
+    text.push(b'"');
+
+    assert!(serde_json::to_string(&RawJsonb::new(&text)).is_err());
+    let value = from_slice(&text).unwrap();
+    assert_eq!(value, parse_value(&text).unwrap());
+    assert!(value.is_string());
+}
+
+#[test]
 fn test_to_pretty_string() {
     let sources = vec![
         (r#"null"#, r#"null"#),

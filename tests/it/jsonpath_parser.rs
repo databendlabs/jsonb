@@ -101,6 +101,15 @@ fn test_json_path_error() {
         r#"$['1', ,'3']"#,
         r#"$['aaa'}'bbb']"#,
         r#"@ > 10"#,
+        // Unterminated quoted fields, including escaped and UTF-8 content.
+        r#"$."a"#,
+        r#""a"#,
+        r#"$["a"#,
+        r#"$."a\""#,
+        r#"$."a\\"#,
+        r#"$."\u0061"#,
+        r#"$."中文"#,
+        r#"$.a ? (@ == "value"#,
     ];
 
     for case in cases {
