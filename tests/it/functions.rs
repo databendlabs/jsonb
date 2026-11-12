@@ -950,6 +950,72 @@ fn test_to_string() {
             }),
             r#""1970-01-01 01:30:00.000000 +0130""#,
         ),
+        // jiff::Timestamp ends at 9999-12-30T22:00:00Z; later values must not be clamped.
+        (
+            Value::Timestamp(Timestamp {
+                value: 253402300799000000,
+            }),
+            r#""9999-12-31 23:59:59.000000""#,
+        ),
+        (
+            Value::Timestamp(Timestamp {
+                value: 253402300799999999,
+            }),
+            r#""9999-12-31 23:59:59.999999""#,
+        ),
+        (
+            Value::Timestamp(Timestamp {
+                value: 253402207201000000,
+            }),
+            r#""9999-12-30 22:00:01.000000""#,
+        ),
+        (
+            Value::Timestamp(Timestamp {
+                value: -62135596800000000,
+            }),
+            r#""0001-01-01 00:00:00.000000""#,
+        ),
+        (
+            Value::Timestamp(Timestamp { value: -1 }),
+            r#""1969-12-31 23:59:59.999999""#,
+        ),
+        (
+            Value::Timestamp(Timestamp { value: i64::MAX }),
+            r#""9999-12-31 23:59:59.999999""#,
+        ),
+        (
+            Value::Timestamp(Timestamp { value: i64::MIN }),
+            r#""-9999-01-01 00:00:00.000000""#,
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 0,
+                value: 253402300799000000,
+            }),
+            r#""9999-12-31 23:59:59.000000 +0000""#,
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: -8 * 3600,
+                value: 253402300799000000,
+            }),
+            r#""9999-12-31 15:59:59.000000 -0800""#,
+        ),
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 8 * 3600,
+                value: 253402271999000000,
+            }),
+            r#""9999-12-31 23:59:59.000000 +0800""#,
+        ),
+        // The local time is past year 9999, so it saturates instead of panicking.
+        (
+            Value::TimestampTz(TimestampTz {
+                offset: 8 * 3600,
+                value: 253402300799000000,
+            }),
+            r#""9999-12-31 23:59:59.999999 +0800""#,
+        ),
         (
             Value::Interval(Interval {
                 months: 10,
