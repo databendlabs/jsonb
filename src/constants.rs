@@ -15,6 +15,26 @@
 // JSON text constants
 pub(crate) const UNICODE_LEN: usize = 4;
 
+/// Maximum nesting depth of arrays and objects when parsing JSON text or
+/// walking JSONB recursively. A level takes up to about 1.5 KiB of stack in
+/// release builds, so 512 levels fit in tokio's default 2 MiB thread stack.
+pub(crate) const MAX_NESTING_DEPTH: usize = 512;
+
+/// Returns the nesting depth after entering one more array or object.
+///
+/// # Errors
+///
+/// Returns `Error::RecursionLimitExceeded` if the new depth would exceed
+/// [`MAX_NESTING_DEPTH`].
+#[inline]
+pub(crate) fn enter_container(depth: usize) -> crate::error::Result<usize> {
+    if depth >= MAX_NESTING_DEPTH {
+        Err(crate::Error::RecursionLimitExceeded)
+    } else {
+        Ok(depth + 1)
+    }
+}
+
 // JSON text escape characters constants
 pub(crate) const BS: char = '\x5C'; // \\ Backslash
 pub(crate) const QU: char = '\x22'; // \" Double quotation mark

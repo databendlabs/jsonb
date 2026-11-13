@@ -15,12 +15,16 @@
 mod builder;
 mod constants;
 mod de;
+mod entry;
 mod iterator;
 mod jentry;
+mod json_writer;
 mod ser;
 mod util;
 
 pub(crate) use builder::*;
 pub use de::*;
+pub(crate) use entry::*;
 pub(crate) use iterator::*;
+pub(crate) use json_writer::JsonWriter;
 pub use ser::*;

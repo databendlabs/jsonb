@@ -1265,11 +1265,15 @@ impl RawJsonb<'_> {
     /// let result = invalid_raw_jsonb.as_str();
     /// assert!(result.is_err());
     ///
-    /// // Invalid UTF-8 (this will panic in the unsafe block of the original code!)
-    /// let invalid_utf8_jsonb = OwnedJsonb::new(vec![10, 0, 0, 0, 16, 0, 0, 0, 0, 150, 151]); // Invalid UTF-8 bytes
+    /// // Invalid UTF-8 string payload with a valid header and string JEntry
+    /// let invalid_utf8_jsonb = OwnedJsonb::new(vec![
+    ///     0x20, 0x00, 0x00, 0x00, // scalar container header
+    ///     0x10, 0x00, 0x00, 0x03, // string JEntry, payload length 3
+    ///     0xff, 0xfe, 0xfd, // invalid UTF-8 bytes
+    /// ]);
     /// let invalid_raw_utf8_jsonb = invalid_utf8_jsonb.as_raw();
     /// let result = invalid_raw_utf8_jsonb.as_str();
-    /// assert!(result.is_err());
+    /// assert_eq!(result, Err(jsonb::Error::InvalidUtf8));
     /// ```
     pub fn as_str(&self) -> Result<Option<Cow<'_, str>>> {
         let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
@@ -1488,7 +1492,7 @@ impl RawJsonb<'_> {
     ///
     /// // Binary value
     /// let binary_value = Value::Binary(&[1,2,3]);
-    /// let buf = binary_value.to_vec();
+    /// let buf = binary_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_extension_value().unwrap());
     /// ```
@@ -1520,7 +1524,7 @@ impl RawJsonb<'_> {
     ///
     /// // Binary value
     /// let binary_value = Value::Binary(&[1,2,3]);
-    /// let buf = binary_value.to_vec();
+    /// let buf = binary_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_extension_value().unwrap(), Some(ExtensionValue::Binary(&[1,2,3])));
     /// ```
@@ -1557,7 +1561,7 @@ impl RawJsonb<'_> {
     ///
     /// // Binary value
     /// let binary_value = Value::Binary(&[1,2,3]);
-    /// let buf = binary_value.to_vec();
+    /// let buf = binary_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_binary().unwrap());
     /// ```
@@ -1603,7 +1607,7 @@ impl RawJsonb<'_> {
     ///
     /// // Binary value
     /// let binary_value = Value::Binary(&[1,2,3]);
-    /// let buf = binary_value.to_vec();
+    /// let buf = binary_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_binary().unwrap(), Some(vec![1,2,3]));
     /// ```
@@ -1644,7 +1648,7 @@ impl RawJsonb<'_> {
     ///
     /// // Date value
     /// let date_value = Value::Date(Date { value: 20372 });
-    /// let buf = date_value.to_vec();
+    /// let buf = date_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_date().unwrap());
     /// ```
@@ -1691,7 +1695,7 @@ impl RawJsonb<'_> {
     ///
     /// // Date value
     /// let date_value = Value::Date(Date { value: 20372 });
-    /// let buf = date_value.to_vec();
+    /// let buf = date_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_date().unwrap(), Some(Date { value: 20372 }));
     /// ```
@@ -1732,7 +1736,7 @@ impl RawJsonb<'_> {
     ///
     /// // Timestamp value
     /// let timestamp_value = Value::Timestamp(Timestamp { value: 1760140800000000 });
-    /// let buf = timestamp_value.to_vec();
+    /// let buf = timestamp_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_timestamp().unwrap());
     /// ```
@@ -1779,7 +1783,7 @@ impl RawJsonb<'_> {
     ///
     /// // Timestamp value
     /// let timestamp_value = Value::Timestamp(Timestamp { value: 1760140800000000 });
-    /// let buf = timestamp_value.to_vec();
+    /// let buf = timestamp_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_timestamp().unwrap(), Some(Timestamp { value: 1760140800000000 }));
     /// ```
@@ -1820,7 +1824,7 @@ impl RawJsonb<'_> {
     ///
     /// // TimestampTz value
     /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8 * 3600, value: 1760140800000000 });
-    /// let buf = timestamp_tz_value.to_vec();
+    /// let buf = timestamp_tz_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_timestamp_tz().unwrap());
     /// ```
@@ -1867,7 +1871,7 @@ impl RawJsonb<'_> {
     ///
     /// // TimestampTz value
     /// let timestamp_tz_value = Value::TimestampTz(TimestampTz { offset: 8 * 3600, value: 1760140800000000 });
-    /// let buf = timestamp_tz_value.to_vec();
+    /// let buf = timestamp_tz_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_timestamp_tz().unwrap(), Some(TimestampTz { offset: 8 * 3600, value: 1760140800000000 }));
     /// ```
@@ -1908,7 +1912,7 @@ impl RawJsonb<'_> {
     ///
     /// // Interval value
     /// let interval_value = Value::Interval(Interval { months: 10, days: 20, micros: 300000000 });
-    /// let buf = interval_value.to_vec();
+    /// let buf = interval_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert!(raw_jsonb.is_interval().unwrap());
     /// ```
@@ -1955,7 +1959,7 @@ impl RawJsonb<'_> {
     ///
     /// // Interval value
     /// let interval_value = Value::Interval(Interval { months: 10, days: 20, micros: 300000000 });
-    /// let buf = interval_value.to_vec();
+    /// let buf = interval_value.to_vec().unwrap();
     /// let raw_jsonb = RawJsonb::new(&buf);
     /// assert_eq!(raw_jsonb.as_interval().unwrap(), Some(Interval { months: 10, days: 20, micros: 300000000 }));
     /// ```

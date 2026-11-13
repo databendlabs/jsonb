@@ -34,8 +34,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "arbitrary_precision")]
+use jsonb::Decimal64;
 use jsonb::RawJsonb;
 use jsonb::{parse_value, parse_value_standard_mode};
+use jsonb::{Number, Value};
 use ordered_float::OrderedFloat;
 
 #[test]
@@ -51,8 +54,8 @@ fn it_cmps_decimals() {
         let s1 = format!("{v1}");
         let s2 = format!("{v2}");
 
-        let buf1 = v1.to_vec();
-        let buf2 = v2.to_vec();
+        let buf1 = v1.to_vec().unwrap();
+        let buf2 = v2.to_vec().unwrap();
         let r1 = RawJsonb::new(&buf1);
         let r2 = RawJsonb::new(&buf2);
 
@@ -61,7 +64,7 @@ fn it_cmps_decimals() {
 
         // ignore -0.0 assert
         let zero_val = Value::Number(Number::UInt64(0));
-        let zero_buf = zero_val.to_vec();
+        let zero_buf = zero_val.to_vec().unwrap();
         let zero = RawJsonb::new(&zero_buf);
         if r1.cmp(&zero) != Equal {
             assert_eq!(a, s1);
@@ -2240,7 +2243,7 @@ fn test_parse_decimal() {
     for test in tests {
         let v = parse_value(test.as_bytes()).unwrap();
         let s = format!("{v}");
-        let buf = v.to_vec();
+        let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
         let ss = r.to_string();
 
@@ -2251,7 +2254,7 @@ fn test_parse_decimal() {
     for test in tests {
         let v = parse_value_standard_mode(test.as_bytes()).unwrap();
         let s = OrderedFloat(v.as_f64().unwrap());
-        let buf = v.to_vec();
+        let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
         let ss = OrderedFloat(r.as_f64().unwrap().unwrap());
         let val: f64 = fast_float2::parse(test).unwrap();
@@ -2284,7 +2287,7 @@ fn test_parse_float() {
     for (expected, test) in tests {
         let v = parse_value(test.as_bytes()).unwrap();
         let s = format!("{v}");
-        let buf = v.to_vec();
+        let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
         let ss = r.to_string();
 
@@ -2296,11 +2299,51 @@ fn test_parse_float() {
     for (expected, test) in tests {
         let v = parse_value_standard_mode(test.as_bytes()).unwrap();
         let s = format!("{v}");
-        let buf = v.to_vec();
+        let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
         let ss = r.to_string();
 
         assert_eq!(expected, s);
         assert_eq!(expected, ss);
     }
+}
+
+/// With `arbitrary_precision`, decimals serialize as their exact text, which
+/// may be at most 128 bytes long. Longer texts need a scale above 125, which
+/// the text parser never produces; serializing them fails, and `to_string`
+/// falls back to the raw bytes.
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn decimal_text_is_limited_to_128_bytes() {
+    for (scale, fits) in [(126, true), (127, false)] {
+        // `0.` and `scale - 1` zeros before the digit: `scale + 2` bytes.
+        let number = Number::Decimal64(Decimal64 { scale, value: 1 });
+        let expect = format!("0.{}1", "0".repeat(scale as usize - 1));
+        assert_eq!(expect.len() <= 128, fits);
+        let raw = Value::Number(number.clone()).to_vec().unwrap();
+        let raw = RawJsonb::new(&raw);
+        if fits {
+            assert_eq!(serde_json::to_string(&number).unwrap(), expect);
+            assert_eq!(raw.to_string(), expect);
+        } else {
+            assert!(serde_json::to_string(&number).is_err(), "scale {scale}");
+            assert_ne!(raw.to_string(), expect);
+            assert_eq!(raw.to_pretty_string(), "null");
+        }
+    }
+}
+
+#[test]
+fn comparable_encoding_treats_negative_zero_as_zero() {
+    // `-0.0` compares equal to `0` but used to encode below it.
+    let encode = |text: &str| {
+        let value = parse_value(text.as_bytes()).unwrap().to_vec().unwrap();
+        RawJsonb::new(&value).convert_to_comparable()
+    };
+    let negative_zero = Value::Number(Number::Float64(-0.0)).to_vec().unwrap();
+    let negative_zero = RawJsonb::new(&negative_zero).convert_to_comparable();
+    assert_eq!(negative_zero, encode("0"));
+    assert_eq!(negative_zero, encode("0.0"));
+    assert!(encode("-1e-300") < negative_zero);
+    assert!(negative_zero < encode("1e-300"));
 }
