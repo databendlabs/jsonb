@@ -143,6 +143,10 @@ fn test_path_exists() {
         (r#"{"a":1,"b":2}"#, r#"$.c"#, false),
         (r#"{"a":1,"b":2}"#, r#"$.a ? (@ == 1)"#, true),
         (r#"{"a":1,"b":2}"#, r#"$.a ? (@ > 1)"#, false),
+        // Literals with a fraction or exponent used to fail to parse.
+        (r#"{"a":1.5,"b":2}"#, r#"$.a ? (@ > 1.25)"#, true),
+        (r#"{"a":1.5,"b":2}"#, r#"$.a ? (@ > 1.75)"#, false),
+        (r#"{"a":1500,"b":2}"#, r#"$.a ? (@ == 1.5e3)"#, true),
         (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[0]"#, true),
         (r#"{"a":1,"b":[1,2,3]}"#, r#"$.b[3]"#, false),
         (

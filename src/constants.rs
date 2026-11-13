@@ -22,6 +22,26 @@ pub(crate) const UNICODE_LEN: usize = 4;
 /// `to_value`, `partial_cmp` and others overflow 2 MiB at 512 levels.
 pub(crate) const MAX_NESTING_DEPTH: usize = 512;
 
+/// Maximum parenthesis depth in a JSONPath expression. The JSONPath parser
+/// uses much more stack per level than data traversal.
+pub(crate) const MAX_JSON_PATH_DEPTH: usize = 64;
+
+/// Maximum number of `&&` and `||` operators in a JSONPath expression. Each
+/// one adds a level to the parsed tree, which is processed recursively.
+/// The parser counts them because unquoted field names may contain `&&`.
+pub(crate) const MAX_JSON_PATH_LOGICAL_OPERATORS: usize = 256;
+
+/// Maximum work units for one JSONPath evaluation. Each selected item, filter
+/// value, node visited by `.**` and compared pair costs one unit; without a
+/// limit, chained `.**` steps grow combinatorially with the nesting depth.
+pub(crate) const MAX_JSON_PATH_ITEMS: usize = 1_000_000;
+
+/// Bytes one JSONPath evaluation may copy beyond the document size. A value
+/// is copied once per selected ancestor, so `$.**.**` on 500 nested arrays
+/// around a 1 KiB string copies about 300 MB. The budget is this plus the
+/// document size, so any single value can be copied at least once.
+pub(crate) const MAX_JSON_PATH_EXTRA_COPY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Returns the nesting depth after entering one more array or object.
 ///
 /// # Errors

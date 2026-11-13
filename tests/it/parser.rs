@@ -214,10 +214,6 @@ fn test_parse_f64() {
         ("0.00e-00", Value::Number(Number::Float64(0.0))),
         ("3.5E-2147483647", Value::Number(Number::Float64(0.0))),
         (
-            "0.0100000000000000000001",
-            Value::Number(Number::Float64(0.01)),
-        ),
-        (
             &i64_min_minus_one,
             Value::Number(Number::Float64((i64::MIN as f64) - 1.0)),
         ),
@@ -233,14 +229,6 @@ fn test_parse_f64() {
         (
             "100e-777777777777777777777777777",
             Value::Number(Number::Float64(0.0)),
-        ),
-        (
-            "1010101010101010101010101010101010101010",
-            Value::Number(Number::Float64(1.010_101_010_101_01e39)),
-        ),
-        (
-            "0.1010101010101010101010101010101010101010",
-            Value::Number(Number::Float64(0.101_010_101_010_101_01)),
         ),
         (
             "0e1000000000000000000000000000000000000000000000",
@@ -285,6 +273,47 @@ fn test_parse_f64() {
     ];
     test_parse_ok(tests.clone());
     test_parse_standard_ok(tests);
+
+    // More significant digits than `f64` holds. The standard mode parses them
+    // as the nearest `f64`, and so does the extended mode without
+    // `arbitrary_precision`; with it, they parse as exact decimals. These used
+    // to expect floats from both modes, and passed only because decimals
+    // compared with floats as `f64`.
+    let long = [
+        ("0.0100000000000000000001", 0.01),
+        (
+            "1010101010101010101010101010101010101010",
+            1.010_101_010_101_01e39,
+        ),
+        (
+            "0.1010101010101010101010101010101010101010",
+            0.101_010_101_010_101_01,
+        ),
+    ];
+    let floats = long.map(|(s, f)| (s, Value::Number(Number::Float64(f))));
+    test_parse_standard_ok(floats.to_vec());
+    #[cfg(not(feature = "arbitrary_precision"))]
+    test_parse_ok(floats.to_vec());
+    #[cfg(feature = "arbitrary_precision")]
+    {
+        let digits: ethnum::i256 = "1010101010101010101010101010101010101010".parse().unwrap();
+        let decimals = [
+            Number::Decimal128(jsonb::Decimal128 {
+                scale: 22,
+                value: 100000000000000000001,
+            }),
+            Number::Decimal256(jsonb::Decimal256 {
+                scale: 0,
+                value: digits,
+            }),
+            Number::Decimal256(jsonb::Decimal256 {
+                scale: 40,
+                value: digits,
+            }),
+        ];
+        let tests = long.iter().zip(decimals);
+        test_parse_ok(tests.map(|((s, _), n)| (*s, Value::Number(n))).collect());
+    }
 
     // Extended JSON number syntax
     let extended_tests = vec![
@@ -568,6 +597,9 @@ fn test_value_display_non_finite_floats_as_null() {
     assert_eq!(formatted, raw);
     assert_eq!(Number::Float64(f64::NAN).to_string(), "NaN");
     assert_eq!(Number::Float64(f64::NEG_INFINITY).to_string(), "-inf");
+
+    let path = jsonb::jsonpath::parse_json_path(b"$ ? (@ > -inf)").unwrap();
+    assert_eq!(path.to_string(), "$?(@ > -inf)");
 }
 
 #[test]

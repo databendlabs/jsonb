@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write;
 
 use crate::number::Number;
 
@@ -103,38 +104,33 @@ impl ArrayIndex {
     ///
     /// A `HashSet<usize>` containing the indices to select.
     pub fn to_indices(&self, length: usize) -> HashSet<usize> {
-        let length = length as i32;
+        // `i64` arithmetic avoids overflow for extreme `i32` indices.
+        let length = length as i64;
 
         let mut indices = HashSet::new();
         match self {
             ArrayIndex::Index(idx) => {
                 let idx = Self::convert_index(idx, length);
-                if idx >= 0 && idx < length {
+                if (0..length).contains(&idx) {
                     indices.insert(idx as usize);
                 }
             }
             ArrayIndex::Slice((start, end)) => {
-                let start_idx = Self::convert_index(start, length);
-                let end_idx = Self::convert_index(end, length);
-
-                let start_idx = if start_idx < 0 { 0 } else { start_idx as usize };
-                let end_idx = if end_idx >= length {
-                    (length - 1) as usize
-                } else {
-                    end_idx as usize
-                };
+                // Clamp to the array bounds; an empty range selects nothing.
+                let start_idx = Self::convert_index(start, length).max(0);
+                let end_idx = Self::convert_index(end, length).min(length - 1);
                 for idx in start_idx..=end_idx {
-                    indices.insert(idx);
+                    indices.insert(idx as usize);
                 }
             }
         }
         indices
     }
 
-    fn convert_index(index: &Index, length: i32) -> i32 {
+    fn convert_index(index: &Index, length: i64) -> i64 {
         match index {
-            Index::Index(idx) => *idx,
-            Index::LastIndex(idx) => length + *idx - 1,
+            Index::Index(idx) => i64::from(*idx),
+            Index::LastIndex(idx) => length + i64::from(*idx) - 1,
         }
     }
 }
@@ -384,13 +380,17 @@ impl Display for Path<'_> {
                 write!(f, "[*]")?;
             }
             Path::ColonField(field) => {
-                write!(f, ":{field}")?;
+                f.write_char(':')?;
+                write_name(f, field, false)?;
             }
             Path::DotField(field) => {
-                write!(f, ".{field}")?;
+                f.write_char('.')?;
+                write_name(f, field, false)?;
             }
             Path::ObjectField(field) => {
-                write!(f, "[\"{field}\"]")?;
+                f.write_char('[')?;
+                write_quoted_str(f, field)?;
+                f.write_char(']')?;
             }
             Path::ArrayIndices(indices) => {
                 write!(f, "[")?;
@@ -429,9 +429,7 @@ impl Display for PathValue<'_> {
             PathValue::Number(v) => {
                 write!(f, "{v}")
             }
-            PathValue::String(v) => {
-                write!(f, "\"{v}\"")
-            }
+            PathValue::String(v) => write_quoted_str(f, v),
             PathValue::Raw(v) => {
                 write!(f, "{}", v.to_string())
             }
@@ -513,22 +511,14 @@ impl Display for Expr<'_> {
                 write!(f, "{v}")?;
             }
             Expr::BinaryOp { op, left, right } => {
-                if let Expr::BinaryOp { op: left_op, .. } = &**left {
-                    if left_op == &BinaryOperator::And || left_op == &BinaryOperator::Or {
-                        write!(f, "({left})")?;
-                    } else {
-                        write!(f, "{left}")?;
-                    }
+                if left.needs_parens(op, false) {
+                    write!(f, "({left})")?;
                 } else {
                     write!(f, "{left}")?;
                 }
                 write!(f, " {op} ")?;
-                if let Expr::BinaryOp { op: right_op, .. } = &**right {
-                    if right_op == &BinaryOperator::And || right_op == &BinaryOperator::Or {
-                        write!(f, "({right})")?;
-                    } else {
-                        write!(f, "{right}")?;
-                    }
+                if right.needs_parens(op, true) {
+                    write!(f, "({right})")?;
                 } else {
                     write!(f, "{right}")?;
                 }
@@ -545,5 +535,100 @@ impl Display for Expr<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl Expr<'_> {
+    /// Returns whether this expression, an operand of `parent`, must be
+    /// parenthesized for the formatted text to parse back to the same tree.
+    ///
+    /// The parser gives `&&` higher precedence than `||` and reads both left to
+    /// right, so `a || b || c` is `(a || b) || c`. Parenthesizing only where the
+    /// tree differs from that keeps long chains flat; wrapping every logical
+    /// operand turned a chain of 100 `||` into 100 nested parentheses, past the
+    /// parser's nesting limit.
+    fn needs_parens(&self, parent: &BinaryOperator, is_right: bool) -> bool {
+        let Expr::BinaryOp { op: child, .. } = self else {
+            return false;
+        };
+        let is_logical =
+            |op: &BinaryOperator| matches!(op, BinaryOperator::And | BinaryOperator::Or);
+        if !is_logical(child) {
+            return false;
+        }
+        match parent {
+            // `&&` binds tighter, so it never needs parentheses under `||`.
+            BinaryOperator::Or => child == &BinaryOperator::Or && is_right,
+            BinaryOperator::And => child == &BinaryOperator::Or || is_right,
+            // Comparison and arithmetic operands are never logical expressions
+            // when parsed, so keep the parentheses that mark such a tree.
+            _ => true,
+        }
+    }
+}
+
+/// Characters that end an unquoted name in the JSONPath and key-path grammars.
+const RAW_NAME_DELIMITERS: &str = " ,.:{}[]()?@$|<>!=+-*/%\"'";
+
+/// Writes `s` as a double-quoted string literal that the path parsers read back
+/// as the same string.
+pub(crate) fn write_quoted_str(f: &mut impl Write, s: &str) -> std::fmt::Result {
+    f.write_char('"')?;
+    for c in s.chars() {
+        match c {
+            '"' => f.write_str("\\\"")?,
+            '\\' => f.write_str("\\\\")?,
+            c if c.is_control() => write!(f, "\\u{:04X}", u32::from(c))?,
+            c => f.write_char(c)?,
+        }
+    }
+    f.write_char('"')
+}
+
+/// Returns whether `name` cannot be written as an unquoted name as is.
+///
+/// Such characters would end the name, be skipped as whitespace, or start a
+/// different token. With `leading_digit_is_index`, a leading digit also counts,
+/// so that a key-path name is not read back as an array index.
+fn needs_escaping(c: char, first: bool, leading_digit_is_index: bool) -> bool {
+    c == '\\'
+        || c.is_whitespace()
+        || c.is_control()
+        || RAW_NAME_DELIMITERS.contains(c)
+        || (leading_digit_is_index && first && c.is_ascii_digit())
+}
+
+/// Writes `name` unquoted, escaping as `\uXXXX` any character that would not
+/// read back unchanged.
+pub(crate) fn write_raw_name(
+    f: &mut impl Write,
+    name: &str,
+    leading_digit_is_index: bool,
+) -> std::fmt::Result {
+    for (i, c) in name.chars().enumerate() {
+        if needs_escaping(c, i == 0, leading_digit_is_index) {
+            write!(f, "\\u{:04X}", u32::from(c))?;
+        } else {
+            f.write_char(c)?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes `name` unquoted when it reads back unchanged, and quoted otherwise.
+pub(crate) fn write_name(
+    f: &mut impl Write,
+    name: &str,
+    leading_digit_is_index: bool,
+) -> std::fmt::Result {
+    let plain = !name.is_empty()
+        && !name
+            .chars()
+            .enumerate()
+            .any(|(i, c)| needs_escaping(c, i == 0, leading_digit_is_index));
+    if plain {
+        f.write_str(name)
+    } else {
+        write_quoted_str(f, name)
     }
 }
