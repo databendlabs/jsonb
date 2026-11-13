@@ -555,7 +555,7 @@ JsonPath {
 ---------- Input ----------
 $."st\"ore"."book\uD83D\uDC8E"
 ---------- Output ---------
-$.st"ore.book💎
+$."st\"ore".book💎
 ---------- AST ------------
 JsonPath {
     paths: [

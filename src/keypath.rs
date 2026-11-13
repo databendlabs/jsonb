@@ -31,6 +31,9 @@ use nom::Parser;
 
 use crate::jsonpath::raw_string;
 use crate::jsonpath::string;
+use crate::jsonpath::write_name;
+use crate::jsonpath::write_quoted_str;
+use crate::jsonpath::write_raw_name;
 use crate::Error;
 
 /// Represents a set of key path chains.
@@ -92,10 +95,14 @@ impl Display for KeyPath<'_> {
                 write!(f, "{idx}")?;
             }
             KeyPath::QuotedName(name) => {
-                write!(f, "\"{name}\"")?;
+                write_quoted_str(f, name)?;
             }
             KeyPath::Name(name) => {
-                write!(f, "{name}")?;
+                if name.is_empty() {
+                    write_quoted_str(f, name)?;
+                } else {
+                    write_raw_name(f, name, true)?;
+                }
             }
         }
         Ok(())
@@ -123,7 +130,7 @@ impl Display for OwnedKeyPath {
                 write!(f, "{idx}")?;
             }
             OwnedKeyPath::Name(name) => {
-                write!(f, "{name}")?;
+                write_name(f, name, true)?;
             }
         }
         Ok(())

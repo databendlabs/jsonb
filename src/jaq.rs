@@ -20,6 +20,7 @@ use jaq_json::Num;
 use jaq_json::Val;
 use num_traits::ToPrimitive;
 
+use crate::constants::enter_container;
 use crate::constants::DECIMAL128_MAX;
 use crate::constants::DECIMAL128_MIN;
 use crate::constants::MAX_DECIMAL256_PRECISION;
@@ -47,11 +48,12 @@ impl<'a> TryFrom<RawJsonb<'a>> for Val {
 
     fn try_from(raw: RawJsonb<'a>) -> Result<Self> {
         let item = JsonbItem::from_raw_jsonb(raw)?;
-        jsonb_item_to_jaq_val(item)
+        jsonb_item_to_jaq_val(item, 0)
     }
 }
 
-fn jsonb_item_to_jaq_val(item: JsonbItem<'_>) -> Result<Val> {
+/// Converts an item to a jaq value, where `depth` is the number of enclosing containers.
+fn jsonb_item_to_jaq_val(item: JsonbItem<'_>, depth: usize) -> Result<Val> {
     match item {
         JsonbItem::Null => Ok(Val::Null),
         JsonbItem::Boolean(value) => Ok(Val::Bool(value)),
@@ -61,33 +63,35 @@ fn jsonb_item_to_jaq_val(item: JsonbItem<'_>) -> Result<Val> {
             ExtensionValue::Binary(value) => Ok(Val::byte_str(value.to_vec())),
             value => Ok(Val::utf8_str(value.to_string().into_bytes())),
         },
-        JsonbItem::Raw(raw) => raw_container_to_jaq_val(raw),
-        JsonbItem::Owned(owned) => raw_container_to_jaq_val(owned.as_raw()),
+        JsonbItem::Raw(raw) => raw_container_to_jaq_val(raw, depth),
+        JsonbItem::Owned(owned) => raw_container_to_jaq_val(owned.as_raw(), depth),
     }
 }
 
-fn raw_container_to_jaq_val(raw: RawJsonb<'_>) -> Result<Val> {
+fn raw_container_to_jaq_val(raw: RawJsonb<'_>, depth: usize) -> Result<Val> {
     match raw.jsonb_item_type()? {
         JsonbItemType::Array(len) => {
+            let depth = enter_container(depth)?;
             let iter = ArrayIterator::new_with_len(raw, len);
             let values = iter
-                .map(|item| item.and_then(jsonb_item_to_jaq_val))
+                .map(|item| item.and_then(|item| jsonb_item_to_jaq_val(item, depth)))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Val::Arr(jaq_json::Rc::new(values)))
         }
         JsonbItemType::Object(len) => {
+            let depth = enter_container(depth)?;
             let iter = ObjectIterator::new_with_len(raw, len)?;
             let mut values = Map::with_capacity_and_hasher(iter.len(), Default::default());
             for item in iter {
                 let (key, value) = item?;
                 values.insert(
                     Val::utf8_str(key.as_bytes().to_vec()),
-                    jsonb_item_to_jaq_val(value)?,
+                    jsonb_item_to_jaq_val(value, depth)?,
                 );
             }
             Ok(Val::obj(values))
         }
-        _ => jsonb_item_to_jaq_val(JsonbItem::from_raw_jsonb(raw)?),
+        _ => jsonb_item_to_jaq_val(JsonbItem::from_raw_jsonb(raw)?, depth),
     }
 }
 

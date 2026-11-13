@@ -20,6 +20,7 @@ use byteorder::BigEndian;
 use byteorder::WriteBytesExt;
 
 use super::constants::*;
+use super::jentry::encode_container_header;
 use super::jentry::JEntry;
 use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
@@ -60,7 +61,7 @@ impl<'a> ArrayBuilder<'a> {
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
         let mut buf = Vec::new();
-        let header = ARRAY_CONTAINER_TAG | self.items.len() as u32;
+        let header = encode_container_header(ARRAY_CONTAINER_TAG, self.items.len())?;
         buf.write_u32::<BigEndian>(header)?;
 
         let mut jentry_index = reserve_jentries(&mut buf, self.items.len() * 4);
@@ -93,11 +94,6 @@ impl<'a> ArrayDistinctBuilder<'a> {
         }
     }
 
-    pub(crate) fn push_raw_jsonb(&mut self, raw: RawJsonb<'a>) {
-        let item = JsonbItem::Raw(raw);
-        self.push_jsonb_item(item);
-    }
-
     pub(crate) fn pop_jsonb_item(&mut self, item: JsonbItem<'a>) -> Option<()> {
         if let Some(cnt) = self.item_map.get_mut(&item) {
             if *cnt > 0 {
@@ -108,14 +104,9 @@ impl<'a> ArrayDistinctBuilder<'a> {
         None
     }
 
-    pub(crate) fn pop_raw_jsonb(&mut self, raw: RawJsonb<'a>) -> Option<()> {
-        let item = JsonbItem::Raw(raw);
-        self.pop_jsonb_item(item)
-    }
-
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
         let mut buf = Vec::new();
-        let header = ARRAY_CONTAINER_TAG | self.items.len() as u32;
+        let header = encode_container_header(ARRAY_CONTAINER_TAG, self.items.len())?;
         buf.write_u32::<BigEndian>(header)?;
 
         let mut jentry_index = reserve_jentries(&mut buf, self.items.len() * 4);
@@ -163,12 +154,12 @@ impl<'a> ObjectBuilder<'a> {
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
         let mut buf = Vec::new();
-        let header = OBJECT_CONTAINER_TAG | self.entries.len() as u32;
+        let header = encode_container_header(OBJECT_CONTAINER_TAG, self.entries.len())?;
         buf.write_u32::<BigEndian>(header)?;
 
         let mut jentry_index = reserve_jentries(&mut buf, self.entries.len() * 8);
         for key in self.entries.keys() {
-            append_object_key(&mut buf, &mut jentry_index, key);
+            append_object_key(&mut buf, &mut jentry_index, key)?;
         }
         for (_, item) in self.entries.into_iter() {
             append_jsonb_item(&mut buf, &mut jentry_index, item)?;
@@ -192,12 +183,12 @@ where
     K: AsRef<str>,
 {
     let mut buf = Vec::new();
-    let header = OBJECT_CONTAINER_TAG | entries.len() as u32;
+    let header = encode_container_header(OBJECT_CONTAINER_TAG, entries.len())?;
     buf.write_u32::<BigEndian>(header)?;
 
     let mut jentry_index = reserve_jentries(&mut buf, entries.len() * 8);
     for (key, _) in entries.iter() {
-        append_object_key(&mut buf, &mut jentry_index, key.as_ref());
+        append_object_key(&mut buf, &mut jentry_index, key.as_ref())?;
     }
     for (_, item) in entries.into_iter() {
         append_jsonb_item(&mut buf, &mut jentry_index, item)?;
@@ -205,11 +196,11 @@ where
     Ok(OwnedJsonb::new(buf))
 }
 
-fn append_object_key(buf: &mut Vec<u8>, jentry_index: &mut usize, key: &str) {
-    let key_len = key.len();
+fn append_object_key(buf: &mut Vec<u8>, jentry_index: &mut usize, key: &str) -> Result<()> {
+    let jentry = JEntry::make_string_jentry(key.len())?;
     buf.extend_from_slice(key.as_bytes());
-    let jentry = JEntry::make_string_jentry(key_len);
-    replace_jentry(buf, jentry, jentry_index)
+    replace_jentry(buf, jentry, jentry_index);
+    Ok(())
 }
 
 fn append_jsonb_item(buf: &mut Vec<u8>, jentry_index: &mut usize, item: JsonbItem) -> Result<()> {
@@ -228,30 +219,30 @@ fn append_jsonb_item(buf: &mut Vec<u8>, jentry_index: &mut usize, item: JsonbIte
         }
         JsonbItem::Number(num) => match num {
             NumberItem::Raw(data) => {
-                let jentry = JEntry::make_number_jentry(data.len());
+                let jentry = JEntry::make_number_jentry(data.len())?;
                 replace_jentry(buf, jentry, jentry_index);
                 buf.extend_from_slice(data);
             }
             NumberItem::Number(num) => {
                 let len = num.compact_encode(&mut *buf)?;
-                let jentry = JEntry::make_number_jentry(len);
+                let jentry = JEntry::make_number_jentry(len)?;
                 replace_jentry(buf, jentry, jentry_index);
             }
         },
         JsonbItem::String(data) => {
-            let jentry = JEntry::make_string_jentry(data.len());
+            let jentry = JEntry::make_string_jentry(data.len())?;
             replace_jentry(buf, jentry, jentry_index);
             buf.extend_from_slice(data.as_bytes());
         }
         JsonbItem::Extension(ext) => match ext {
             ExtensionItem::Raw(data) => {
-                let jentry = JEntry::make_extension_jentry(data.len());
+                let jentry = JEntry::make_extension_jentry(data.len())?;
                 replace_jentry(buf, jentry, jentry_index);
                 buf.extend_from_slice(data);
             }
             ExtensionItem::Extension(ext) => {
                 let len = ext.compact_encode(&mut *buf)?;
-                let jentry = JEntry::make_extension_jentry(len);
+                let jentry = JEntry::make_extension_jentry(len)?;
                 replace_jentry(buf, jentry, jentry_index);
             }
         },
@@ -282,7 +273,7 @@ fn append_raw_jsonb_data(
         replace_jentry(buf, scalar_jentry, jentry_index);
         buf.extend_from_slice(data);
     } else {
-        let jentry = JEntry::make_container_jentry(raw_jsonb.len());
+        let jentry = JEntry::make_container_jentry(raw_jsonb.len())?;
         replace_jentry(buf, jentry, jentry_index);
         buf.extend_from_slice(raw_jsonb.data);
     }
@@ -330,7 +321,7 @@ mod tests {
         let mut from_encoder = Vec::new();
         {
             let value = init_object(vec![("arr", Value::Array(vec![Value::Bool(false)]))]);
-            value.write_to_vec(&mut from_encoder);
+            value.write_to_vec(&mut from_encoder).unwrap();
         }
         assert_eq!(from_builder, from_encoder);
     }
@@ -355,7 +346,7 @@ mod tests {
                 "obj",
                 init_object(vec![("field", Value::Bool(true))]),
             )]);
-            value.write_to_vec(&mut from_encoder);
+            value.write_to_vec(&mut from_encoder).unwrap();
         }
         assert_eq!(from_builder, from_encoder);
     }

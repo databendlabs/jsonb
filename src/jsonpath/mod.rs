@@ -19,5 +19,8 @@ mod selector;
 pub use parser::parse_json_path;
 pub(crate) use parser::raw_string;
 pub(crate) use parser::string;
+pub(crate) use path::write_name;
+pub(crate) use path::write_quoted_str;
+pub(crate) use path::write_raw_name;
 pub use path::*;
 pub use selector::Selector;

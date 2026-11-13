@@ -28,7 +28,7 @@ fn strip_nulls_deser(data: &[u8]) {
     let mut buf = Vec::new();
     let mut json = from_slice(data).unwrap();
     strip_value_nulls(&mut json);
-    json.write_to_vec(&mut buf);
+    json.write_to_vec(&mut buf).unwrap();
     assert!(!buf.is_empty());
 }
 
@@ -60,7 +60,7 @@ fn add_benchmark(c: &mut Criterion) {
     for path in paths {
         let file = format!("{}", path.unwrap().path().display());
         let bytes = read(&file);
-        let json = from_slice(&bytes).unwrap().to_vec();
+        let json = from_slice(&bytes).unwrap().to_vec().unwrap();
 
         c.bench_function(&format!("strip_nulls_deser[{file}]"), |b| {
             b.iter(|| strip_nulls_deser(&json));
