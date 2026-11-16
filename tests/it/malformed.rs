@@ -498,6 +498,14 @@ fn binary_apis_enforce_nesting_limit() {
                 deep.as_raw().to_value().err(),
                 Some(Error::RecursionLimitExceeded)
             );
+            // `from_slice` used to parse the bytes again as JSON text and
+            // report a syntax error.
+            assert_eq!(
+                from_slice(deep.as_ref()).err(),
+                Some(Error::RecursionLimitExceeded),
+                "from_slice of {} nested {shape}",
+                MAX_DEPTH + 1
+            );
         }
     });
 }

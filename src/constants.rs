@@ -16,8 +16,10 @@
 pub(crate) const UNICODE_LEN: usize = 4;
 
 /// Maximum nesting depth of arrays and objects when parsing JSON text or
-/// walking JSONB recursively. A level takes up to about 1.5 KiB of stack in
-/// release builds, so 512 levels fit in tokio's default 2 MiB thread stack.
+/// walking JSONB recursively. In release builds a level takes up to about
+/// 1.5 KiB of stack, so 512 levels fit in tokio's default 2 MiB thread stack.
+/// Debug builds take about 4 to 9 KiB per level and need a larger stack:
+/// `to_value`, `partial_cmp` and others overflow 2 MiB at 512 levels.
 pub(crate) const MAX_NESTING_DEPTH: usize = 512;
 
 /// Returns the nesting depth after entering one more array or object.

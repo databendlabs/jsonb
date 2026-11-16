@@ -242,6 +242,9 @@ impl<'a> JsonAst<'a> {
 pub fn from_slice(buf: &[u8]) -> Result<Value<'_>> {
     match RawJsonb::new(buf).to_value() {
         Ok(value) => Ok(value),
+        // Valid JSONB nested too deeply would otherwise surface as a syntax
+        // error from parsing the bytes as JSON text.
+        Err(Error::RecursionLimitExceeded) => Err(Error::RecursionLimitExceeded),
         // for compatible with the first version of `JSON` text, parse it again
         Err(_) => parse_value(buf),
     }
