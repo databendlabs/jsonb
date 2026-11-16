@@ -286,6 +286,34 @@ impl<'de> Deserializer<'de> {
         Ok(s.to_string())
     }
 
+    /// Reads a value for `deserialize_bytes` and `deserialize_byte_buf`.
+    ///
+    /// A binary value gives its bytes, so values written by `serialize_bytes`
+    /// read back unchanged, and a string gives its UTF-8 bytes, as in
+    /// serde_json. Other extension values give their text, as for
+    /// `deserialize_str`.
+    fn read_bytes<V>(&mut self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let jentry = self.read_scalar_jentry()?;
+        let length = jentry.length as usize;
+        match jentry.type_code {
+            STRING_TAG => {
+                let s = decode_str(self.read_payload(length)?)?;
+                visitor.visit_borrowed_bytes(s.as_bytes())
+            }
+            EXTENSION_TAG => match ExtensionValue::decode(self.read_payload(length)?)? {
+                ExtensionValue::Binary(v) => visitor.visit_borrowed_bytes(v),
+                value => visitor.visit_string(value.to_string()),
+            },
+            NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | CONTAINER_TAG => {
+                Err(Error::UnexpectedType)
+            }
+            _ => Err(Error::InvalidJsonb),
+        }
+    }
+
     fn read_with_jentry<V>(&mut self, jentry: JEntry, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -526,14 +554,14 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_string(self.read_string()?)
+        self.read_bytes(visitor)
     }
 
     fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_string(self.read_string()?)
+        self.read_bytes(visitor)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
@@ -698,23 +726,17 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         self.deserialize_str(visitor)
     }
 
-    /// Skips the current value, such as an object field the target type does not know.
+    /// Skips the current value, such as an object field the target type does
+    /// not know.
+    ///
+    /// The value is read like any other, so it is checked the same way and
+    /// counts toward the nesting limit. Skipping its bytes unread accepted
+    /// invalid values, and at the top level any input, even an empty one.
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        match &self.current_jentry {
-            // Inside an array or object the index points at this value's
-            // payload, whose length the `JEntry` records. Array elements are
-            // read sequentially, so the index must move past it.
-            Some(jentry) => {
-                let length = jentry.length as usize;
-                self.read_payload(length)?;
-            }
-            // At the top level the value spans the rest of the data.
-            None => self.index = self.raw.len(),
-        }
-        visitor.visit_unit()
+        self.deserialize_any(visitor)
     }
 
     #[inline]

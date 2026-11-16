@@ -724,6 +724,57 @@ fn deserializing_skips_unknown_fields_and_ignored_elements() {
 }
 
 #[test]
+fn ignored_values_are_checked() {
+    use serde::de::IgnoredAny;
+    use serde::Deserialize;
+
+    // Ignoring a value used to skip its bytes unread. At the top level that
+    // accepted any input, even an empty one.
+    for bytes in [
+        &b""[..],
+        b"\x01",
+        b"\xff\xff\xff\xff",
+        b"\x20\0\0\0\x70\0\0\0",
+    ] {
+        assert!(
+            from_raw_jsonb::<IgnoredAny>(&RawJsonb::new(bytes)).is_err(),
+            "{bytes:02x?}"
+        );
+    }
+
+    // `{"a": <invalid UTF-8 string>, "b": "y"}`: the unknown field `a` is
+    // checked although it is skipped.
+    #[derive(Debug, Deserialize)]
+    struct Partial {
+        #[allow(dead_code)]
+        b: String,
+    }
+    let bytes = jsonb(
+        &[
+            0x4000_0002,
+            0x1000_0001,
+            0x1000_0001,
+            0x1000_0001,
+            0x1000_0001,
+        ],
+        b"ab\xffy",
+    );
+    let err = from_raw_jsonb::<Partial>(&RawJsonb::new(&bytes)).unwrap_err();
+    assert_eq!(err, Error::InvalidUtf8);
+
+    // Ignored values count toward the nesting limit.
+    with_big_stack(|| {
+        let ok = nested_arrays(MAX_DEPTH);
+        assert!(from_raw_jsonb::<IgnoredAny>(&ok.as_raw()).is_ok());
+        let deep = nested_arrays(MAX_DEPTH + 1);
+        assert_eq!(
+            from_raw_jsonb::<IgnoredAny>(&deep.as_raw()).err(),
+            Some(Error::RecursionLimitExceeded)
+        );
+    });
+}
+
+#[test]
 fn signed_indexes_do_not_overflow() {
     let array = "[1,2,3]".parse::<OwnedJsonb>().unwrap();
     let raw = array.as_raw();

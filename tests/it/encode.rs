@@ -328,3 +328,76 @@ fn test_serialize_bytes_as_binary() {
     ]);
     assert_eq!(nested.as_raw().to_value().unwrap(), expected);
 }
+
+/// Bytes that serialize with `serialize_bytes` and deserialize with
+/// `deserialize_bytes` (`OWNED == false`) or `deserialize_byte_buf`, accepting
+/// only byte callbacks.
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct ByteValue<const OWNED: bool>(#[serde(serialize_with = "serialize_byte_slice")] Vec<u8>);
+
+fn serialize_byte_slice<S: serde::Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_bytes(v)
+}
+
+impl<'de, const OWNED: bool> serde::Deserialize<'de> for ByteValue<OWNED> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BytesOnly;
+        impl serde::de::Visitor<'_> for BytesOnly {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(v.to_vec())
+            }
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(v)
+            }
+        }
+        let bytes = if OWNED {
+            deserializer.deserialize_byte_buf(BytesOnly)?
+        } else {
+            deserializer.deserialize_bytes(BytesOnly)?
+        };
+        Ok(Self(bytes))
+    }
+}
+
+#[test]
+fn test_bytes_round_trip_as_binary() {
+    // `deserialize_bytes` and `deserialize_byte_buf` used to format binary
+    // values as hexadecimal text, so `[1, 2, 3]` read back as the string
+    // "010203", which byte-only visitors rejected.
+    fn check<const OWNED: bool>() {
+        for bytes in [vec![], vec![1, 2, 3], vec![0xff; 300]] {
+            let value = ByteValue::<OWNED>(bytes);
+            let jsonb = jsonb::to_owned_jsonb(&value).unwrap();
+            let back: ByteValue<OWNED> = jsonb::from_raw_jsonb(&jsonb.as_raw()).unwrap();
+            assert_eq!(back, value);
+        }
+
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Nested<const OWNED: bool> {
+            name: String,
+            data: ByteValue<OWNED>,
+            list: Vec<ByteValue<OWNED>>,
+            pair: (ByteValue<OWNED>, u8),
+        }
+        let value = Nested::<OWNED> {
+            name: "n".to_string(),
+            data: ByteValue(vec![0, 1]),
+            list: vec![ByteValue(vec![]), ByteValue(vec![0xfe, 0xff])],
+            pair: (ByteValue(vec![7]), 8),
+        };
+        let jsonb = jsonb::to_owned_jsonb(&value).unwrap();
+        let back: Nested<OWNED> = jsonb::from_raw_jsonb(&jsonb.as_raw()).unwrap();
+        assert_eq!(back, value);
+
+        // Strings give their UTF-8 bytes, as in serde_json.
+        let text: jsonb::OwnedJsonb = r#""héllo""#.parse().unwrap();
+        let back: ByteValue<OWNED> = jsonb::from_raw_jsonb(&text.as_raw()).unwrap();
+        assert_eq!(back.0, "héllo".as_bytes());
+    }
+    check::<false>();
+    check::<true>();
+}
