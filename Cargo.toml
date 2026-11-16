@@ -42,14 +42,14 @@ simdutf8 = "0.1.5"
 zmij = "1.0"
 
 [dev-dependencies]
-criterion = "0.5.1"
+criterion = "0.8.2"
 goldenfile = "1.8"
 json-deserializer = "0.4.4"
 json-five = "0.3.0"
 mockalloc = "0.1.2"
 proptest = "1.7"
 serde_json = "1.0"
-simd-json = "0.15.0"
+simd-json = "0.19.0"
 
 [features]
 default = ["databend", "preserve_order", "arbitrary_precision"]
@@ -71,4 +71,20 @@ harness = false
 
 [[bench]]
 name = "strip_nulls"
+harness = false
+
+[[bench]]
+name = "read"
+harness = false
+
+[[bench]]
+name = "write"
+harness = false
+
+[[bench]]
+name = "array"
+harness = false
+
+[[bench]]
+name = "json_path"
 harness = false
