@@ -279,8 +279,28 @@ fn test_decode_extension() {
 #[test]
 fn test_decode_corrupted() {
     let json = "{\"a\": 1, \"b\": \"123\"}";
-    let jsonb = jsonb::parse_value(json.as_bytes()).unwrap().to_vec();
+    let jsonb = jsonb::parse_value(json.as_bytes())
+        .unwrap()
+        .to_vec()
+        .unwrap();
     let corrupted = jsonb[0..jsonb.len() - 1].to_vec();
     let value = from_slice(corrupted.as_slice());
     assert!(value.is_err());
+}
+
+#[test]
+fn deserialize_char_accepts_one_character_of_any_width() {
+    // `deserialize_char` used to compare the length in bytes with 1, so it
+    // rejected every non-ASCII character.
+    for (text, expect) in [("a", 'a'), ("é", 'é'), ("中", '中'), ("😀", '😀')] {
+        let jsonb = jsonb::OwnedJsonb::new(Value::String(Cow::Borrowed(text)).to_vec().unwrap());
+        assert_eq!(jsonb::from_raw_jsonb::<char>(&jsonb.as_raw()), Ok(expect));
+    }
+    for text in ["", "ab", "é!", "😀😀"] {
+        let jsonb = jsonb::OwnedJsonb::new(Value::String(Cow::Borrowed(text)).to_vec().unwrap());
+        assert!(
+            jsonb::from_raw_jsonb::<char>(&jsonb.as_raw()).is_err(),
+            "{text:?}"
+        );
+    }
 }

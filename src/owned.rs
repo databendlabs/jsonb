@@ -231,7 +231,7 @@ impl FromStr for OwnedJsonb {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let value = parse_value(s.as_bytes())?;
         let mut data = Vec::new();
-        value.write_to_vec(&mut data);
+        value.write_to_vec(&mut data)?;
         Ok(Self { data })
     }
 }

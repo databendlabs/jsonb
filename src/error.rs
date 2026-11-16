@@ -108,6 +108,13 @@ pub enum Error {
     ObjectDuplicateKey,
     UnexpectedType,
 
+    /// The input nests arrays or objects deeper than 512 levels.
+    RecursionLimitExceeded,
+    /// A string, binary value, or nested array/object is 256 MiB or larger, or
+    /// an array/object has 2^29 or more elements, which the JSONB length fields
+    /// cannot represent.
+    ValueTooLarge,
+
     Message(String),
     Syntax(ParseErrorCode, usize),
 }

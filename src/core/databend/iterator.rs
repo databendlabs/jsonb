@@ -12,20 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::ops::Range;
+//! Iterators that decode the entries of JSONB containers into `JsonbItem`s,
+//! validating strings as UTF-8. They read the entries with [`Entries`].
+
+use std::iter::FusedIterator;
 
 use super::constants::*;
-use crate::core::databend::util::jentry_to_jsonb_item;
+use crate::core::Entries;
 use crate::core::JsonbItem;
+use crate::core::RawEntry;
 use crate::error::Result;
 use crate::RawJsonb;
 
+/// Implements `Iterator`, `ExactSizeIterator` and `FusedIterator` for an
+/// iterator with `read_next`, `remaining` and `stop` methods.
+///
+/// The iterator stops after the first error, including an error decoding an
+/// entry that `Entries` read successfully. Retrying would return the same
+/// error forever, and `nth`/`count` would then loop over every remaining index.
+macro_rules! impl_fused_iterator {
+    ($iter:ident, $item:ty) => {
+        impl<'a> Iterator for $iter<'a> {
+            type Item = Result<$item>;
+
+            // `#[inline]` here, on `read_next` and on `RawEntry::into_item`
+            // lets callers such as the JSONPath selector inline the decoding;
+            // without it, `select_by_path` was up to 25% slower with
+            // Databend's `opt-level = "s"` release profile.
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                let item = self.read_next()?;
+                if item.is_err() {
+                    self.stop();
+                }
+                Some(item)
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self.remaining();
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl ExactSizeIterator for $iter<'_> {}
+
+        impl FusedIterator for $iter<'_> {}
+    };
+}
+
+/// Iterates over the elements of an array, decoded.
 pub(crate) struct ArrayIterator<'a> {
-    raw_jsonb: RawJsonb<'a>,
-    jentry_offset: usize,
-    item_offset: usize,
+    entries: Entries<'a>,
     length: usize,
-    index: usize,
 }
 
 impl<'a> ArrayIterator<'a> {
@@ -40,11 +78,8 @@ impl<'a> ArrayIterator<'a> {
 
     pub(crate) fn new_with_len(raw_jsonb: RawJsonb<'a>, length: usize) -> Self {
         Self {
-            raw_jsonb,
-            jentry_offset: 4,
-            item_offset: 4 + 4 * length,
+            entries: Entries::new(raw_jsonb, length),
             length,
-            index: 0,
         }
     }
 
@@ -52,69 +87,51 @@ impl<'a> ArrayIterator<'a> {
         self.length
     }
 
-    fn remaining(&self) -> usize {
-        self.length - self.index
-    }
-}
-
-impl<'a> Iterator for ArrayIterator<'a> {
-    type Item = Result<JsonbItem<'a>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.length {
-            return None;
+    /// Returns the element at `index` among the remaining ones, or the first
+    /// error among the elements before it.
+    ///
+    /// `Iterator::nth` would discard those errors, and since the iterator stops
+    /// after an error it would then return `None` for an index in range.
+    pub(crate) fn get(mut self, index: usize) -> Result<Option<JsonbItem<'a>>> {
+        // Return at once past the end, so `usize::MAX` reads nothing.
+        if index >= self.remaining() {
+            return Ok(None);
         }
-        let jentry = match self.raw_jsonb.read_jentry(self.jentry_offset) {
-            Ok(jentry) => jentry,
-            Err(err) => return Some(Err(err)),
-        };
-
-        let item_length = jentry.length as usize;
-        let item_range = Range {
-            start: self.item_offset,
-            end: self.item_offset + item_length,
-        };
-        let data = match self.raw_jsonb.slice(item_range) {
-            Ok(data) => data,
-            Err(err) => return Some(Err(err)),
-        };
-        let item = jentry_to_jsonb_item(jentry, data);
-
-        self.index += 1;
-        self.jentry_offset += 4;
-        self.item_offset += item_length;
-
-        Some(Ok(item))
+        for item in self.by_ref().take(index) {
+            item?;
+        }
+        self.next().transpose()
     }
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining();
-        (remaining, Some(remaining))
+    #[inline]
+    fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
+        Some(self.entries.next()?.and_then(RawEntry::into_item))
+    }
+
+    fn remaining(&self) -> usize {
+        self.entries.remaining()
+    }
+
+    fn stop(&mut self) {
+        self.entries.stop();
     }
 }
 
-impl ExactSizeIterator for ArrayIterator<'_> {}
+impl_fused_iterator!(ArrayIterator, JsonbItem<'a>);
 
+/// Iterates over the keys of an object, decoded.
 pub(crate) struct ObjectKeyIterator<'a> {
-    raw_jsonb: RawJsonb<'a>,
-    jentry_offset: usize,
-    item_offset: usize,
+    keys: Entries<'a>,
     length: usize,
-    index: usize,
 }
 
 impl<'a> ObjectKeyIterator<'a> {
     pub(crate) fn new(raw_jsonb: RawJsonb<'a>) -> Result<Option<Self>> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
-            let jentry_offset = 4;
-            let item_offset = 4 + 8 * header_len;
             Ok(Some(Self {
-                raw_jsonb,
-                jentry_offset,
-                item_offset,
+                keys: Entries::keys(raw_jsonb, header_len),
                 length: header_len,
-                index: 0,
             }))
         } else {
             Ok(None)
@@ -125,75 +142,36 @@ impl<'a> ObjectKeyIterator<'a> {
         self.length
     }
 
+    #[inline]
+    fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
+        Some(self.keys.next()?.and_then(RawEntry::into_item))
+    }
+
     fn remaining(&self) -> usize {
-        self.length - self.index
+        self.keys.remaining()
+    }
+
+    fn stop(&mut self) {
+        self.keys.stop();
     }
 }
 
-impl<'a> Iterator for ObjectKeyIterator<'a> {
-    type Item = Result<JsonbItem<'a>>;
+impl_fused_iterator!(ObjectKeyIterator, JsonbItem<'a>);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.length {
-            return None;
-        }
-        let jentry = match self.raw_jsonb.read_jentry(self.jentry_offset) {
-            Ok(jentry) => jentry,
-            Err(err) => return Some(Err(err)),
-        };
-
-        let key_length = jentry.length as usize;
-        let key_range = Range {
-            start: self.item_offset,
-            end: self.item_offset + key_length,
-        };
-        let data = match self.raw_jsonb.slice(key_range) {
-            Ok(data) => data,
-            Err(err) => return Some(Err(err)),
-        };
-        let key_item = jentry_to_jsonb_item(jentry, data);
-
-        self.index += 1;
-        self.jentry_offset += 4;
-        self.item_offset += key_length;
-
-        Some(Ok(key_item))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining();
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for ObjectKeyIterator<'_> {}
-
+/// Iterates over the values of an object, decoded.
 pub(crate) struct ObjectValueIterator<'a> {
-    raw_jsonb: RawJsonb<'a>,
-    jentry_offset: usize,
-    item_offset: usize,
+    values: Entries<'a>,
     length: usize,
-    index: usize,
 }
 
 impl<'a> ObjectValueIterator<'a> {
     pub(crate) fn new(raw_jsonb: RawJsonb<'a>) -> Result<Option<Self>> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
-            let mut jentry_offset = 4;
-            let mut item_offset = 4 + 8 * header_len;
-            for _ in 0..header_len {
-                let key_jentry = raw_jsonb.read_jentry(jentry_offset)?;
-                jentry_offset += 4;
-                item_offset += key_jentry.length as usize;
-            }
-
+            let (_, values) = Entries::object(raw_jsonb, header_len)?;
             Ok(Some(Self {
-                raw_jsonb,
-                jentry_offset,
-                item_offset,
+                values,
                 length: header_len,
-                index: 0,
             }))
         } else {
             Ok(None)
@@ -205,57 +183,28 @@ impl<'a> ObjectValueIterator<'a> {
         self.length
     }
 
+    #[inline]
+    fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
+        Some(self.values.next()?.and_then(RawEntry::into_item))
+    }
+
     fn remaining(&self) -> usize {
-        self.length - self.index
+        self.values.remaining()
+    }
+
+    fn stop(&mut self) {
+        self.values.stop();
     }
 }
 
-impl<'a> Iterator for ObjectValueIterator<'a> {
-    type Item = Result<JsonbItem<'a>>;
+impl_fused_iterator!(ObjectValueIterator, JsonbItem<'a>);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.length {
-            return None;
-        }
-        let jentry = match self.raw_jsonb.read_jentry(self.jentry_offset) {
-            Ok(jentry) => jentry,
-            Err(err) => return Some(Err(err)),
-        };
-
-        let val_length = jentry.length as usize;
-        let val_range = Range {
-            start: self.item_offset,
-            end: self.item_offset + val_length,
-        };
-        let data = match self.raw_jsonb.slice(val_range) {
-            Ok(data) => data,
-            Err(err) => return Some(Err(err)),
-        };
-        let val_item = jentry_to_jsonb_item(jentry, data);
-
-        self.index += 1;
-        self.jentry_offset += 4;
-        self.item_offset += val_length;
-
-        Some(Ok(val_item))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining();
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for ObjectValueIterator<'_> {}
-
+/// Iterates over the members of an object: each key, as a string, with its
+/// value decoded.
 pub(crate) struct ObjectIterator<'a> {
-    raw_jsonb: RawJsonb<'a>,
-    key_jentry_offset: usize,
-    val_jentry_offset: usize,
-    key_offset: usize,
-    val_offset: usize,
+    keys: Entries<'a>,
+    values: Entries<'a>,
     length: usize,
-    index: usize,
 }
 
 impl<'a> ObjectIterator<'a> {
@@ -269,23 +218,11 @@ impl<'a> ObjectIterator<'a> {
     }
 
     pub(crate) fn new_with_len(raw_jsonb: RawJsonb<'a>, length: usize) -> Result<Self> {
-        let mut key_jentry_offset = 4;
-        let mut key_length = 0;
-        for _ in 0..length {
-            let key_jentry = raw_jsonb.read_jentry(key_jentry_offset)?;
-            key_jentry_offset += 4;
-            key_length += key_jentry.length as usize;
-        }
-
-        let key_offset = 4 + 8 * length;
+        let (keys, values) = Entries::object(raw_jsonb, length)?;
         Ok(Self {
-            raw_jsonb,
-            key_jentry_offset: 4,
-            val_jentry_offset: 4 + 4 * length,
-            key_offset,
-            val_offset: key_offset + key_length,
+            keys,
+            values,
             length,
-            index: 0,
         })
     }
 
@@ -293,66 +230,24 @@ impl<'a> ObjectIterator<'a> {
         self.length
     }
 
+    #[inline]
+    fn read_next(&mut self) -> Option<Result<(&'a str, JsonbItem<'a>)>> {
+        let key = self.keys.next()?.and_then(|key| key.object_key());
+        let value = self.values.next()?;
+        Some(key.and_then(|key| Ok((key, value?.into_item()?))))
+    }
+
     fn remaining(&self) -> usize {
-        self.length - self.index
+        self.keys.remaining()
+    }
+
+    fn stop(&mut self) {
+        self.keys.stop();
+        self.values.stop();
     }
 }
 
-impl<'a> Iterator for ObjectIterator<'a> {
-    type Item = Result<(&'a str, JsonbItem<'a>)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.length {
-            return None;
-        }
-
-        let key_jentry = match self.raw_jsonb.read_jentry(self.key_jentry_offset) {
-            Ok(jentry) => jentry,
-            Err(err) => return Some(Err(err)),
-        };
-        let val_jentry = match self.raw_jsonb.read_jentry(self.val_jentry_offset) {
-            Ok(jentry) => jentry,
-            Err(err) => return Some(Err(err)),
-        };
-        let key_length = key_jentry.length as usize;
-        let val_length = val_jentry.length as usize;
-
-        let key_range = Range {
-            start: self.key_offset,
-            end: self.key_offset + key_length,
-        };
-        let key_data = match self.raw_jsonb.slice(key_range) {
-            Ok(data) => data,
-            Err(err) => return Some(Err(err)),
-        };
-        let key = unsafe { std::str::from_utf8_unchecked(key_data) };
-
-        let val_range = Range {
-            start: self.val_offset,
-            end: self.val_offset + val_length,
-        };
-        let val_data = match self.raw_jsonb.slice(val_range) {
-            Ok(data) => data,
-            Err(err) => return Some(Err(err)),
-        };
-        let val_item = jentry_to_jsonb_item(val_jentry, val_data);
-
-        self.index += 1;
-        self.key_jentry_offset += 4;
-        self.val_jentry_offset += 4;
-        self.key_offset += key_length;
-        self.val_offset += val_length;
-
-        Some(Ok((key, val_item)))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining();
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for ObjectIterator<'_> {}
+impl_fused_iterator!(ObjectIterator, (&'a str, JsonbItem<'a>));
 
 #[cfg(test)]
 mod tests {
@@ -462,5 +357,42 @@ mod tests {
         assert_eq!(values.next().unwrap().unwrap(), JsonbItem::Boolean(true));
         assert_eq!(values.size_hint(), (0, Some(0)));
         assert!(values.next().is_none());
+    }
+
+    /// `[<invalid UTF-8 string>, null]`.
+    fn bad_first_element() -> Vec<u8> {
+        let mut bytes: Vec<u8> = [0x8000_0002_u32, 0x1000_0001, 0x0000_0000]
+            .iter()
+            .flat_map(|w| w.to_be_bytes())
+            .collect();
+        bytes.push(0xff);
+        bytes
+    }
+
+    #[test]
+    fn nth_keeps_the_standard_semantics() {
+        // `nth(1)` is `next()` twice: the first returns the error and stops
+        // the iterator, so the second returns `None`.
+        let bytes = bad_first_element();
+        let mut iter = ArrayIterator::new(RawJsonb::new(&bytes)).unwrap().unwrap();
+        assert!(iter.nth(1).is_none());
+        let mut iter = ArrayIterator::new(RawJsonb::new(&bytes)).unwrap().unwrap();
+        assert!(iter.next().unwrap().is_err());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn get_reports_errors_in_skipped_elements() {
+        let bytes = bad_first_element();
+        let iter = || ArrayIterator::new(RawJsonb::new(&bytes)).unwrap().unwrap();
+        assert_eq!(iter().get(0).err(), Some(crate::Error::InvalidUtf8));
+        assert_eq!(iter().get(1).err(), Some(crate::Error::InvalidUtf8));
+        assert_eq!(iter().get(2), Ok(None));
+        assert_eq!(iter().get(usize::MAX), Ok(None));
+
+        let valid = owned("[1,true]");
+        let iter = || ArrayIterator::new(valid.as_raw()).unwrap().unwrap();
+        assert_eq!(iter().get(1), Ok(Some(JsonbItem::Boolean(true))));
+        assert_eq!(number_string(iter().get(0).unwrap().unwrap()), "1");
     }
 }

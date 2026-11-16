@@ -122,15 +122,19 @@ impl<'a> ExtensionItem<'a> {
     }
 }
 
-/// `JsonbItem` is an internal enum used primarily within `ArrayIterator` and
-/// `ObjectIterator` to represent temporary values during iteration. It is also
-/// utilized by `ArrayBuilder` and `ObjectBuilder` to store intermediate variables
-/// during the construction of JSONB objects and arrays.
+/// A JSONB value in whichever form is at hand: a decoded scalar, borrowed
+/// JSONB (`Raw`), or owned JSONB (`Owned`). Numbers and extension values are
+/// either their encoded bytes or decoded values, and strings are valid UTF-8.
 ///
-/// This enum encapsulates different types of JSONB values, allowing iterators and
-/// builders to handle various data types uniformly. It supports null values,
-/// booleans, numbers (represented as byte slices), strings (represented as byte slices),
-/// raw JSONB data (`RawJsonb`), and owned JSONB data (`OwnedJsonb`).
+/// Builders take `JsonbItem` because their input comes from anywhere: values
+/// read from existing JSONB, newly built JSONB, values converted from jaq, and
+/// booleans computed by JSONPath filters. The array and object iterators, the
+/// JSONPath selector, and the array and scalar functions pass values as
+/// `JsonbItem` for the same reason.
+///
+/// To walk encoded data without decoding it, as comparison and writing JSON
+/// text do, use [`RawEntry`](crate::core::RawEntry), and convert with
+/// `RawEntry::into_item` where a `JsonbItem` is needed.
 #[derive(Debug, Clone)]
 pub(crate) enum JsonbItem<'a> {
     /// Represents a JSONB null value.
@@ -195,6 +199,16 @@ impl PartialEq for JsonbItem<'_> {
 #[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for JsonbItem<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.partial_cmp_with_depth(other, 0)
+    }
+}
+
+impl JsonbItem<'_> {
+    /// Compares two items, where `depth` is the number of enclosing containers.
+    ///
+    /// Returns `None` for incomparable items, including containers nested
+    /// deeper than the recursion limit.
+    pub(crate) fn partial_cmp_with_depth(&self, other: &Self, depth: usize) -> Option<Ordering> {
         let self_type = self.jsonb_item_type().ok()?;
         let other_type = other.jsonb_item_type().ok()?;
 
@@ -217,7 +231,7 @@ impl PartialOrd for JsonbItem<'_> {
 
         match (self_item, other_item) {
             (JsonbItem::Raw(self_raw), JsonbItem::Raw(other_raw)) => {
-                self_raw.partial_cmp(other_raw)
+                self_raw.partial_cmp_with_depth(other_raw, depth)
             }
             // compare null, raw jsonb must not null
             (JsonbItem::Raw(_), JsonbItem::Null) => Some(Ordering::Less),

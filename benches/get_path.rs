@@ -84,7 +84,7 @@ fn add_benchmark(c: &mut Criterion) {
         let bytes = read(&format!("./data/{}.json", test_suite.file));
 
         let val = jsonb::parse_value(&bytes).unwrap();
-        let jsonb_bytes = val.to_vec();
+        let jsonb_bytes = val.to_vec().unwrap();
 
         c.bench_function(
             &format!(

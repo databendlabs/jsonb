@@ -19,8 +19,11 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write as _;
 use std::mem::discriminant;
 
+use crate::error::Result;
+use crate::util::append_or_restore;
 use crate::ExtensionValue;
 use rand::distr::Alphanumeric;
 use rand::distr::SampleString;
@@ -179,10 +182,11 @@ impl Display for Value<'_> {
                     write!(f, "false")
                 }
             }
+            // JSON has no NaN or infinity; write `null` like `RawJsonb` does.
+            // `Number`'s own `Display` keeps `NaN`/`inf`, which JSONPath needs.
+            Value::Number(Number::Float64(v)) if !v.is_finite() => write!(f, "null"),
             Value::Number(ref v) => write!(f, "{}", v),
-            Value::String(ref v) => {
-                write!(f, "{:?}", v)
-            }
+            Value::String(ref v) => write_json_str(f, v),
             Value::Binary(v) => {
                 write!(f, "\"")?;
                 for c in *v {
@@ -219,9 +223,7 @@ impl Display for Value<'_> {
                     if i > 0 {
                         write!(f, ",")?;
                     }
-                    write!(f, "\"")?;
-                    write!(f, "{k}")?;
-                    write!(f, "\"")?;
+                    write_json_str(f, k)?;
                     write!(f, ":")?;
                     write!(f, "{v}")?;
                 }
@@ -229,6 +231,37 @@ impl Display for Value<'_> {
             }
         }
     }
+}
+
+/// Writes `s` as a JSON string literal, escaping like `serde_json` so that
+/// `Value` and `RawJsonb` format strings the same way.
+///
+/// Rust's `{:?}` output is not JSON: it writes `\0`, `\u{7f}` and `\u{2028}`.
+fn write_json_str(f: &mut Formatter<'_>, s: &str) -> std::fmt::Result {
+    f.write_char('"')?;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        let escaped = match c {
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            '\u{8}' => "\\b",
+            '\u{c}' => "\\f",
+            '\n' => "\\n",
+            '\r' => "\\r",
+            '\t' => "\\t",
+            '\0'..='\u{1f}' => "",
+            _ => continue,
+        };
+        f.write_str(&s[start..i])?;
+        if escaped.is_empty() {
+            write!(f, "\\u{:04x}", u32::from(c))?;
+        } else {
+            f.write_str(escaped)?;
+        }
+        start = i + c.len_utf8();
+    }
+    f.write_str(&s[start..])?;
+    f.write_char('"')
 }
 
 impl<'a> Value<'a> {
@@ -420,16 +453,26 @@ impl<'a> Value<'a> {
     }
 
     /// Serializes this value into JSONB bytes, appending to `buf`.
-    pub fn write_to_vec(&self, buf: &mut Vec<u8>) {
-        let mut encoder = Encoder::new(buf);
-        encoder.encode(self);
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ValueTooLarge` if a string, binary value, or nested
+    /// array/object is 256 MiB or larger, or if an array/object has 2^29 or
+    /// more elements. `buf` is then restored to its original length.
+    pub fn write_to_vec(&self, buf: &mut Vec<u8>) -> Result<()> {
+        append_or_restore(buf, |buf| Encoder::new(buf).encode(self))
     }
 
     /// Serializes this value into JSONB bytes and returns the buffer.
-    pub fn to_vec(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ValueTooLarge` under the same conditions as
+    /// [`Value::write_to_vec`].
+    pub fn to_vec(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
-        self.write_to_vec(&mut buf);
-        buf
+        self.write_to_vec(&mut buf)?;
+        Ok(buf)
     }
 
     /// Returns the value for a key, case-insensitive, if this value is an object.
