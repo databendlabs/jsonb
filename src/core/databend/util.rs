@@ -282,11 +282,17 @@ impl<'a> RawJsonb<'a> {
         Ok((header_type, header_len))
     }
 
+    // `#[inline]` here, on `read_u32`, `slice` and `JEntry::decode_jentry`:
+    // once JEntry decoding returned `Result`, Databend's `opt-level = "s"`
+    // stopped inlining them, and key lookups called them for every key, which
+    // doubled `select_by_path` on twitter.json.
+    #[inline]
     pub(super) fn read_jentry(&self, index: usize) -> Result<JEntry> {
         let jentry_encoded = self.read_u32(index)?;
         JEntry::decode_jentry(jentry_encoded)
     }
 
+    #[inline]
     pub(super) fn read_u32(&self, idx: usize) -> Result<u32> {
         let bytes: [u8; 4] = self
             .data
@@ -297,6 +303,7 @@ impl<'a> RawJsonb<'a> {
         Ok(u32::from_be_bytes(bytes))
     }
 
+    #[inline]
     pub(super) fn slice(&self, range: Range<usize>) -> Result<&'a [u8]> {
         self.data.get(range).ok_or(Error::InvalidJsonb)
     }

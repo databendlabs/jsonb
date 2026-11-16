@@ -35,6 +35,11 @@ macro_rules! impl_fused_iterator {
         impl<'a> Iterator for $iter<'a> {
             type Item = Result<$item>;
 
+            // `#[inline]` here, on `read_next` and on `RawEntry::into_item`
+            // lets callers such as the JSONPath selector inline the decoding;
+            // without it, `select_by_path` was up to 25% slower with
+            // Databend's `opt-level = "s"` release profile.
+            #[inline]
             fn next(&mut self) -> Option<Self::Item> {
                 let item = self.read_next()?;
                 if item.is_err() {
@@ -98,6 +103,7 @@ impl<'a> ArrayIterator<'a> {
         self.next().transpose()
     }
 
+    #[inline]
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
         Some(self.entries.next()?.and_then(RawEntry::into_item))
     }
@@ -136,6 +142,7 @@ impl<'a> ObjectKeyIterator<'a> {
         self.length
     }
 
+    #[inline]
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
         Some(self.keys.next()?.and_then(RawEntry::into_item))
     }
@@ -176,6 +183,7 @@ impl<'a> ObjectValueIterator<'a> {
         self.length
     }
 
+    #[inline]
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
         Some(self.values.next()?.and_then(RawEntry::into_item))
     }
@@ -222,6 +230,7 @@ impl<'a> ObjectIterator<'a> {
         self.length
     }
 
+    #[inline]
     fn read_next(&mut self) -> Option<Result<(&'a str, JsonbItem<'a>)>> {
         let key = self.keys.next()?.and_then(|key| key.object_key());
         let value = self.values.next()?;

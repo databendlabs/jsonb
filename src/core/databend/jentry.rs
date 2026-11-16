@@ -16,6 +16,11 @@ use super::constants::*;
 use crate::error::Error;
 use crate::error::Result;
 
+/// Bit `n` is set for each type code `n << 28` whose `JEntry` has no payload:
+/// null, false and true. `JENTRY_TYPE_MASK` keeps type codes below `8 << 28`.
+const NO_PAYLOAD_TYPES: u32 =
+    1 << (NULL_TAG >> 28) | 1 << (FALSE_TAG >> 28) | 1 << (TRUE_TAG >> 28);
+
 #[derive(Clone, Debug, PartialOrd, PartialEq, Eq, Ord)]
 pub(super) struct JEntry {
     pub(super) type_code: u32,
@@ -31,10 +36,13 @@ impl JEntry {
     /// non-zero length. These have no payload, and every encoder writes them
     /// with length 0. Readers that skip the payload by its length and readers
     /// that ignore it would otherwise read different values from the same bytes.
+    #[inline]
     pub(super) fn decode_jentry(encoded: u32) -> Result<JEntry> {
         let type_code = encoded & JENTRY_TYPE_MASK;
         let length = encoded & JENTRY_OFF_LEN_MASK;
-        if matches!(type_code, NULL_TAG | TRUE_TAG | FALSE_TAG) && length != 0 {
+        // One shift and mask instead of three comparisons: this runs for every
+        // `JEntry` read, including each key scanned by a key lookup.
+        if length != 0 && (NO_PAYLOAD_TYPES >> (type_code >> 28)) & 1 != 0 {
             return Err(Error::InvalidJsonbJEntry);
         }
         Ok(JEntry { type_code, length })

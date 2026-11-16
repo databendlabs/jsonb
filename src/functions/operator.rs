@@ -598,8 +598,9 @@ impl RawJsonb<'_> {
     /// The encoding may change between versions, so it is meant for in-memory
     /// sorting and must not be persisted.
     ///
-    /// Each value is prefixed with its nesting depth as a big-endian `u16`,
-    /// followed by a type level byte.
+    /// Each value is prefixed with its nesting depth and a type level byte.
+    /// Depths below 255 take one byte, as before nesting could exceed 255
+    /// levels; deeper ones take three (see `push_comparable_tag`).
     ///
     /// # Arguments
     ///
@@ -652,17 +653,28 @@ impl RawJsonb<'_> {
 
 /// Appends the depth and type level that prefix every value in the comparable encoding.
 ///
-/// The depth is written as a big-endian `u16` so that byte-wise comparison
-/// orders depths numerically: a smaller depth at the same position means the
-/// enclosing container has ended, which makes the shorter container sort first.
+/// A depth below 255 is one byte, the encoding of earlier versions, which
+/// keeps their output for such values and its size. A deeper one is 255 and
+/// then the depth as a big-endian `u16`; a single byte wrapped past 255 and
+/// misordered values. Byte-wise comparison orders the depths numerically
+/// either way, since every one-byte depth is below the 255 marker: a smaller
+/// depth at the same position means the enclosing container has ended, which
+/// makes the shorter container sort first.
 ///
 /// # Errors
 ///
 /// Returns `Error::RecursionLimitExceeded` if `depth` does not fit in a `u16`,
 /// which [`MAX_NESTING_DEPTH`] already rules out.
+#[inline]
 fn push_comparable_tag(buf: &mut Vec<u8>, depth: usize, level: u8) -> Result<()> {
-    let depth = u16::try_from(depth).map_err(|_| Error::RecursionLimitExceeded)?;
-    buf.extend_from_slice(&depth.to_be_bytes());
+    match u8::try_from(depth) {
+        Ok(depth) if depth < u8::MAX => buf.push(depth),
+        _ => {
+            let depth = u16::try_from(depth).map_err(|_| Error::RecursionLimitExceeded)?;
+            buf.push(u8::MAX);
+            buf.extend_from_slice(&depth.to_be_bytes());
+        }
+    }
     buf.push(level);
     Ok(())
 }

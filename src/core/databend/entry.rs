@@ -121,6 +121,7 @@ impl<'a> RawEntry<'a> {
     ///
     /// Returns `Error::InvalidUtf8` for a string payload that is not valid
     /// UTF-8, and `Error::InvalidJsonb` for an unknown `JEntry` type.
+    #[inline]
     pub(crate) fn into_item(self) -> Result<JsonbItem<'a>> {
         let payload = self.payload;
         let item = match self.type_code {
