@@ -72,21 +72,30 @@ fn text() -> impl Strategy<Value = String> {
     "[a-z \"\\\\/\u{0}-\u{1f}\u{7f}é中😀]{0,6}"
 }
 
+/// The high word of `10^76 - 1`.
+const DECIMAL256_HIGH: i128 = 29_387_358_770_557_187_699_218_413_430_556_141_945;
+
 fn number() -> impl Strategy<Value = Number> {
     prop_oneof![
         any::<i64>().prop_map(Number::Int64),
         any::<u64>().prop_map(Number::UInt64),
         // Includes NaN and infinities, which serde_json writes as `null`.
         any::<f64>().prop_map(Number::Float64),
-        (any::<u8>(), any::<i64>())
+        // Decimals within their precision; decoding rejects the others, which
+        // the byte mutations cover.
+        (
+            0..=18u8,
+            -999_999_999_999_999_999..=999_999_999_999_999_999i64
+        )
             .prop_map(|(scale, value)| Number::Decimal64(Decimal64 { scale, value })),
-        (any::<u8>(), any::<i128>())
+        (0..=38u8, -(10i128.pow(38) - 1)..=10i128.pow(38) - 1)
             .prop_map(|(scale, value)| Number::Decimal128(Decimal128 { scale, value })),
-        // Large scales overflow the decimal formatting buffer, which is an error.
-        (any::<u8>(), any::<i128>(), any::<i128>()).prop_map(|(scale, hi, lo)| {
+        // A high word below `DECIMAL256_HIGH` in magnitude keeps the value
+        // below `DECIMAL256_HIGH * 2^128 <= 10^76 - 1` for any low word.
+        (0..=76u8, any::<i128>(), any::<i128>()).prop_map(|(scale, hi, lo)| {
             Number::Decimal256(Decimal256 {
                 scale,
-                value: ethnum::I256::from_words(hi, lo),
+                value: ethnum::I256::from_words(hi % DECIMAL256_HIGH, lo),
             })
         }),
     ]

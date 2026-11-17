@@ -65,6 +65,7 @@
 
 mod constants;
 pub mod core;
+mod eisel_lemire;
 mod error;
 mod extension;
 mod from;

@@ -34,11 +34,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "arbitrary_precision")]
-use jsonb::Decimal64;
+use std::cmp::Ordering;
+
+use ethnum::i256;
 use jsonb::RawJsonb;
 use jsonb::{parse_value, parse_value_standard_mode};
-use jsonb::{Number, Value};
+use jsonb::{Decimal128, Decimal256, Decimal64, Number, Value};
 use ordered_float::OrderedFloat;
 
 #[test]
@@ -2309,9 +2310,9 @@ fn test_parse_float() {
 }
 
 /// With `arbitrary_precision`, decimals serialize as their exact text, which
-/// may be at most 128 bytes long. Longer texts need a scale above 125, which
-/// the text parser never produces; serializing them fails, and `to_string`
-/// falls back to the raw bytes.
+/// may be at most 128 bytes long. Longer texts need a scale above 125, so
+/// serializing them fails. No valid JSONB decimal has such a scale: decoding
+/// rejects it, and `to_string` falls back to the raw bytes.
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn decimal_text_is_limited_to_128_bytes() {
@@ -2320,17 +2321,440 @@ fn decimal_text_is_limited_to_128_bytes() {
         let number = Number::Decimal64(Decimal64 { scale, value: 1 });
         let expect = format!("0.{}1", "0".repeat(scale as usize - 1));
         assert_eq!(expect.len() <= 128, fits);
-        let raw = Value::Number(number.clone()).to_vec().unwrap();
-        let raw = RawJsonb::new(&raw);
         if fits {
             assert_eq!(serde_json::to_string(&number).unwrap(), expect);
-            assert_eq!(raw.to_string(), expect);
         } else {
             assert!(serde_json::to_string(&number).is_err(), "scale {scale}");
-            assert_ne!(raw.to_string(), expect);
-            assert_eq!(raw.to_pretty_string(), "null");
+        }
+        let raw = Value::Number(number).to_vec().unwrap();
+        let raw = RawJsonb::new(&raw);
+        assert_ne!(raw.to_string(), expect);
+        assert_eq!(raw.to_pretty_string(), "null");
+    }
+}
+
+/// Without `arbitrary_precision`, decimals serialize as `f64`, which must be
+/// the same `f64` as `as_f64`. The serializer used to convert the unscaled
+/// value to `f64` before dividing, rounding twice, so `123456789012390.47`
+/// serialized as `123456789012390.48`.
+#[cfg(not(feature = "arbitrary_precision"))]
+#[test]
+fn decimal_serializes_as_correctly_rounded_f64() {
+    let cases: [(i64, u8, &str); 3] = [
+        (12_345_678_901_239_047, 2, "123456789012390.47"),
+        (-12_345_678_901_239_047, 3, "-12345678901239.047"),
+        (1, 23, "1e-23"),
+    ];
+    for (value, scale, expect) in cases {
+        let numbers = [
+            Number::Decimal64(Decimal64 { scale, value }),
+            Number::Decimal128(Decimal128 {
+                scale,
+                value: value.into(),
+            }),
+            Number::Decimal256(Decimal256 {
+                scale,
+                value: value.into(),
+            }),
+        ];
+        for number in numbers {
+            assert_eq!(
+                serde_json::to_string(&number).unwrap(),
+                expect,
+                "{number:?}"
+            );
+            assert_eq!(
+                serde_json::to_value(&number).unwrap().as_f64(),
+                Some(number.as_f64())
+            );
         }
     }
+}
+
+#[test]
+fn decimal_to_f64_rounds_once() {
+    // Each case is (decimal value, scale, f64 parsed from the same digits).
+    // Converting the unscaled value to f64 before dividing rounded twice for
+    // values above 2^53 and scales above 22 (found by fuzzing).
+    let cases: [(i64, u8, f64); 4] = [
+        (12_345_678_901_239_047, 2, 123456789012390.47),
+        (-12_345_678_901_239_047, 3, -12345678901239.047),
+        (1, 23, 1e-23),
+        (i64::MAX, 0, 9223372036854775807.0),
+    ];
+    for (value, scale, expect) in cases {
+        let decimal = Decimal64 { scale, value };
+        assert_eq!(decimal.to_float64(), expect, "{value}e-{scale}");
+        let decimal = Decimal128 {
+            scale,
+            value: value.into(),
+        };
+        assert_eq!(decimal.to_float64(), expect, "{value}e-{scale}");
+        let decimal = Decimal256 {
+            scale,
+            value: value.into(),
+        };
+        assert_eq!(decimal.to_float64(), expect, "{value}e-{scale}");
+    }
+    let decimal = Decimal256 {
+        scale: 76,
+        value: i256::MAX,
+    };
+    assert_eq!(decimal.to_float64(), 5.789604461865809);
+
+    // So a float and the decimal its text parses back to compare equal.
+    for text in ["1.2345678901239047e14", "12345678901239047e-2", "1e-23"] {
+        let float = parse_value(text.as_bytes()).unwrap();
+        assert!(matches!(float, Value::Number(Number::Float64(_))), "{text}");
+        let float = float.to_vec().unwrap();
+        let reparsed = parse_value(RawJsonb::new(&float).to_string().as_bytes())
+            .unwrap()
+            .to_vec()
+            .unwrap();
+        assert_eq!(
+            RawJsonb::new(&reparsed).partial_cmp(&RawJsonb::new(&float)),
+            Some(Ordering::Equal),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn decimal_to_f64_matches_std_parse() {
+    // `to_float64` must return the correctly rounded `value / 10^scale`, which
+    // the standard library's parser computes independently from the same
+    // digits. Covers both conversion paths (exact division and parsing) and
+    // the boundaries between them: 2^53, scale 22, `i64`/`i128` limits.
+    let mut values: Vec<i128> = vec![0, i128::MAX, i128::MIN, i128::MIN + 1];
+    for bound in [1_i128 << 53, i64::MAX.into(), i64::MIN.into()] {
+        values.extend([bound - 1, bound, bound + 1]);
+    }
+    for power in 0..39 {
+        let ten = 10_i128.pow(power);
+        values.extend([ten - 1, ten, ten + 1]);
+    }
+    // xorshift with random shifts, so every magnitude shows up deterministically.
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for _ in 0..300 {
+        let bits = (u128::from(next()) << 64 | u128::from(next())) as i128;
+        values.push(bits >> (next() % 128));
+    }
+    let negated: Vec<i128> = values.iter().filter_map(|v| v.checked_neg()).collect();
+    values.extend(negated);
+
+    for scale in 0..=u8::MAX {
+        for &value in &values {
+            let expect: f64 = format!("{value}e-{scale}").parse().unwrap();
+            if let Ok(value) = i64::try_from(value) {
+                let got = Decimal64 { scale, value }.to_float64();
+                assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+            }
+            let got = Decimal128 { scale, value }.to_float64();
+            assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+            let got = Decimal256 {
+                scale,
+                value: value.into(),
+            }
+            .to_float64();
+            assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+        }
+        // `i256` values beyond `i128` take the decimal text path.
+        for value in [i256::MAX, i256::MIN + 1, i256::from(i128::MAX) * 10 + 7] {
+            for value in [value, -value] {
+                let expect: f64 = format!("{value}e-{scale}").parse().unwrap();
+                let got = Decimal256 { scale, value }.to_float64();
+                assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+            }
+        }
+    }
+}
+
+#[test]
+fn decimal_to_f64_eisel_lemire_edge_cases() {
+    // Each value is checked against the standard library's parse of the same
+    // digits, as `<value>e-<scale>`.
+    fn check(value: i128, scale: u8) {
+        let expect: f64 = format!("{value}e-{scale}").parse().unwrap();
+        let got = Decimal128 { scale, value }.to_float64();
+        assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+        if let Ok(value) = i64::try_from(value) {
+            let got = Decimal64 { scale, value }.to_float64();
+            assert_eq!(got.to_bits(), expect.to_bits(), "{value}e-{scale}");
+        }
+    }
+    // Exact ties between two `f64` values round to the even mantissa:
+    // 2^53 + 1 lies halfway between 2^53 and 2^53 + 2. Scaling by 10^k keeps
+    // the tie and exercises the round-to-even exponents.
+    for base in [
+        (1_i128 << 53) + 1,
+        (1 << 53) + 3,
+        (1 << 54) + 2,
+        (1 << 54) + 6,
+    ] {
+        for k in 0..4 {
+            let value = base * 10_i128.pow(k);
+            check(value, k as u8);
+            check(-value, k as u8);
+        }
+    }
+    // Products whose low 64 bits are all ones for a scale above 27: here
+    // Eisel-Lemire cannot decide the rounding and the text parse decides.
+    // Each value has its top bit set and `value * t ≡ -1 (mod 2^64)`, where
+    // `t` is the first word of the 128-bit power-of-five entry for the scale.
+    for (value, scale) in [
+        (14_999_775_663_049_351_983_i128, 30),
+        (16_185_735_156_734_648_777, 35),
+        (11_378_377_293_076_434_211, 37),
+        (18_309_340_392_174_713_697, 251),
+    ] {
+        check(value, scale);
+        check(-value, scale);
+    }
+    // `u64` limits: the largest mantissa Eisel-Lemire takes, and the first
+    // that falls back because it does not fit.
+    for value in [u64::MAX.into(), i128::from(u64::MAX) + 1] {
+        for scale in [0, 1, 19, 20, 22, 23, 38, 255] {
+            check(value, scale);
+            check(-value, scale);
+        }
+    }
+}
+
+#[test]
+fn integer_arithmetic_is_exact() {
+    use Number::{Int64, UInt64};
+    // Mixed `Int64`/`UInt64` operands used to be cast to one type first, so
+    // results were silently wrong (found by fuzzing).
+    let cases: [(&str, Number, Number, Option<Number>); 14] = [
+        (
+            "add",
+            UInt64(u64::MAX),
+            Int64(-1),
+            Some(UInt64(u64::MAX - 1)),
+        ),
+        (
+            "add",
+            Int64(-1),
+            UInt64(u64::MAX),
+            Some(UInt64(u64::MAX - 1)),
+        ),
+        (
+            "add",
+            Int64(i64::MIN),
+            UInt64(u64::MAX),
+            Some(UInt64(i64::MAX as u64)),
+        ),
+        ("sub", UInt64(u64::MAX), UInt64(0), Some(UInt64(u64::MAX))),
+        ("sub", UInt64(5), UInt64(10), Some(Int64(-5))),
+        (
+            "sub",
+            UInt64(u64::MAX - 1),
+            Int64(-1),
+            Some(UInt64(u64::MAX)),
+        ),
+        ("sub", Int64(0), UInt64(u64::MAX), None),
+        ("mul", Int64(-1), UInt64(u64::MAX), None),
+        ("mul", Int64(-1), UInt64(1 << 63), Some(Int64(i64::MIN))),
+        ("rem", Int64(i64::MIN), Int64(-1), Some(Int64(0))),
+        ("rem", Int64(-7), UInt64(u64::MAX), Some(Int64(-7))),
+        ("rem", UInt64(u64::MAX), Int64(-2), Some(UInt64(1))),
+        // Two `Int64` operands keep an `Int64` result.
+        ("mul", Int64(i64::MIN), Int64(-1), None),
+        ("add", Int64(i64::MAX), Int64(1), None),
+    ];
+    for (op, a, b, expect) in cases {
+        let got = match op {
+            "add" => a.add(b.clone()),
+            "sub" => a.sub(b.clone()),
+            "mul" => a.mul(b.clone()),
+            _ => a.rem(b.clone()),
+        };
+        match (got, expect) {
+            (Ok(got), Some(expect)) => assert_eq!(
+                format!("{got:?}"),
+                format!("{expect:?}"),
+                "{a:?} {op} {b:?}"
+            ),
+            (Err(_), None) => {}
+            (got, expect) => panic!("{a:?} {op} {b:?}: got {got:?}, expected {expect:?}"),
+        }
+    }
+    assert!(Int64(1).rem(UInt64(0)).is_err());
+}
+
+#[test]
+fn neg_reports_overflow() {
+    // Negating the minimum decimal used to overflow (a panic with overflow
+    // checks); `-(2^63)` as `UInt64` used to be rejected although it fits.
+    let decimal = Number::Decimal64(Decimal64 {
+        scale: 2,
+        value: i64::MIN,
+    });
+    assert!(decimal.neg().is_err());
+    let decimal = Number::Decimal128(Decimal128 {
+        scale: 2,
+        value: i128::MIN,
+    });
+    assert!(decimal.neg().is_err());
+    let negated = Number::UInt64(1 << 63).neg().unwrap();
+    assert_eq!(
+        format!("{negated:?}"),
+        format!("{:?}", Number::Int64(i64::MIN))
+    );
+    assert!(Number::UInt64((1 << 63) + 1).neg().is_err());
+    assert!(Number::Int64(i64::MIN).neg().is_err());
+}
+
+/// Integers and decimals compare by their exact values, and a float as its
+/// shortest decimal. Converting integers and decimals to `f64` to compare them
+/// with floats made the order intransitive (found by fuzzing): `2^53 + 1`
+/// equaled the float `2^53`, which equals `2^53`, though `2^53 + 1 > 2^53`.
+#[test]
+fn number_order_is_exact_and_transitive() {
+    use Ordering::*;
+    let two_53 = 1u64 << 53;
+    let dec64 = |value: i64, scale: u8| Number::Decimal64(Decimal64 { scale, value });
+    let dec128 = |value: i128, scale: u8| Number::Decimal128(Decimal128 { scale, value });
+    let dec256 = |value: i256, scale: u8| Number::Decimal256(Decimal256 { scale, value });
+    let i256_max_div_1e16 = i256::MAX / i256::from(10_000_000_000_000_000_i64);
+    let float = Number::Float64;
+    let cases = [
+        // Integers that round to the float they are compared with.
+        (Number::UInt64(two_53 + 1), float(two_53 as f64), Greater),
+        (Number::UInt64(two_53), float(two_53 as f64), Equal),
+        (
+            Number::Int64(-(two_53 as i64) - 1),
+            float(-(two_53 as f64)),
+            Less,
+        ),
+        // `u64::MAX as f64` is 2^64, whose shortest decimal is
+        // 18446744073709552000.
+        (Number::UInt64(u64::MAX), float(u64::MAX as f64), Less),
+        (
+            dec128(18446744073709551617, 0),
+            float(u64::MAX as f64),
+            Less,
+        ),
+        (
+            dec128(18446744073709552000, 0),
+            float(u64::MAX as f64),
+            Equal,
+        ),
+        // The float 0.1 is the decimal 0.1, not its binary value
+        // 0.1000000000000000055511151231257827...
+        (dec64(1, 1), float(0.1), Equal),
+        (
+            dec128(1_000_000_000_000_000_055_511_151_231_257_827, 34),
+            float(0.1),
+            Greater,
+        ),
+        (dec64(1, 255), float(1e-255), Equal),
+        (dec64(1, 255), float(5e-324), Greater),
+        (dec256(i256::MAX, 0), float(f64::MAX), Less),
+        // The fuzzed input: 12345678901234567891.0, 1.2345678901234567e19
+        // and 12345678901234567890.
+        (
+            dec128(123456789012345678910, 1),
+            float(1.2345678901234567e19),
+            Greater,
+        ),
+        (
+            Number::UInt64(12345678901234567890),
+            float(1.2345678901234567e19),
+            Greater,
+        ),
+        (
+            dec128(123456789012345678910, 1),
+            Number::UInt64(12345678901234567890),
+            Greater,
+        ),
+        // Decimals whose rescaled values overflow `i256`, which compared as
+        // `f64` and so as equal.
+        (
+            dec256(i256_max_div_1e16 + 1, 0),
+            dec256(i256::MAX, 16),
+            Greater,
+        ),
+        (dec256(i256_max_div_1e16, 0), dec256(i256::MAX, 16), Less),
+        (dec256(i256::ONE, 0), dec256(i256::ONE, 200), Greater),
+        // `NaN` is above every number, as in `OrderedFloat`, and zero has
+        // either sign.
+        (float(f64::NAN), float(f64::INFINITY), Greater),
+        (float(f64::NAN), dec256(i256::MAX, 0), Greater),
+        (float(f64::NAN), float(f64::NAN), Equal),
+        (float(f64::INFINITY), dec256(i256::MAX, 0), Greater),
+        (float(f64::NEG_INFINITY), dec256(i256::MIN, 0), Less),
+        (float(-0.0), Number::Int64(0), Equal),
+        (float(-0.0), dec64(0, 3), Equal),
+        (float(-1e-300), dec64(0, 3), Less),
+    ];
+    for (l, r, expect) in &cases {
+        assert_eq!(l.cmp(r), *expect, "{l:?} vs {r:?}");
+        assert_eq!(r.cmp(l), expect.reverse(), "{r:?} vs {l:?}");
+    }
+
+    // Every triple of these numbers is ordered transitively, and the
+    // comparable encoding, which converts numbers to `f64`, never reverses
+    // their order. Decimals beyond their precision, such as `i64::MIN`, are
+    // not valid JSONB and have no comparable encoding.
+    let mut numbers: Vec<Number> = cases
+        .iter()
+        .flat_map(|(l, r, _)| [l.clone(), r.clone()])
+        .collect();
+    for v in [two_53 - 1, two_53 + 2, u64::MAX - 1] {
+        numbers.extend([Number::UInt64(v), float(v as f64)]);
+    }
+    numbers.extend([
+        float(f64::from_bits((two_53 as f64).to_bits() + 1)),
+        dec64(i64::MIN, 0),
+    ]);
+    let comparable = |n: &Number| {
+        let encoded = Value::Number(n.clone()).to_vec().unwrap();
+        jsonb::from_slice(&encoded).ok()?;
+        Some(RawJsonb::new(&encoded).convert_to_comparable())
+    };
+    for x in &numbers {
+        for y in &numbers {
+            let order = x.cmp(y);
+            assert_eq!(order, y.cmp(x).reverse(), "{x:?} vs {y:?}");
+            if let (Some(cx), Some(cy)) = (comparable(x), comparable(y)) {
+                let encoded = cx.cmp(&cy);
+                assert!(
+                    encoded == order || encoded == Equal,
+                    "comparable encoding of {x:?} vs {y:?} is {encoded:?}, but they compare {order:?}"
+                );
+            }
+            for z in &numbers {
+                if order != Greater && y.cmp(z) != Greater {
+                    assert_ne!(x.cmp(z), Greater, "{x:?} <= {y:?} <= {z:?}");
+                }
+            }
+        }
+    }
+
+    // The same three values as JSONB, from JSON text. Without
+    // `arbitrary_precision`, the first parses as the same float as the second.
+    let raw = |text: &str| text.parse::<jsonb::OwnedJsonb>().unwrap();
+    #[cfg(feature = "arbitrary_precision")]
+    {
+        let a = raw("12345678901234567891.0");
+        let b = raw("1.2345678901234567e19");
+        let c = raw("12345678901234567890");
+        assert_eq!(a.as_raw().partial_cmp(&b.as_raw()), Some(Greater));
+        assert_eq!(c.as_raw().partial_cmp(&b.as_raw()), Some(Greater));
+        assert_eq!(a.as_raw().partial_cmp(&c.as_raw()), Some(Greater));
+    }
+
+    // A decimal in a document still equals the float literal of a JSONPath.
+    let doc = raw(r#"{"a": 1.1}"#);
+    let path = jsonb::jsonpath::parse_json_path(b"$.a ? (@ == 1.1)").unwrap();
+    assert_eq!(doc.as_raw().select_by_path(&path).unwrap().len(), 1);
 }
 
 #[test]

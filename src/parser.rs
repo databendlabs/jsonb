@@ -925,7 +925,9 @@ impl<'a> Parser<'a> {
                         }
                         #[cfg(feature = "arbitrary_precision")]
                         {
-                            if value <= (DECIMAL128_MAX as u128 + 1) {
+                            // Unlike `i64`, a `Decimal128` holds 38 digits, so
+                            // `-10^38` needs a `Decimal256` as `10^38` does.
+                            if value <= DECIMAL128_MAX as u128 {
                                 return Ok(JsonAst::Number(Number::Decimal128(Decimal128 {
                                     scale: 0,
                                     value: -(value as i128),

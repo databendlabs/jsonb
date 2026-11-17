@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ethnum::i256;
+
 // JSON text constants
 pub(crate) const UNICODE_LEN: usize = 4;
 
@@ -21,6 +23,26 @@ pub(crate) const UNICODE_LEN: usize = 4;
 /// Debug builds take about 4 to 9 KiB per level and need a larger stack:
 /// `to_value`, `partial_cmp` and others overflow 2 MiB at 512 levels.
 pub(crate) const MAX_NESTING_DEPTH: usize = 512;
+
+/// Maximum parenthesis depth in a JSONPath expression. The JSONPath parser
+/// uses much more stack per level than data traversal.
+pub(crate) const MAX_JSON_PATH_DEPTH: usize = 64;
+
+/// Maximum number of `&&` and `||` operators in a JSONPath expression. Each
+/// one adds a level to the parsed tree, which is processed recursively.
+/// The parser counts them because unquoted field names may contain `&&`.
+pub(crate) const MAX_JSON_PATH_LOGICAL_OPERATORS: usize = 256;
+
+/// Base work units for one JSONPath evaluation; see `Selector::reset_budgets`.
+/// Each selected item, filter value, node visited by `.**` and compared pair
+/// costs one unit.
+pub(crate) const MAX_JSON_PATH_ITEMS: usize = 1_000_000;
+
+/// Bytes one JSONPath evaluation may copy beyond the document size. A value
+/// is copied once per selected ancestor, so `$.**.**` on 500 nested arrays
+/// around a 1 KiB string copies about 300 MB. The budget is this plus the
+/// document size, so any single value can be copied at least once.
+pub(crate) const MAX_JSON_PATH_EXTRA_COPY_BYTES: usize = 32 * 1024 * 1024;
 
 /// Returns the nesting depth after entering one more array or object.
 ///
@@ -83,6 +105,10 @@ pub(crate) const DECIMAL64_MIN: i128 = -999_999_999_999_999_999i128;
 pub(crate) const DECIMAL64_MAX: i128 = 999_999_999_999_999_999i128;
 pub(crate) const DECIMAL128_MIN: i128 = -99_999_999_999_999_999_999_999_999_999_999_999_999i128;
 pub(crate) const DECIMAL128_MAX: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999i128;
+pub(crate) const DECIMAL256_MIN: i256 =
+    ethnum::int!("-9999999999999999999999999999999999999999999999999999999999999999999999999999");
+pub(crate) const DECIMAL256_MAX: i256 =
+    ethnum::int!("9999999999999999999999999999999999999999999999999999999999999999999999999999");
 
 pub(crate) const NUMBER_STRUCT_TOKEN: &str = "$jsonb::private::Number";
 pub(crate) const NUMBER_STRUCT_FIELD_SCALE: &str = "$jsonb::private::Number::Scale";

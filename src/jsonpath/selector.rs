@@ -16,10 +16,15 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
+use crate::constants::enter_container;
+use crate::constants::MAX_JSON_PATH_EXTRA_COPY_BYTES;
+use crate::constants::MAX_JSON_PATH_ITEMS;
 use crate::core::ArrayBuilder;
 use crate::core::ArrayIterator;
+use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
+use crate::core::NumberItem;
 use crate::core::ObjectValueIterator;
 use crate::error::Result;
 use crate::jsonpath::ArrayIndex;
@@ -29,6 +34,7 @@ use crate::jsonpath::JsonPath;
 use crate::jsonpath::Path;
 use crate::jsonpath::PathValue;
 use crate::jsonpath::RecursiveLevel;
+use crate::jsonpath::RecursiveLevelEnd;
 use crate::jsonpath::UnaryOperator;
 use crate::number::Number;
 use crate::to_owned_jsonb;
@@ -39,7 +45,19 @@ use crate::RawJsonb;
 #[derive(Debug)]
 enum ExprValue<'a> {
     Values(Vec<PathValue<'a>>),
-    Value(Box<PathValue<'a>>),
+    /// A literal, borrowed from the path so that a large string literal is not
+    /// copied once per evaluated item.
+    Value(&'a PathValue<'a>),
+}
+
+impl<'a> ExprValue<'a> {
+    /// Borrows the values to compare.
+    fn as_slice(&self) -> &[PathValue<'a>] {
+        match self {
+            ExprValue::Values(vals) => vals,
+            ExprValue::Value(val) => std::slice::from_ref(*val),
+        }
+    }
 }
 
 impl ExprValue<'_> {
@@ -55,8 +73,8 @@ impl ExprValue<'_> {
                     _ => Err(Error::InvalidJsonPath),
                 }
             }
-            ExprValue::Value(val) => match *val {
-                PathValue::Number(num) => Ok(num),
+            ExprValue::Value(val) => match val {
+                PathValue::Number(num) => Ok(num.clone()),
                 _ => Err(Error::InvalidJsonPath),
             },
         }
@@ -75,8 +93,8 @@ impl ExprValue<'_> {
                 }
                 Ok(nums)
             }
-            ExprValue::Value(val) => match *val {
-                PathValue::Number(num) => Ok(vec![num]),
+            ExprValue::Value(val) => match val {
+                PathValue::Number(num) => Ok(vec![num.clone()]),
                 _ => Err(Error::InvalidJsonPath),
             },
         }
@@ -92,6 +110,11 @@ pub struct Selector<'a> {
     root_jsonb: RawJsonb<'a>,
     /// A queue holding the JSONB items that match the path criteria during execution.
     items: VecDeque<JsonbItem<'a>>,
+    /// Work units left for the current evaluation; see `reset_budgets`.
+    budget: usize,
+    /// Bytes the current evaluation may still copy; see
+    /// [`MAX_JSON_PATH_EXTRA_COPY_BYTES`].
+    byte_budget: usize,
 }
 
 impl<'a> Selector<'a> {
@@ -101,10 +124,76 @@ impl<'a> Selector<'a> {
     ///
     /// * `root_jsonb` - The `RawJsonb` data to select from.
     pub fn new(root_jsonb: RawJsonb<'a>) -> Selector<'a> {
+        // `execute` sets the budgets for each evaluation.
         Self {
             root_jsonb,
             items: VecDeque::new(),
+            budget: 0,
+            byte_budget: 0,
         }
+    }
+
+    /// Restores the budgets for evaluating `json_path`.
+    ///
+    /// The work budget grows with the document and the path, so linear
+    /// queries on large documents fit, while chained `.**` steps and pairwise
+    /// comparisons still run out. The byte budget adds the document size, so
+    /// any single value can be copied once.
+    fn reset_budgets(&mut self, json_path: &JsonPath<'_>) {
+        let scaled = self.root_jsonb.len().saturating_mul(json_path.node_count());
+        self.budget = MAX_JSON_PATH_ITEMS.saturating_add(scaled);
+        self.byte_budget = MAX_JSON_PATH_EXTRA_COPY_BYTES.saturating_add(self.root_jsonb.len());
+    }
+
+    /// Spends `units` of the evaluation budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::JsonPathTooComplex` once the budget is used up.
+    fn charge(&mut self, units: usize) -> Result<()> {
+        self.budget = self
+            .budget
+            .checked_sub(units)
+            .ok_or(Error::JsonPathTooComplex)?;
+        Ok(())
+    }
+
+    /// Spends the byte budget on copying `item`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::JsonPathTooComplex` once the byte budget is used up.
+    fn charge_copy(&mut self, item: &JsonbItem<'_>) -> Result<()> {
+        let len = match item {
+            JsonbItem::Null | JsonbItem::Boolean(_) => 1,
+            JsonbItem::Number(NumberItem::Raw(data))
+            | JsonbItem::Extension(ExtensionItem::Raw(data)) => data.len(),
+            // Decoded values are at most a few dozen bytes once encoded.
+            JsonbItem::Number(NumberItem::Number(_))
+            | JsonbItem::Extension(ExtensionItem::Extension(_)) => 64,
+            JsonbItem::String(s) => s.len(),
+            JsonbItem::Raw(raw) => raw.len(),
+            JsonbItem::Owned(owned) => owned.len(),
+        };
+        // Each copy also carries a 4-byte header or JEntry.
+        self.byte_budget = self
+            .byte_budget
+            .checked_sub(len.saturating_add(4))
+            .ok_or(Error::JsonPathTooComplex)?;
+        Ok(())
+    }
+
+    /// Copies `item` into an `OwnedJsonb`, charging the byte budget.
+    fn copy_item(&mut self, item: JsonbItem<'_>) -> Result<OwnedJsonb> {
+        self.charge_copy(&item)?;
+        OwnedJsonb::from_item(item)
+    }
+
+    /// Appends a selected item, charging it to the budget.
+    fn push_item(&mut self, item: JsonbItem<'a>) -> Result<()> {
+        self.charge(1)?;
+        self.items.push_back(item);
+        Ok(())
     }
 
     /// Executes the `JsonPath` and collects all matching items into a `Vec<OwnedJsonb>`.
@@ -147,7 +236,7 @@ impl<'a> Selector<'a> {
         self.execute(json_path)?;
         let mut values = Vec::with_capacity(self.items.len());
         while let Some(item) = self.items.pop_front() {
-            let value = OwnedJsonb::from_item(item)?;
+            let value = self.copy_item(item)?;
             values.push(value);
         }
         Ok(values)
@@ -190,6 +279,7 @@ impl<'a> Selector<'a> {
         self.execute(json_path)?;
         let mut builder = ArrayBuilder::with_capacity(self.items.len());
         while let Some(item) = self.items.pop_front() {
+            self.charge_copy(&item)?;
             builder.push_jsonb_item(item);
         }
         builder.build()
@@ -236,7 +326,7 @@ impl<'a> Selector<'a> {
     pub fn select_first(&mut self, json_path: &'a JsonPath<'a>) -> Result<Option<OwnedJsonb>> {
         self.execute(json_path)?;
         if let Some(item) = self.items.pop_front() {
-            let value = OwnedJsonb::from_item(item)?;
+            let value = self.copy_item(item)?;
             Ok(Some(value))
         } else {
             Ok(None)
@@ -292,12 +382,13 @@ impl<'a> Selector<'a> {
         if self.items.len() > 1 {
             let mut builder = ArrayBuilder::with_capacity(self.items.len());
             while let Some(item) = self.items.pop_front() {
+                self.charge_copy(&item)?;
                 builder.push_jsonb_item(item);
             }
             let array = builder.build()?;
             Ok(Some(array))
         } else if let Some(item) = self.items.pop_front() {
-            let value = OwnedJsonb::from_item(item)?;
+            let value = self.copy_item(item)?;
             Ok(Some(value))
         } else {
             Ok(None)
@@ -415,6 +506,7 @@ impl<'a> Selector<'a> {
     fn execute(&mut self, json_path: &'a JsonPath<'a>) -> Result<()> {
         // add root jsonb
         let root_item = JsonbItem::Raw(self.root_jsonb);
+        self.reset_budgets(json_path);
         self.items.clear();
         self.items.push_front(root_item);
 
@@ -446,7 +538,7 @@ impl<'a> Selector<'a> {
                         let item = self.items.pop_front().unwrap();
                         let res = self.eval_filter_expr(item.clone(), expr)?.unwrap_or(false);
                         if res {
-                            self.items.push_back(item);
+                            self.push_item(item)?;
                         }
                     }
                 }
@@ -501,7 +593,7 @@ impl<'a> Selector<'a> {
                 if let Some(mut object_val_iter) = object_val_iter_opt {
                     for result in &mut object_val_iter {
                         let val_item = result?;
-                        self.items.push_back(val_item);
+                        self.push_item(val_item)?;
                     }
                 }
             }
@@ -510,8 +602,8 @@ impl<'a> Selector<'a> {
                 if let Some(mut object_val_iter) = object_val_iter_opt {
                     for result in &mut object_val_iter {
                         let val_item = result?;
-                        let owned_item = OwnedJsonb::from_item(val_item)?;
-                        self.items.push_back(JsonbItem::Owned(owned_item));
+                        let owned_item = self.copy_item(val_item)?;
+                        self.push_item(JsonbItem::Owned(owned_item))?;
                     }
                 }
             }
@@ -521,17 +613,27 @@ impl<'a> Selector<'a> {
         Ok(())
     }
 
+    /// Selects `parent_item` and its descendants for `.**`.
+    ///
+    /// `curr_level` is the number of containers enclosing `parent_item`.
     fn recursive_select_values(
         &mut self,
         parent_item: JsonbItem<'a>,
-        curr_level: u8,
+        curr_level: usize,
         recursive_level_opt: &Option<RecursiveLevel>,
     ) -> Result<()> {
-        let (is_match, should_continue) = if let Some(recursive_level) = recursive_level_opt {
-            recursive_level.check_recursive_level(curr_level)
-        } else {
-            (true, true)
+        let (is_match, should_continue) = match (recursive_level_opt, u8::try_from(curr_level)) {
+            (None, _) => (true, true),
+            (Some(recursive_level), Ok(level)) => recursive_level.check_recursive_level(level),
+            // Level bounds are `u8`, so deeper levels only match an open `to last` range.
+            (Some(recursive_level), Err(_)) => {
+                let open_ended = matches!(recursive_level.end, Some(RecursiveLevelEnd::Last));
+                (open_ended, open_ended)
+            }
         };
+        // Charge every visited node, so levels that are walked but not
+        // selected (`.**{100}`) are bounded too.
+        self.charge(1)?;
         if is_match {
             self.items.push_back(parent_item.clone());
         }
@@ -543,44 +645,44 @@ impl<'a> Selector<'a> {
             JsonbItem::Raw(raw) => {
                 let object_val_iter_opt = ObjectValueIterator::new(raw)?;
                 if let Some(mut object_val_iter) = object_val_iter_opt {
+                    let next_level = enter_container(curr_level)?;
                     for result in &mut object_val_iter {
                         let val_item = result?;
-                        self.recursive_select_values(
-                            val_item,
-                            curr_level + 1,
-                            recursive_level_opt,
-                        )?;
+                        self.recursive_select_values(val_item, next_level, recursive_level_opt)?;
                     }
                 }
                 let array_iter_opt = ArrayIterator::new(raw)?;
                 if let Some(mut array_iter) = array_iter_opt {
+                    let next_level = enter_container(curr_level)?;
                     for item_result in &mut array_iter {
                         let item = item_result?;
-                        self.recursive_select_values(item, curr_level + 1, recursive_level_opt)?;
+                        self.recursive_select_values(item, next_level, recursive_level_opt)?;
                     }
                 }
             }
             JsonbItem::Owned(ref owned) => {
                 let object_val_iter_opt = ObjectValueIterator::new(owned.as_raw())?;
                 if let Some(mut object_val_iter) = object_val_iter_opt {
+                    let next_level = enter_container(curr_level)?;
                     for result in &mut object_val_iter {
                         let val_item = result?;
-                        let owned_item = OwnedJsonb::from_item(val_item)?;
+                        let owned_item = self.copy_item(val_item)?;
                         self.recursive_select_values(
                             JsonbItem::Owned(owned_item),
-                            curr_level + 1,
+                            next_level,
                             recursive_level_opt,
                         )?;
                     }
                 }
                 let array_iter_opt = ArrayIterator::new(owned.as_raw())?;
                 if let Some(mut array_iter) = array_iter_opt {
+                    let next_level = enter_container(curr_level)?;
                     for item_result in &mut array_iter {
                         let item = item_result?;
-                        let owned_item = OwnedJsonb::from_item(item)?;
+                        let owned_item = self.copy_item(item)?;
                         self.recursive_select_values(
                             JsonbItem::Owned(owned_item),
-                            curr_level + 1,
+                            next_level,
                             recursive_level_opt,
                         )?;
                     }
@@ -607,7 +709,7 @@ impl<'a> Selector<'a> {
                 if let Some(val_item) =
                     raw.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
                 {
-                    self.items.push_back(val_item);
+                    self.push_item(val_item)?;
                 }
             }
             JsonbItem::Owned(ref owned) => {
@@ -615,8 +717,8 @@ impl<'a> Selector<'a> {
                 if let Some(val_item) =
                     raw.get_object_value_by_key_name(&key_name, |name, key| key.eq(name))?
                 {
-                    let owned_item = OwnedJsonb::from_item(val_item)?;
-                    self.items.push_back(JsonbItem::Owned(owned_item));
+                    let owned_item = self.copy_item(val_item)?;
+                    self.push_item(JsonbItem::Owned(owned_item))?;
                 }
             }
             _ => {}
@@ -628,7 +730,7 @@ impl<'a> Selector<'a> {
         let jsonb_item_type = parent_item.jsonb_item_type()?;
         if !matches!(jsonb_item_type, JsonbItemType::Array(_)) {
             // In lax mode, bracket wildcard allow Scalar and Object value.
-            self.items.push_back(parent_item);
+            self.push_item(parent_item)?;
             return Ok(());
         };
 
@@ -638,7 +740,7 @@ impl<'a> Selector<'a> {
                 if let Some(mut array_iter) = array_iter_opt {
                     for item_result in &mut array_iter {
                         let item = item_result?;
-                        self.items.push_back(item);
+                        self.push_item(item)?;
                     }
                 }
             }
@@ -647,8 +749,8 @@ impl<'a> Selector<'a> {
                 if let Some(mut array_iter) = array_iter_opt {
                     for item_result in &mut array_iter {
                         let item = item_result?;
-                        let owned_item = OwnedJsonb::from_item(item)?;
-                        self.items.push_back(JsonbItem::Owned(owned_item));
+                        let owned_item = self.copy_item(item)?;
+                        self.push_item(JsonbItem::Owned(owned_item))?;
                     }
                 }
             }
@@ -678,7 +780,7 @@ impl<'a> Selector<'a> {
                         for (i, item_result) in &mut array_iter.enumerate() {
                             let item = item_result?;
                             if indices.contains(&i) {
-                                self.items.push_back(item);
+                                self.push_item(item)?;
                             }
                         }
                     }
@@ -689,8 +791,8 @@ impl<'a> Selector<'a> {
                         for (i, item_result) in &mut array_iter.enumerate() {
                             let item = item_result?;
                             if indices.contains(&i) {
-                                let owned_item = OwnedJsonb::from_item(item)?;
-                                self.items.push_back(JsonbItem::Owned(owned_item));
+                                let owned_item = self.copy_item(item)?;
+                                self.push_item(JsonbItem::Owned(owned_item))?;
                             }
                         }
                     }
@@ -706,7 +808,7 @@ impl<'a> Selector<'a> {
             Expr::UnaryOp { op, operand } => {
                 let res_items = self.eval_unary_arithmetic_func(item.clone(), op, operand)?;
                 for res_item in res_items {
-                    self.items.push_back(res_item);
+                    self.push_item(res_item)?;
                 }
             }
             Expr::BinaryOp { op, left, right } => match op {
@@ -718,7 +820,7 @@ impl<'a> Selector<'a> {
                     let res_items =
                         self.eval_binary_arithmetic_func(item.clone(), op, left, right)?;
                     for res_item in res_items {
-                        self.items.push_back(res_item);
+                        self.push_item(res_item)?;
                     }
                 }
                 _ => {
@@ -728,7 +830,7 @@ impl<'a> Selector<'a> {
                     } else {
                         JsonbItem::Null
                     };
-                    self.items.push_back(res_item);
+                    self.push_item(res_item)?;
                 }
             },
             Expr::ExistsFunc(_) => {
@@ -738,11 +840,11 @@ impl<'a> Selector<'a> {
                 } else {
                     JsonbItem::Null
                 };
-                self.items.push_back(res_item);
+                self.push_item(res_item)?;
             }
             Expr::Value(val) => {
                 let res_item = self.eval_value(val)?;
-                self.items.push_back(res_item);
+                self.push_item(res_item)?;
             }
             Expr::Paths(_) => {
                 return Err(Error::InvalidJsonPath);
@@ -853,8 +955,7 @@ impl<'a> Selector<'a> {
                 | BinaryOperator::StartsWith => {
                     let lhs = self.convert_expr_val(item.clone(), left)?;
                     let rhs = self.convert_expr_val(item.clone(), right)?;
-                    let res = self.eval_compare(op, &lhs, &rhs);
-                    Ok(res)
+                    self.eval_compare(op, &lhs, &rhs)
                 }
                 _ => Ok(None),
             },
@@ -897,7 +998,7 @@ impl<'a> Selector<'a> {
                         let item = self.items.pop_front().unwrap();
                         let res = self.eval_filter_expr(item.clone(), expr)?.unwrap_or(false);
                         if res {
-                            self.items.push_back(item);
+                            self.push_item(item)?;
                         }
                     }
                 }
@@ -916,7 +1017,7 @@ impl<'a> Selector<'a> {
         expr: &'a Expr<'a>,
     ) -> Result<ExprValue<'a>> {
         match expr {
-            Expr::Value(value) => Ok(ExprValue::Value(value.clone())),
+            Expr::Value(value) => Ok(ExprValue::Value(value)),
             Expr::Paths(paths) => {
                 let mut filter_items = self.select_by_filter_paths(item, paths)?;
 
@@ -949,6 +1050,7 @@ impl<'a> Selector<'a> {
                                             continue;
                                         }
                                     };
+                                    self.charge(1)?;
                                     values.push(value);
                                 }
                             } else {
@@ -966,6 +1068,7 @@ impl<'a> Selector<'a> {
                                         continue;
                                     }
                                 };
+                                self.charge(1)?;
                                 values.push(value);
                             }
                             continue;
@@ -974,6 +1077,7 @@ impl<'a> Selector<'a> {
                             continue;
                         }
                     };
+                    self.charge(1)?;
                     values.push(value);
                 }
                 Ok(ExprValue::Values(values))
@@ -987,36 +1091,27 @@ impl<'a> Selector<'a> {
         op: &BinaryOperator,
         lhs: &ExprValue<'a>,
         rhs: &ExprValue<'a>,
-    ) -> Option<bool> {
-        let (lvals, rvals) = match (lhs, rhs) {
-            (ExprValue::Value(lhs), ExprValue::Value(rhs)) => {
-                (vec![*lhs.clone()], vec![*rhs.clone()])
-            }
-            (ExprValue::Values(lhses), ExprValue::Value(rhs)) => {
-                (lhses.clone(), vec![*rhs.clone()])
-            }
-            (ExprValue::Value(lhs), ExprValue::Values(rhses)) => {
-                (vec![*lhs.clone()], rhses.clone())
-            }
-            (ExprValue::Values(lhses), ExprValue::Values(rhses)) => (lhses.clone(), rhses.clone()),
-        };
-
-        for lval in lvals.iter() {
-            for rval in rvals.iter() {
-                let res = self.compare_value(op, lval.clone(), rval.clone())?;
-                if res {
-                    return Some(true);
+    ) -> Result<Option<bool>> {
+        // Compare borrowed values: cloning a string operand would copy it
+        // once per pair, outside the byte budget.
+        for lval in lhs.as_slice() {
+            for rval in rhs.as_slice() {
+                self.charge(1)?;
+                match self.compare_value(op, lval, rval) {
+                    Some(true) => return Ok(Some(true)),
+                    Some(false) => {}
+                    None => return Ok(None),
                 }
             }
         }
-        Some(false)
+        Ok(Some(false))
     }
 
     fn compare_value(
         &mut self,
         op: &BinaryOperator,
-        lhs: PathValue<'a>,
-        rhs: PathValue<'a>,
+        lhs: &PathValue<'a>,
+        rhs: &PathValue<'a>,
     ) -> Option<bool> {
         // container value can't compare values.
         if matches!(lhs, PathValue::Raw(_)) || matches!(rhs, PathValue::Raw(_)) {
@@ -1024,12 +1119,12 @@ impl<'a> Selector<'a> {
         }
         if op == &BinaryOperator::StartsWith {
             let res = match (lhs, rhs) {
-                (PathValue::String(lhs), PathValue::String(rhs)) => Some(lhs.starts_with(&*rhs)),
+                (PathValue::String(lhs), PathValue::String(rhs)) => Some(lhs.starts_with(&**rhs)),
                 (_, _) => None,
             };
             return res;
         }
-        let order = lhs.partial_cmp(&rhs);
+        let order = lhs.partial_cmp(rhs);
         if let Some(order) = order {
             let res = match op {
                 BinaryOperator::Eq => order == Ordering::Equal,

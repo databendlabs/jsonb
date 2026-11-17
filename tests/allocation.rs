@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Checks that work on untrusted input allocates in proportion to the input,
-//! not to the lengths it claims. This is a
+//! not to the lengths it claims or to how often a value is reused. This is a
 //! separate test binary because it installs a global allocator that records
 //! allocation sizes.
 
@@ -22,6 +22,7 @@ use std::alloc::Layout;
 use std::alloc::System;
 use std::cell::Cell;
 
+use jsonb::jsonpath::parse_json_path;
 use jsonb::*;
 
 struct RecordSizes;
@@ -30,6 +31,7 @@ thread_local! {
     // Per thread, so tests running in parallel do not see each other's
     // allocations. Constant-initialized cells never allocate themselves.
     static LARGEST: Cell<usize> = const { Cell::new(0) };
+    static TOTAL: Cell<usize> = const { Cell::new(0) };
 }
 
 // SAFETY: forwards every call to `System` unchanged; it only records sizes.
@@ -37,6 +39,7 @@ unsafe impl GlobalAlloc for RecordSizes {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = layout.size();
         LARGEST.with(|largest| largest.set(largest.get().max(size)));
+        TOTAL.with(|total| total.set(total.get() + size));
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
         unsafe { System.alloc(layout) }
     }
@@ -55,6 +58,13 @@ fn largest_allocation(f: impl FnOnce()) -> usize {
     LARGEST.with(|largest| largest.set(0));
     f();
     LARGEST.with(Cell::get)
+}
+
+/// Runs `f` and returns the total size of the allocations it made.
+fn total_allocation(f: impl FnOnce()) -> usize {
+    TOTAL.with(|total| total.set(0));
+    f();
+    TOTAL.with(Cell::get)
 }
 
 #[test]
@@ -89,4 +99,28 @@ fn claimed_lengths_do_not_size_allocations() {
 
     // Text that is not valid JSONB still parses as JSON text.
     assert_eq!(from_slice(b"[1,2,3]").unwrap().to_string(), "[1,2,3]");
+}
+
+#[test]
+fn json_path_comparisons_do_not_copy_literals() {
+    // A 100 KiB literal with an escape is stored as an owned string. Every
+    // comparison used to clone it, so comparing 2000 strings against it
+    // allocated about 200 to 600 MiB, outside the copy budget (found in review).
+    let doc: OwnedJsonb = format!("[{}]", vec![r#""x""#; 2000].join(","))
+        .parse()
+        .unwrap();
+    let literal = format!(r"\n{}", "a".repeat(100 * 1024));
+    for path in [
+        format!(r#"$[*] ? (@ == "{literal}")"#),
+        format!(r#"$[*] ? (@ starts with "{literal}")"#),
+        format!(r#"$ ? ($[*] == "{literal}")"#),
+    ] {
+        let path = parse_json_path(path.as_bytes()).unwrap();
+        let mut selected = None;
+        let total = total_allocation(|| {
+            selected = Some(doc.as_raw().select_by_path(&path).map(|v| v.len()));
+        });
+        assert_eq!(selected, Some(Ok(0)));
+        assert!(total < 1024 * 1024, "allocated {total} bytes");
+    }
 }
