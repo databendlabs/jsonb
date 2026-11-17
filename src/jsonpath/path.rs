@@ -32,6 +32,28 @@ impl JsonPath<'_> {
     pub fn is_predicate(&self) -> bool {
         self.paths.len() == 1 && matches!(self.paths[0], Path::Expr(_))
     }
+
+    /// Returns the number of steps and expression nodes in the path, at least 1.
+    pub(crate) fn node_count(&self) -> usize {
+        Path::node_count_of(&self.paths).max(1)
+    }
+}
+
+impl Path<'_> {
+    /// Returns the number of steps and expression nodes in `paths`.
+    fn node_count_of(paths: &[Path<'_>]) -> usize {
+        paths
+            .iter()
+            .map(Path::node_count)
+            .fold(0, usize::saturating_add)
+    }
+
+    fn node_count(&self) -> usize {
+        match self {
+            Path::FilterExpr(expr) | Path::Expr(expr) => expr.node_count().saturating_add(1),
+            _ => 1,
+        }
+    }
 }
 
 /// Represents a valid JSON Path.
@@ -539,6 +561,20 @@ impl Display for Expr<'_> {
 }
 
 impl Expr<'_> {
+    /// Returns the number of nodes in this expression, including path steps.
+    fn node_count(&self) -> usize {
+        match self {
+            Expr::Paths(paths) => Path::node_count_of(paths),
+            Expr::Value(_) => 1,
+            Expr::BinaryOp { left, right, .. } => left
+                .node_count()
+                .saturating_add(right.node_count())
+                .saturating_add(1),
+            Expr::UnaryOp { operand, .. } => operand.node_count().saturating_add(1),
+            Expr::ExistsFunc(paths) => Path::node_count_of(paths).saturating_add(1),
+        }
+    }
+
     /// Returns whether this expression, an operand of `parent`, must be
     /// parenthesized for the formatted text to parse back to the same tree.
     ///

@@ -110,7 +110,7 @@ pub struct Selector<'a> {
     root_jsonb: RawJsonb<'a>,
     /// A queue holding the JSONB items that match the path criteria during execution.
     items: VecDeque<JsonbItem<'a>>,
-    /// Work units left for the current evaluation; see [`MAX_JSON_PATH_ITEMS`].
+    /// Work units left for the current evaluation; see `reset_budgets`.
     budget: usize,
     /// Bytes the current evaluation may still copy; see
     /// [`MAX_JSON_PATH_EXTRA_COPY_BYTES`].
@@ -124,20 +124,24 @@ impl<'a> Selector<'a> {
     ///
     /// * `root_jsonb` - The `RawJsonb` data to select from.
     pub fn new(root_jsonb: RawJsonb<'a>) -> Selector<'a> {
-        let mut selector = Self {
+        // `execute` sets the budgets for each evaluation.
+        Self {
             root_jsonb,
             items: VecDeque::new(),
             budget: 0,
             byte_budget: 0,
-        };
-        selector.reset_budgets();
-        selector
+        }
     }
 
-    /// Restores the full budgets for a new evaluation. The byte budget adds
-    /// the document size, so any single value can be copied at least once.
-    fn reset_budgets(&mut self) {
-        self.budget = MAX_JSON_PATH_ITEMS;
+    /// Restores the budgets for evaluating `json_path`.
+    ///
+    /// The work budget grows with the document and the path, so linear
+    /// queries on large documents fit, while chained `.**` steps and pairwise
+    /// comparisons still run out. The byte budget adds the document size, so
+    /// any single value can be copied once.
+    fn reset_budgets(&mut self, json_path: &JsonPath<'_>) {
+        let scaled = self.root_jsonb.len().saturating_mul(json_path.node_count());
+        self.budget = MAX_JSON_PATH_ITEMS.saturating_add(scaled);
         self.byte_budget = MAX_JSON_PATH_EXTRA_COPY_BYTES.saturating_add(self.root_jsonb.len());
     }
 
@@ -502,7 +506,7 @@ impl<'a> Selector<'a> {
     fn execute(&mut self, json_path: &'a JsonPath<'a>) -> Result<()> {
         // add root jsonb
         let root_item = JsonbItem::Raw(self.root_jsonb);
-        self.reset_budgets();
+        self.reset_budgets(json_path);
         self.items.clear();
         self.items.push_front(root_item);
 

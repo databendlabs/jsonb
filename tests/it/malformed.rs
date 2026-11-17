@@ -1175,6 +1175,47 @@ fn json_path_evaluation_is_bounded() {
 }
 
 #[test]
+fn json_path_budget_scales_with_the_input() {
+    // A fixed budget of 1,000,000 units rejected `$[*] ? (@ == 2)` above about
+    // 333,000 elements (found in review).
+    let count = |doc: &OwnedJsonb, path: &str| {
+        let path = parse_json_path(path.as_bytes()).unwrap();
+        doc.as_raw()
+            .select_by_path(&path)
+            .unwrap_or_else(|e| panic!("{path}: {e:?}"))
+            .len()
+    };
+    let array = |n: usize, item: &dyn Fn(usize) -> String| -> OwnedJsonb {
+        format!("[{}]", (0..n).map(item).collect::<Vec<_>>().join(","))
+            .parse()
+            .unwrap()
+    };
+
+    let n = 1_000_000;
+    let ints = array(n, &|i| (i % 1000).to_string());
+    assert_eq!(count(&ints, "$[*]"), n);
+    assert_eq!(count(&ints, "$[*] ? (@ == 2)"), n / 1000);
+    assert_eq!(count(&ints, "$[*] ? (@ > 0 && @ < 10)"), 9 * n / 1000);
+    assert_eq!(
+        count(&ints, "$[*] ? (@ == 2 || @ == 3 || @ == 4)"),
+        3 * n / 1000
+    );
+    assert_eq!(count(&ints, "$.**"), n + 1);
+
+    // The smallest values, 4 bytes each; every comparison is still charged.
+    let nulls = array(n, &|_| "null".to_string());
+    assert_eq!(count(&nulls, "$[*] ? (@ == 1 || @ == 2 || @ == 3)"), 0);
+
+    let m = 400_000;
+    let objects = array(m, &|i| format!(r#"{{"a":{},"b":"x"}}"#, i % 1000));
+    assert_eq!(
+        count(&objects, r#"$[*] ? (@.a == 1 && @.b == "x")"#),
+        m / 1000
+    );
+    assert_eq!(count(&objects, "$.**"), 3 * m + 1);
+}
+
+#[test]
 fn json_path_copies_are_bounded() {
     // Debug builds need more than the default stack to walk 500 levels.
     with_big_stack(|| {

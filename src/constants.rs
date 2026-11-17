@@ -31,9 +31,9 @@ pub(crate) const MAX_JSON_PATH_DEPTH: usize = 64;
 /// The parser counts them because unquoted field names may contain `&&`.
 pub(crate) const MAX_JSON_PATH_LOGICAL_OPERATORS: usize = 256;
 
-/// Maximum work units for one JSONPath evaluation. Each selected item, filter
-/// value, node visited by `.**` and compared pair costs one unit; without a
-/// limit, chained `.**` steps grow combinatorially with the nesting depth.
+/// Base work units for one JSONPath evaluation; see `Selector::reset_budgets`.
+/// Each selected item, filter value, node visited by `.**` and compared pair
+/// costs one unit.
 pub(crate) const MAX_JSON_PATH_ITEMS: usize = 1_000_000;
 
 /// Bytes one JSONPath evaluation may copy beyond the document size. A value

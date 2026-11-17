@@ -116,9 +116,9 @@ pub enum Error {
     /// an array/object has 2^29 or more elements, which the JSONB length fields
     /// cannot represent.
     ValueTooLarge,
-    /// Evaluating a JSONPath expression selected or compared more than
-    /// 1,000,000 items, for example through chained `.**` steps, or copied
-    /// more than 32 MiB beyond the size of the document.
+    /// Evaluating a JSONPath expression did more work than 1,000,000 units
+    /// plus the document size times the path size, for example through
+    /// chained `.**` steps, or copied more than 32 MiB beyond the document.
     JsonPathTooComplex,
 
     Message(String),
