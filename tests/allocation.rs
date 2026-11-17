@@ -124,3 +124,16 @@ fn json_path_comparisons_do_not_copy_literals() {
         assert!(total < 1024 * 1024, "allocated {total} bytes");
     }
 }
+
+#[test]
+fn oversized_binary_values_fail_before_copying() {
+    // A binary payload is a type byte and the bytes, so `2^28 - 1` bytes need
+    // a 2^28-byte payload, one more than the length field holds. The encoder
+    // used to copy them into the output before checking the length.
+    let big = vec![0u8; (1 << 28) - 1];
+    let value = Value::Binary(&big);
+    let largest = largest_allocation(|| {
+        assert_eq!(value.to_vec().err(), Some(Error::ValueTooLarge));
+    });
+    assert!(largest < 1 << 20, "allocated {largest} bytes");
+}

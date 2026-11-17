@@ -20,41 +20,16 @@
 
 use std::panic::{self, AssertUnwindSafe};
 
-use ethnum::I256;
 use jsonb::jsonpath::parse_json_path;
 use jsonb::keypath::parse_key_paths;
 use jsonb::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::util::{nested_arrays, with_big_stack, within_timeout};
+
 /// Nesting limit for arrays and objects (`MAX_NESTING_DEPTH` in the crate).
 const MAX_DEPTH: usize = 512;
-/// Parenthesis nesting limit for JSONPath (`MAX_JSON_PATH_DEPTH` in the crate).
-const MAX_PATH_DEPTH: usize = 64;
-/// `&&` and `||` limit for JSONPath (`MAX_JSON_PATH_LOGICAL_OPERATORS` in the crate).
-const MAX_PATH_LOGICAL_OPERATORS: usize = 256;
-
-/// Runs `f` on a thread with a large stack.
-///
-/// Debug builds use up to ~9 KiB of stack per nesting level, so walking
-/// `MAX_DEPTH` levels needs more than the test harness's default 2 MiB.
-fn with_big_stack(f: impl FnOnce() + Send + 'static) {
-    std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(f)
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-/// Builds `[[...[]...]]` with `depth` arrays, using the public builder.
-fn nested_arrays(depth: usize) -> OwnedJsonb {
-    let mut cur = "[]".parse::<OwnedJsonb>().unwrap();
-    for _ in 1..depth {
-        cur = OwnedJsonb::build_array([cur.as_raw()]).unwrap();
-    }
-    cur
-}
 
 /// Builds `{"k":{"k":...{}...}}` with `depth` objects, using the public builder.
 fn nested_objects(depth: usize) -> OwnedJsonb {
@@ -73,18 +48,43 @@ fn jsonb(words: &[u32], tail: &[u8]) -> Vec<u8> {
 
 #[test]
 fn malformed_number_payloads_return_errors() {
-    let cases = [
-        ("empty number", jsonb(&[0x2000_0000, 0x2000_0000], &[])),
+    let mut cases = vec![
         (
-            "float with 1 byte",
-            jsonb(&[0x2000_0000, 0x2000_0002], &[0x60, 0xf9]),
+            "empty number".to_string(),
+            jsonb(&[0x2000_0000, 0x2000_0000], &[]),
+            Some(Error::InvalidJsonbNumber),
         ),
-        ("truncated payload", jsonb(&[0x2000_0000, 0x2000_0001], &[])),
+        (
+            "float with 1 byte".to_string(),
+            jsonb(&[0x2000_0000, 0x2000_0002], &[0x60, 0xf9]),
+            Some(Error::InvalidJsonbNumber),
+        ),
+        (
+            "truncated payload".to_string(),
+            jsonb(&[0x2000_0000, 0x2000_0001], &[]),
+            None,
+        ),
     ];
-    for (name, bytes) in &cases {
+    // Zero, NaN and the infinities are one tag byte. Bytes after it were
+    // ignored, so one value had many encodings.
+    for tag in [0x00, 0x10, 0x20, 0x30] {
+        let exact = jsonb(&[0x2000_0000, 0x2000_0001], &[tag]);
+        assert!(RawJsonb::new(&exact).to_value().is_ok(), "{tag:#x}");
+        cases.push((
+            format!("tag {tag:#x} with a payload"),
+            jsonb(&[0x2000_0000, 0x2000_0002], &[tag, 0xff]),
+            Some(Error::InvalidJsonbNumber),
+        ));
+    }
+    for (name, bytes, error) in &cases {
         let raw = RawJsonb::new(bytes);
         assert!(raw.as_number().is_err(), "{name}: as_number");
-        assert!(raw.to_value().is_err(), "{name}: to_value");
+        let to_value = raw.to_value().err();
+        assert!(to_value.is_some(), "{name}: to_value");
+        if error.is_some() {
+            assert_eq!(&to_value, error, "{name}: to_value");
+            assert_eq!(&raw.as_number().err(), error, "{name}: as_number");
+        }
         assert!(
             from_raw_jsonb::<i64>(&raw).is_err(),
             "{name}: from_raw_jsonb"
@@ -98,20 +98,37 @@ fn malformed_number_payloads_return_errors() {
 
 #[test]
 fn malformed_extension_payloads_return_errors() {
-    let cases = [
-        ("empty extension", jsonb(&[0x2000_0000, 0x6000_0000], &[])),
+    let mut cases = vec![
         (
-            "truncated extension",
+            "empty extension".to_string(),
+            jsonb(&[0x2000_0000, 0x6000_0000], &[]),
+            Some(Error::InvalidJsonbExtension),
+        ),
+        (
+            "truncated extension".to_string(),
             jsonb(&[0x2000_0000, 0x6000_008f], &[]),
+            None,
         ),
     ];
-    for (name, bytes) in &cases {
+    // Dates, timestamps, timestamps with a time zone and intervals of the
+    // wrong length reported `InvalidJsonbNumber`.
+    for tag in [0x10, 0x20, 0x30, 0x40] {
+        cases.push((
+            format!("extension {tag:#x} of the wrong length"),
+            jsonb(&[0x2000_0000, 0x6000_0002], &[tag, 0]),
+            Some(Error::InvalidJsonbExtension),
+        ));
+    }
+    for (name, bytes, error) in &cases {
         let raw = RawJsonb::new(bytes);
-        assert!(
-            raw.as_extension_value().is_err(),
-            "{name}: as_extension_value"
-        );
-        assert!(raw.to_value().is_err(), "{name}: to_value");
+        let as_extension = raw.as_extension_value().err();
+        let to_value = raw.to_value().err();
+        assert!(as_extension.is_some(), "{name}: as_extension_value");
+        assert!(to_value.is_some(), "{name}: to_value");
+        if error.is_some() {
+            assert_eq!(&as_extension, error, "{name}: as_extension_value");
+            assert_eq!(&to_value, error, "{name}: to_value");
+        }
         assert!(
             from_raw_jsonb::<String>(&raw).is_err(),
             "{name}: from_raw_jsonb"
@@ -130,66 +147,12 @@ fn truncated_container_payloads_return_errors() {
 }
 
 #[test]
-fn from_slice_rejects_non_string_object_key() {
-    // `{null: "v"}`
-    let bytes = jsonb(&[0x4000_0001, 0x0000_0000, 0x1000_0001], b"v");
-    assert!(from_slice(&bytes).is_err());
-}
-
-#[test]
-fn object_functions_reject_non_string_object_keys() {
-    // Each key is valid UTF-8, so only its type marks the object as invalid.
-    // The object iterator used to decode such keys as strings, so these
-    // functions accepted objects that `to_value` and serialization reject.
-    let cases = [
-        (
-            "null key",
-            jsonb(&[0x4000_0001, 0x0000_0000, 0x1000_0001], b"v"),
-        ),
-        (
-            "number key",
-            jsonb(&[0x4000_0001, 0x2000_0001, 0x1000_0001], b"kv"),
-        ),
-        (
-            "extension key",
-            jsonb(&[0x4000_0001, 0x6000_0001, 0x1000_0001], b"kv"),
-        ),
-    ];
-    let one: OwnedJsonb = "1".parse().unwrap();
-    let keys: std::collections::BTreeSet<&str> = ["k"].into_iter().collect();
-    for (name, bytes) in &cases {
-        let raw = RawJsonb::new(bytes);
-        assert_eq!(raw.object_each().err(), Some(Error::InvalidJsonb), "{name}");
-        assert_eq!(
-            raw.object_insert("x", &one.as_raw(), false).err(),
-            Some(Error::InvalidJsonb),
-            "{name}"
-        );
-        assert_eq!(
-            raw.object_delete(&keys).err(),
-            Some(Error::InvalidJsonb),
-            "{name}"
-        );
-        assert_eq!(
-            raw.object_pick(&keys).err(),
-            Some(Error::InvalidJsonb),
-            "{name}"
-        );
-        assert!(jaq_json::Val::try_from(raw).is_err(), "{name}");
-        // The other decoders already rejected these keys.
-        assert_eq!(raw.to_value().err(), Some(Error::InvalidJsonb), "{name}");
-        assert!(from_slice(bytes).is_err(), "{name}");
-        assert!(serde_json::to_string(&raw).is_err(), "{name}");
-    }
-
-    // The same object with a string key still works.
-    let bytes = jsonb(&[0x4000_0001, 0x1000_0001, 0x1000_0001], b"kv");
+fn unknown_jentry_type_returns_error_instead_of_panicking() {
+    // Type code 0x7 is not assigned to any JSONB value kind.
+    let bytes = jsonb(&[0x8000_0001, 0x7000_0000], &[]);
     let raw = RawJsonb::new(&bytes);
-    let each = raw.object_each().unwrap().unwrap();
-    assert_eq!(each.len(), 1);
-    assert_eq!(each[0].0, "k");
-    assert_eq!(each[0].1.to_string(), r#""v""#);
-    assert_eq!(raw.object_pick(&keys).unwrap().to_string(), r#"{"k":"v"}"#);
+    assert_eq!(raw.array_values().err(), Some(Error::InvalidJsonb));
+    assert_eq!(raw.get_by_index(0).err(), Some(Error::InvalidJsonb));
 }
 
 #[test]
@@ -268,6 +231,12 @@ fn container_entries_under_scalar_headers_are_rejected() {
     let raw = RawJsonb::new(&one);
     assert_eq!(raw.to_value().err(), Some(Error::InvalidJsonb));
     assert!(from_raw_jsonb::<serde_json::Value>(&raw).is_err());
+    // The typed paths reported `UnexpectedType`, as if it were a valid
+    // container.
+    assert_eq!(from_raw_jsonb::<String>(&raw), Err(Error::InvalidJsonb));
+    assert_eq!(from_raw_jsonb::<u64>(&raw), Err(Error::InvalidJsonb));
+    assert_eq!(from_raw_jsonb::<bool>(&raw), Err(Error::InvalidJsonb));
+    assert_eq!(from_raw_jsonb::<()>(&raw), Err(Error::InvalidJsonb));
     assert!(serde_json::to_string(&raw).is_err());
     assert!(raw.jsonb_item_type().is_err());
     // `from_slice` falls back to parsing the bytes as JSON text, which fails.
@@ -320,105 +289,6 @@ fn display_does_not_panic_on_out_of_range_values() {
     );
 }
 
-#[test]
-fn decimal_display_handles_any_scale_and_value() {
-    // 2^255 - 1 and 2^255, as literals so the test does not depend on `ethnum`'s Display.
-    let i256_max = "57896044618658097711785492504343953926634992332820282019728792003956564819967";
-    let i256_min_abs =
-        "57896044618658097711785492504343953926634992332820282019728792003956564819968";
-    let (int, frac) = i256_min_abs.split_at(i256_min_abs.len() - 3);
-    let cases = vec![
-        (
-            Number::Decimal128(Decimal128 {
-                scale: 2,
-                value: 12345,
-            }),
-            "123.45".to_string(),
-        ),
-        (
-            Number::Decimal128(Decimal128 {
-                scale: 40,
-                value: 5,
-            }),
-            format!("0.{}5", "0".repeat(39)),
-        ),
-        (
-            Number::Decimal128(Decimal128 {
-                scale: 0,
-                value: i128::MIN,
-            }),
-            i128::MIN.to_string(),
-        ),
-        (
-            Number::Decimal128(Decimal128 {
-                scale: 39,
-                value: i128::MIN,
-            }),
-            "-0.170141183460469231731687303715884105728".to_string(),
-        ),
-        (
-            Number::Decimal64(Decimal64 {
-                scale: 200,
-                value: -1,
-            }),
-            format!("-0.{}1", "0".repeat(199)),
-        ),
-        (
-            Number::Decimal256(Decimal256 {
-                scale: 0,
-                value: I256::MAX,
-            }),
-            i256_max.to_string(),
-        ),
-        (
-            Number::Decimal256(Decimal256 {
-                scale: 3,
-                value: I256::MIN,
-            }),
-            format!("-{int}.{frac}"),
-        ),
-        (
-            // Below the fast path's 10^76 bound, but a scale beyond 76 digits;
-            // the low 10^38 chunk needs zero padding.
-            Number::Decimal256(Decimal256 {
-                scale: 80,
-                value: I256::from(10_i128.pow(37)) * I256::from(70_i128) + I256::from(42_i128),
-            }),
-            format!("0.{}7{}42", "0".repeat(41), "0".repeat(36)),
-        ),
-    ];
-    for (number, expected) in &cases {
-        assert_eq!(&number.to_string(), expected, "{number:?}");
-    }
-}
-
-#[test]
-fn decimal_comparison_with_huge_scale_difference_does_not_panic() {
-    let small = Number::Decimal128(Decimal128 { scale: 0, value: 1 });
-    let tiny = Number::Decimal128(Decimal128 {
-        scale: 200,
-        value: 1,
-    });
-    assert_eq!(small.partial_cmp(&tiny), Some(std::cmp::Ordering::Greater));
-    let small = Number::Decimal256(Decimal256 {
-        scale: 0,
-        value: I256::ONE,
-    });
-    let tiny = Number::Decimal256(Decimal256 {
-        scale: 200,
-        value: I256::ONE,
-    });
-    assert_eq!(tiny.partial_cmp(&small), Some(std::cmp::Ordering::Less));
-}
-
-#[test]
-fn json_path_rejects_unterminated_string() {
-    for path in [r#"""#, r#""a"#, r#"$."a"#, r#"$["a"#] {
-        assert!(parse_json_path(path.as_bytes()).is_err(), "{path}");
-        assert!(parse_key_paths(path.as_bytes()).is_err(), "{path}");
-    }
-}
-
 /// Encodes `depth` nested arrays directly, in linear time, for very deep inputs.
 fn deep_arrays_bytes(depth: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(depth * 8);
@@ -430,11 +300,6 @@ fn deep_arrays_bytes(depth: usize) -> Vec<u8> {
     }
     out.extend_from_slice(&0x8000_0000_u32.to_be_bytes());
     out
-}
-
-#[test]
-fn deep_arrays_bytes_matches_builder() {
-    assert_eq!(deep_arrays_bytes(5), nested_arrays(5).to_vec());
 }
 
 #[test]
@@ -466,6 +331,10 @@ fn recursive_api_results(raw: RawJsonb<'_>) -> Vec<(&'static str, bool)> {
     let all = parse_json_path(b"$.**").unwrap();
     vec![
         ("to_value", raw.to_value().is_ok()),
+        (
+            "to_string",
+            matches!(raw.to_string().chars().next(), Some('[' | '{')),
+        ),
         ("to_pretty_string", raw.to_pretty_string() != "null"),
         ("serde_json::to_string", serde_json::to_string(&raw).is_ok()),
         ("from_slice", from_slice(raw.as_ref()).is_ok()),
@@ -491,6 +360,27 @@ fn recursive_api_results(raw: RawJsonb<'_>) -> Vec<(&'static str, bool)> {
 
 #[test]
 fn binary_apis_enforce_nesting_limit() {
+    /// Checks that every recursive read API rejects `bytes`, and that the
+    /// decoders report the nesting limit.
+    fn assert_rejected(bytes: &[u8], what: &str) {
+        let raw = RawJsonb::new(bytes);
+        for (api, passed) in recursive_api_results(raw) {
+            assert!(!passed, "{api} should reject {what}");
+        }
+        assert_eq!(
+            raw.to_value().err(),
+            Some(Error::RecursionLimitExceeded),
+            "{what}"
+        );
+        // `from_slice` used to parse the bytes again as JSON text and report
+        // a syntax error.
+        assert_eq!(
+            from_slice(bytes).err(),
+            Some(Error::RecursionLimitExceeded),
+            "from_slice of {what}"
+        );
+    }
+
     with_big_stack(|| {
         for (shape, build) in [
             ("arrays", nested_arrays as fn(usize) -> OwnedJsonb),
@@ -500,191 +390,20 @@ fn binary_apis_enforce_nesting_limit() {
             for (api, passed) in recursive_api_results(ok.as_raw()) {
                 assert!(passed, "{api} should accept {MAX_DEPTH} nested {shape}");
             }
+            // The JSON text writers match serde_json at the limit too.
+            let raw = ok.as_raw();
+            assert_eq!(raw.to_string(), serde_json::to_string(&raw).unwrap());
+            assert_eq!(
+                raw.to_pretty_string(),
+                serde_json::to_string_pretty(&raw).unwrap()
+            );
             let deep = build(MAX_DEPTH + 1);
-            for (api, passed) in recursive_api_results(deep.as_raw()) {
-                assert!(
-                    !passed,
-                    "{api} should reject {} nested {shape}",
-                    MAX_DEPTH + 1
-                );
-            }
-            assert_eq!(
-                deep.as_raw().to_value().err(),
-                Some(Error::RecursionLimitExceeded)
-            );
-            // `from_slice` used to parse the bytes again as JSON text and
-            // report a syntax error.
-            assert_eq!(
-                from_slice(deep.as_ref()).err(),
-                Some(Error::RecursionLimitExceeded),
-                "from_slice of {} nested {shape}",
-                MAX_DEPTH + 1
-            );
+            assert_rejected(deep.as_ref(), &format!("{} nested {shape}", MAX_DEPTH + 1));
         }
-    });
-}
-
-#[test]
-fn binary_apis_reject_very_deep_input() {
-    // Without the limit, 100000 levels need far more than the 64 MiB test stack.
-    with_big_stack(|| {
-        let bytes = deep_arrays_bytes(100_000);
-        for (api, passed) in recursive_api_results(RawJsonb::new(&bytes)) {
-            assert!(!passed, "{api} should reject 100000 nested arrays");
-        }
-    });
-}
-
-#[test]
-fn json_path_enforces_paren_limit() {
-    let path = |depth: usize| {
-        let inner = depth - 1;
-        format!("$ ? ({}@ == 1{})", "(".repeat(inner), ")".repeat(inner))
-    };
-    with_big_stack(move || {
-        assert!(parse_json_path(path(MAX_PATH_DEPTH).as_bytes()).is_ok());
-    });
-    for depth in [MAX_PATH_DEPTH + 1, 100_000] {
-        assert_eq!(
-            parse_json_path(path(depth).as_bytes()).err(),
-            Some(Error::RecursionLimitExceeded),
-            "depth {depth}"
-        );
-    }
-    // Parentheses inside string literals do not count.
-    let quoted = format!(r#"$ ? (@ == "{}")"#, "(".repeat(1000));
-    assert!(parse_json_path(quoted.as_bytes()).is_ok());
-}
-
-#[test]
-fn json_path_enforces_logical_operator_limit() {
-    // `&&` and `||` chains parse without recursion but build a left-nested
-    // tree as deep as the chain, which formatting, evaluation, cloning,
-    // comparison and dropping walk recursively. 100000 operators used to
-    // overflow the stack in all of them (found in review).
-    let filter = |operators: usize, op: &str| {
-        let operands = vec!["@ == 0"; operators + 1];
-        format!("$ ? ({})", operands.join(&format!(" {op} ")))
-    };
-    let doc: OwnedJsonb = "[0,1]".parse().unwrap();
-    // The limit runs on the test thread's default stack, without `with_big_stack`.
-    for op in ["||", "&&"] {
-        let text = filter(MAX_PATH_LOGICAL_OPERATORS, op);
-        let path = parse_json_path(text.as_bytes()).unwrap();
-        let formatted = path.to_string();
-        assert_eq!(parse_json_path(formatted.as_bytes()).unwrap(), path.clone());
-        assert_eq!(doc.as_raw().select_by_path(&path).unwrap().len(), 1);
-        for operators in [MAX_PATH_LOGICAL_OPERATORS + 1, 100_000] {
-            assert_eq!(
-                parse_json_path(filter(operators, op).as_bytes()).err(),
-                Some(Error::RecursionLimitExceeded),
-                "{operators} {op}"
-            );
-        }
-    }
-    // The limit counts operators across the whole path, including root
-    // expressions and nested filters.
-    let root = vec!["$[0] == 0"; MAX_PATH_LOGICAL_OPERATORS + 2].join(" || ");
-    assert!(parse_json_path(root.as_bytes()).is_err());
-    let half = vec!["@ == 0"; MAX_PATH_LOGICAL_OPERATORS / 2 + 1].join(" || ");
-    let nested = format!("$ ? (exists(@ ? ({half})) || {half})");
-    assert!(parse_json_path(nested.as_bytes()).is_err());
-    // Operators inside string literals do not count.
-    let quoted = format!(r#"$ ? (@ == "{}")"#, "||&&".repeat(1000));
-    assert!(parse_json_path(quoted.as_bytes()).is_ok());
-}
-
-#[test]
-fn json_path_logical_operator_limit_counts_only_operators() {
-    // `&` does not end an unquoted field name, so `a&&a` is one name. The
-    // limit used to be counted by scanning the text, which rejected names
-    // with more than 256 `&&`, and broke `Display` round-trips of quoted ones
-    // because `Display` writes them unquoted (found in review).
-    let doc: OwnedJsonb = r#"{"a&&a": 1}"#.parse().unwrap();
-    let path = parse_json_path(b"$.a&&a").unwrap();
-    assert_eq!(doc.as_raw().select_by_path(&path).unwrap().len(), 1);
-    let name = format!("{}a", "a&&".repeat(1000));
-    for text in [format!("$.{name}"), format!(r#"$."{name}""#)] {
-        let path = parse_json_path(text.as_bytes()).unwrap();
-        let formatted = path.to_string();
-        assert_eq!(parse_json_path(formatted.as_bytes()).unwrap(), path);
-    }
-
-    // Each form has exactly `k` operators. The parser backtracks over some of
-    // them, for example trying a root expression before a plain path, so a
-    // chain can be parsed more than once; each operator must count once.
-    fn chain(k: usize, op: &str) -> String {
-        vec!["@ == 0"; k + 1].join(&format!(" {op} "))
-    }
-    /// A name and a function that writes the form with `k` operators.
-    type Form = (&'static str, fn(usize) -> String);
-    let forms: [Form; 8] = [
-        ("filter with ||", |k| format!("$ ? ({})", chain(k, "||"))),
-        ("filter with &&", |k| format!("$ ? ({})", chain(k, "&&"))),
-        ("filter after a step", |k| {
-            format!("$.a ? ({})", chain(k, "||"))
-        }),
-        ("filter on items", |k| {
-            format!("$.a[*] ? ({})", chain(k, "&&"))
-        }),
-        ("root expression", |k| {
-            vec!["$.a[0] == 0"; k + 1].join(" || ")
-        }),
-        ("mixed && and ||", |k| {
-            let mut text = String::from("$ ? (@ == 0");
-            for i in 0..k {
-                text.push_str(if i % 2 == 0 {
-                    " && @ == 0"
-                } else {
-                    " || @ == 0"
-                });
-            }
-            text + ")"
-        }),
-        ("split by parentheses", |k| {
-            let left = k / 2;
-            let right = k - left - 1;
-            format!("$ ? (({}) && ({}))", chain(left, "||"), chain(right, "||"))
-        }),
-        ("split by a nested filter", |k| {
-            let inner = k / 2;
-            let outer = k - inner - 1;
-            format!(
-                "$ ? (exists(@ ? ({})) || {})",
-                chain(inner, "||"),
-                chain(outer, "||")
-            )
-        }),
-    ];
-    let doc: OwnedJsonb = r#"{"a": [0, 1]}"#.parse().unwrap();
-    for (form, path) in forms {
-        let text = path(MAX_PATH_LOGICAL_OPERATORS);
-        let parsed = parse_json_path(text.as_bytes()).unwrap_or_else(|e| panic!("{form}: {e:?}"));
-        let formatted = parsed.to_string();
-        assert_eq!(
-            parse_json_path(formatted.as_bytes()).as_ref(),
-            Ok(&parsed),
-            "{form}: round-trip"
-        );
-        assert!(doc.as_raw().select_by_path(&parsed).is_ok(), "{form}");
-        assert_eq!(
-            parse_json_path(path(MAX_PATH_LOGICAL_OPERATORS + 1).as_bytes()).err(),
-            Some(Error::RecursionLimitExceeded),
-            "{form}"
-        );
-    }
-}
-
-#[test]
-fn recursive_descent_reaches_levels_beyond_255() {
-    with_big_stack(|| {
-        // Levels are `u8`, so an open `to last` range is the only way to match
-        // past level 255; the innermost `[]` of 300 nested arrays is level 299.
-        let deep = nested_arrays(300);
-        let path = parse_json_path(b"$.**{255 to last}").unwrap();
-        let selected = deep.as_raw().select_by_path(&path).unwrap();
-        assert_eq!(selected.len(), 300 - 255);
-        assert_eq!(selected.last().unwrap().to_string(), "[]");
+        assert_eq!(deep_arrays_bytes(5), nested_arrays(5).to_vec());
+        // The builder rejects this depth, so the bytes are written directly.
+        // Without the limit, 100000 levels need far more than the 64 MiB stack.
+        assert_rejected(&deep_arrays_bytes(100_000), "100000 nested arrays");
     });
 }
 
@@ -874,7 +593,7 @@ fn comparable_encoding_orders_values_past_255_levels() {
 }
 
 #[test]
-fn deserializing_skips_unknown_fields_and_ignored_elements() {
+fn ignored_values_are_skipped_and_checked() {
     use serde::de::IgnoredAny;
     use serde::Deserialize;
 
@@ -896,12 +615,6 @@ fn deserializing_skips_unknown_fields_and_ignored_elements() {
 
     // A whole value can be ignored too.
     assert!(from_raw_jsonb::<IgnoredAny>(&array.as_raw()).is_ok());
-}
-
-#[test]
-fn ignored_values_are_checked() {
-    use serde::de::IgnoredAny;
-    use serde::Deserialize;
 
     // Ignoring a value used to skip its bytes unread. At the top level that
     // accepted any input, even an empty one.
@@ -919,11 +632,6 @@ fn ignored_values_are_checked() {
 
     // `{"a": <invalid UTF-8 string>, "b": "y"}`: the unknown field `a` is
     // checked although it is skipped.
-    #[derive(Debug, Deserialize)]
-    struct Partial {
-        #[allow(dead_code)]
-        b: String,
-    }
     let bytes = jsonb(
         &[
             0x4000_0002,
@@ -947,96 +655,6 @@ fn ignored_values_are_checked() {
             Some(Error::RecursionLimitExceeded)
         );
     });
-}
-
-#[test]
-fn signed_indexes_do_not_overflow() {
-    let array = "[1,2,3]".parse::<OwnedJsonb>().unwrap();
-    let raw = array.as_raw();
-    assert_eq!(
-        raw.delete_by_index(i32::MIN).unwrap().to_string(),
-        "[1,2,3]"
-    );
-    assert_eq!(raw.delete_by_index(-1).unwrap().to_string(), "[1,2]");
-    let one = "1".parse::<OwnedJsonb>().unwrap();
-    assert_eq!(
-        raw.array_insert(i32::MIN, &one.as_raw())
-            .unwrap()
-            .to_string(),
-        "[1,1,2,3]"
-    );
-    assert_eq!(
-        raw.array_insert(i32::MAX, &one.as_raw())
-            .unwrap()
-            .to_string(),
-        "[1,2,3,1]"
-    );
-    for path in [
-        "$[last + 2147483647]",
-        "$[last - 2147483647]",
-        "$[-2147483648]",
-    ] {
-        let path = parse_json_path(path.as_bytes()).unwrap();
-        assert!(raw.select_by_path(&path).unwrap().is_empty());
-    }
-}
-
-#[test]
-fn json_path_slices_outside_the_array_select_nothing() {
-    // These used to loop over `0..=usize::MAX` after an end index underflowed.
-    let array = "[1,2]".parse::<OwnedJsonb>().unwrap();
-    let empty = "[]".parse::<OwnedJsonb>().unwrap();
-    for (doc, path) in [
-        (&array, "$[0 to last - 5]"),
-        (&empty, "$[0 to 3]"),
-        (&array, "$[5 to 9]"),
-    ] {
-        let path = parse_json_path(path.as_bytes()).unwrap();
-        assert!(doc.as_raw().select_by_path(&path).unwrap().is_empty());
-    }
-    let path = parse_json_path(b"$[1 to 9]").unwrap();
-    let selected = array.as_raw().select_by_path(&path).unwrap();
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].to_string(), "2");
-}
-
-#[test]
-fn path_display_round_trips_special_names() {
-    // Names that need quoting or escaping when shown. The parsers reject empty
-    // quoted names, so `""` is not included.
-    for name in [r#"st"ore"#, "a b", "a.b", "a\\b", "$x", "1st", "tab\there"] {
-        let quoted = serde_json::to_string(name).unwrap();
-        for text in [
-            format!("$.{quoted}"),
-            format!("$[{quoted}]"),
-            format!("$:{quoted}"),
-            format!("a:{quoted}"),
-        ] {
-            let path = parse_json_path(text.as_bytes()).unwrap();
-            let shown = path.to_string();
-            assert_eq!(
-                parse_json_path(shown.as_bytes()).unwrap(),
-                path,
-                "{text} shown as {shown}"
-            );
-        }
-        let text = format!("{{{quoted},0}}");
-        let key_paths = parse_key_paths(text.as_bytes()).unwrap();
-        let shown = key_paths.to_string();
-        assert_eq!(
-            parse_key_paths(shown.as_bytes()).unwrap(),
-            key_paths,
-            "{text} shown as {shown}"
-        );
-    }
-}
-
-/// Runs `f` on its own thread and fails if it does not finish within 10 seconds.
-fn within_timeout<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || tx.send(f()).unwrap());
-    rx.recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap_or_else(|_| panic!("{name} did not finish within 10 seconds"))
 }
 
 #[test]
@@ -1073,10 +691,7 @@ fn iterators_stop_after_an_error() {
             .map(|v| v.is_some())
     });
     assert!(result.is_err(), "{result:?}");
-}
 
-#[test]
-fn indexing_reports_errors_in_skipped_elements() {
     // `[<invalid UTF-8 string>, null]`. Reaching index 1 reads index 0, which
     // fails; the iterator then stopped and `nth(1)` returned `None`, so these
     // returned `Ok(None)` and `delete_by_keypath` deleted nothing (found in
@@ -1112,165 +727,192 @@ fn indexing_reports_errors_in_skipped_elements() {
 }
 
 #[test]
-fn json_path_evaluation_is_bounded() {
-    // Chained `.**` steps produce about C(depth + k - 1, k) items: 4 steps on
-    // 100 nested arrays select 4.4 million, the fuzzer's 90 steps far more.
-    let nested: OwnedJsonb = format!("{}{}", "[".repeat(100), "]".repeat(100))
-        .parse()
-        .unwrap();
-    let fuzzed = "$.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.**.* .**.**.**.**.**.**.**.**.**.**.**.* .**.**.**.**.**.**.**.**.**.**.*[1].**[1]";
-    for (doc, path) in [
-        (nested.clone(), "$.**.**.**.**".to_string()),
-        (nested.clone(), fuzzed.to_string()),
-        (r#"{"a":[[[1]]]}"#.parse().unwrap(), fuzzed.to_string()),
-    ] {
-        let result = within_timeout(&path.clone(), move || {
-            let path = parse_json_path(path.as_bytes()).unwrap();
-            let raw = doc.as_raw();
-            [
-                raw.select_by_path(&path).map(|_| ()),
-                raw.select_array_by_path(&path).map(|_| ()),
-                raw.select_first_by_path(&path).map(|_| ()),
-                raw.select_value_by_path(&path).map(|_| ()),
-                raw.path_exists(&path).map(|_| ()),
-            ]
-        });
-        for r in result {
-            assert_eq!(r, Err(Error::JsonPathTooComplex));
-        }
+fn non_string_object_keys_are_rejected() {
+    use std::collections::HashMap;
+    // Each key is valid as its own type, so only its type marks the object
+    // as invalid. `to_value` and serialization rejected such keys, but the
+    // object functions, key lookup, `$.*`, comparison and typed
+    // deserialization read them: the null key matched and compared equal to
+    // "", and a map with integer keys read the number key as 1.
+    let cases = [
+        (
+            "null key",
+            jsonb(&[0x4000_0001, 0x0000_0000, 0x1000_0001], b"v"),
+            "",
+        ),
+        (
+            "number key",
+            jsonb(&[0x4000_0001, 0x2000_0002, 0x1000_0001], b"\x50\x01v"),
+            "\u{50}\u{1}",
+        ),
+        (
+            "extension key",
+            jsonb(&[0x4000_0001, 0x6000_0001, 0x1000_0001], b"kv"),
+            "k",
+        ),
+    ];
+    let one: OwnedJsonb = "1".parse().unwrap();
+    let keys: std::collections::BTreeSet<&str> = ["k"].into_iter().collect();
+    let all_values = parse_json_path(b"$.*").unwrap();
+    let empty_key = jsonb(&[0x4000_0001, 0x1000_0000, 0x1000_0001], b"v");
+    let invalid = Some(Error::InvalidJsonb);
+    for (name, bytes, key) in &cases {
+        let raw = RawJsonb::new(bytes);
+        assert_eq!(raw.to_value().err(), invalid, "{name}: to_value");
+        assert!(from_slice(bytes).is_err(), "{name}: from_slice");
+        assert!(serde_json::to_string(&raw).is_err(), "{name}: serialize");
+        assert!(jaq_json::Val::try_from(raw).is_err(), "{name}: jaq");
+        assert_eq!(raw.object_keys().err(), invalid, "{name}: object_keys");
+        assert_eq!(raw.object_each().err(), invalid, "{name}: object_each");
+        assert_eq!(
+            raw.object_insert("x", &one.as_raw(), false).err(),
+            invalid,
+            "{name}: object_insert"
+        );
+        assert_eq!(
+            raw.object_delete(&keys).err(),
+            invalid,
+            "{name}: object_delete"
+        );
+        assert_eq!(raw.object_pick(&keys).err(), invalid, "{name}: object_pick");
+        assert_eq!(
+            raw.get_by_name(key, false).err(),
+            invalid,
+            "{name}: get_by_name"
+        );
+        assert_eq!(
+            raw.select_by_path(&all_values).err(),
+            invalid,
+            "{name}: $.*"
+        );
+        assert_eq!(
+            raw.partial_cmp(&RawJsonb::new(&empty_key)),
+            None,
+            "{name}: partial_cmp"
+        );
+        assert_eq!(
+            from_raw_jsonb::<HashMap<u8, String>>(&raw).err(),
+            invalid,
+            "{name}: from_raw_jsonb"
+        );
     }
 
-    // Comparisons check every pair until one matches. No pair matches here,
-    // so 2000 x 2000 values is 4 million comparisons.
-    let list =
-        |range: std::ops::Range<i32>| range.map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let values: OwnedJsonb = format!(r#"{{"a":[{}],"b":[{}]}}"#, list(0..2000), list(-2000..0))
-        .parse()
-        .unwrap();
-    let path = parse_json_path(b"$ ? (@.a[*] < @.b[0])").unwrap();
-    assert_eq!(values.as_raw().path_exists(&path), Ok(false));
-    let path = parse_json_path(b"$ ? (@.a[*] < @.b[*])").unwrap();
+    // The same object with a string key still works.
+    let bytes = jsonb(&[0x4000_0001, 0x1000_0001, 0x1000_0001], b"kv");
+    let raw = RawJsonb::new(&bytes);
+    let each = raw.object_each().unwrap().unwrap();
+    assert_eq!(each.len(), 1);
+    assert_eq!(each[0].0, "k");
+    assert_eq!(each[0].1.to_string(), r#""v""#);
+    assert_eq!(raw.object_pick(&keys).unwrap().to_string(), r#"{"k":"v"}"#);
     assert_eq!(
-        values.as_raw().path_exists(&path),
-        Err(Error::JsonPathTooComplex)
+        raw.get_by_name("k", false).unwrap().unwrap().to_string(),
+        r#""v""#
     );
-
-    // Ordinary paths on large documents stay well within the budget, and
-    // the budget is reset for every evaluation.
-    let large: OwnedJsonb = format!(
-        "[{}]",
-        (0..300_000)
-            .map(|i| format!("{{\"a\":{i}}}"))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-    .parse()
-    .unwrap();
-    let path = parse_json_path(b"$[*].a").unwrap();
-    for _ in 0..3 {
-        assert_eq!(large.as_raw().select_by_path(&path).unwrap().len(), 300_000);
-    }
-    let path = parse_json_path(b"$.**").unwrap();
-    assert_eq!(large.as_raw().select_by_path(&path).unwrap().len(), 600_001);
+    assert_eq!(raw.object_keys().unwrap().unwrap().to_string(), r#"["k"]"#);
 }
 
 #[test]
-fn json_path_budget_scales_with_the_input() {
-    // A fixed budget of 1,000,000 units rejected `$[*] ? (@ == 2)` above about
-    // 333,000 elements (found in review).
-    let count = |doc: &OwnedJsonb, path: &str| {
-        let path = parse_json_path(path.as_bytes()).unwrap();
-        doc.as_raw()
-            .select_by_path(&path)
-            .unwrap_or_else(|e| panic!("{path}: {e:?}"))
-            .len()
-    };
-    let array = |n: usize, item: &dyn Fn(usize) -> String| -> OwnedJsonb {
-        format!("[{}]", (0..n).map(item).collect::<Vec<_>>().join(","))
-            .parse()
-            .unwrap()
-    };
+fn building_from_a_scalar_copies_only_its_payload() {
+    // The string "a" followed by a stray byte "b". Readers ignore bytes past
+    // the payload, but the builder copied them too, so the next member's
+    // payload started one byte late and read as "bc".
+    let trailing = jsonb(&[0x2000_0000, 0x1000_0001], b"ab");
+    let cd: OwnedJsonb = r#""cd""#.parse().unwrap();
+    let array = OwnedJsonb::build_array([RawJsonb::new(&trailing), cd.as_raw()]).unwrap();
+    assert_eq!(array.to_string(), r#"["a","cd"]"#);
+    let object =
+        OwnedJsonb::build_object([("x", RawJsonb::new(&trailing)), ("y", cd.as_raw())]).unwrap();
+    assert_eq!(object.to_string(), r#"{"x":"a","y":"cd"}"#);
 
-    let n = 1_000_000;
-    let ints = array(n, &|i| (i % 1000).to_string());
-    assert_eq!(count(&ints, "$[*]"), n);
-    assert_eq!(count(&ints, "$[*] ? (@ == 2)"), n / 1000);
-    assert_eq!(count(&ints, "$[*] ? (@ > 0 && @ < 10)"), 9 * n / 1000);
+    // A truncated payload, and a container entry under a scalar header, are
+    // invalid; they used to be copied as they were.
+    let truncated = jsonb(&[0x2000_0000, 0x1000_0005], b"ab");
+    assert!(OwnedJsonb::build_array([RawJsonb::new(&truncated)]).is_err());
+    let wrapped = scalar_wrapped(1);
     assert_eq!(
-        count(&ints, "$[*] ? (@ == 2 || @ == 3 || @ == 4)"),
-        3 * n / 1000
+        OwnedJsonb::build_array([RawJsonb::new(&wrapped)]).err(),
+        Some(Error::InvalidJsonb)
     );
-    assert_eq!(count(&ints, "$.**"), n + 1);
-
-    // The smallest values, 4 bytes each; every comparison is still charged.
-    let nulls = array(n, &|_| "null".to_string());
-    assert_eq!(count(&nulls, "$[*] ? (@ == 1 || @ == 2 || @ == 3)"), 0);
-
-    let m = 400_000;
-    let objects = array(m, &|i| format!(r#"{{"a":{},"b":"x"}}"#, i % 1000));
-    assert_eq!(
-        count(&objects, r#"$[*] ? (@.a == 1 && @.b == "x")"#),
-        m / 1000
-    );
-    assert_eq!(count(&objects, "$.**"), 3 * m + 1);
 }
 
 #[test]
-fn json_path_copies_are_bounded() {
-    // Debug builds need more than the default stack to walk 500 levels.
-    with_big_stack(|| {
-        // Every ancestor of the string is selected and copied with it: 125,751
-        // items, within the item budget, but about 300 MB of copies.
-        let doc: OwnedJsonb = format!(
-            "{}\"{}\"{}",
-            "[".repeat(500),
-            "x".repeat(1024),
-            "]".repeat(500)
-        )
-        .parse()
-        .unwrap();
-        let path = parse_json_path(b"$.**.**").unwrap();
-        let raw = doc.as_raw();
-        assert_eq!(
-            raw.select_by_path(&path).err(),
-            Some(Error::JsonPathTooComplex)
-        );
-        assert_eq!(
-            raw.select_array_by_path(&path).err(),
-            Some(Error::JsonPathTooComplex)
-        );
-        assert_eq!(
-            raw.select_value_by_path(&path).err(),
-            Some(Error::JsonPathTooComplex)
-        );
-        // Checks that copy nothing are not limited by the byte budget.
-        assert_eq!(raw.path_exists(&path), Ok(true));
-        // A single `.**` copies 500 KiB, which is allowed.
-        let path = parse_json_path(b"$.**").unwrap();
-        assert_eq!(raw.select_by_path(&path).unwrap().len(), 501);
-    });
+fn deserializing_a_member_reads_nothing_past_its_payload() {
+    // An array holding one string, whose `JEntry` length covers the array's
+    // header and `JEntry` but not the string's one byte.
+    let inner = [0x8000_0001_u32, 0x1000_0001];
+    let inner: Vec<u8> = inner.iter().flat_map(|w| w.to_be_bytes()).collect();
 
-    // Any single value can be copied, even one larger than 32 MiB, because
-    // the budget includes the document size.
-    let big: OwnedJsonb = format!(r#"{{"a":"{}","b":1}}"#, "x".repeat(33 << 20))
-        .parse()
-        .unwrap();
-    let raw = big.as_raw();
-    let path = parse_json_path(b"$.a").unwrap();
-    assert_eq!(
-        raw.select_first_by_path(&path).unwrap().unwrap().len(),
-        // Scalar header and JEntry, then the string.
-        8 + (33 << 20)
+    // `[<inner>, "x"]`. Reading the inner array checked its payloads against
+    // the whole document, not against the member, so the inner string read
+    // the next member's "x" and this read as `[["x"], "x"]`.
+    let array = jsonb(
+        &[0x8000_0002, 0x5000_0008, 0x1000_0001],
+        &[&inner[..], b"x"].concat(),
     );
-    let path = parse_json_path(b"$").unwrap();
+    let raw = RawJsonb::new(&array);
+    assert!(raw.to_value().is_err());
     assert_eq!(
-        raw.select_first_by_path(&path).unwrap().unwrap().len(),
-        raw.len()
+        from_raw_jsonb::<(Vec<String>, String)>(&raw),
+        Err(Error::InvalidEOF)
     );
-    // Copying it twice goes 33 MiB past the document size.
-    let path = parse_json_path(b"$.**").unwrap();
     assert_eq!(
-        raw.select_by_path(&path).err(),
-        Some(Error::JsonPathTooComplex)
+        from_raw_jsonb::<serde_json::Value>(&raw),
+        Err(Error::InvalidEOF)
+    );
+
+    // `{"a": <inner>, "b": "x"}` read as `{"a": ["x"], "b": "x"}`.
+    let object = jsonb(
+        &[
+            0x4000_0002,
+            0x1000_0001,
+            0x1000_0001,
+            0x5000_0008,
+            0x1000_0001,
+        ],
+        &[&b"ab"[..], &inner, b"x"].concat(),
+    );
+    let raw = RawJsonb::new(&object);
+    assert!(raw.to_value().is_err());
+    assert_eq!(
+        from_raw_jsonb::<serde_json::Value>(&raw),
+        Err(Error::InvalidEOF)
+    );
+
+    // `[{"V": <inner>} + "x"]`: the object's own length includes a stray
+    // "x" after its value, which the variant's value read as its string.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    enum Variant {
+        V(Vec<String>),
+    }
+    let enum_object = jsonb(
+        &[0x4000_0001, 0x1000_0001, 0x5000_0008],
+        &[&b"V"[..], &inner, b"x"].concat(),
+    );
+    let array = jsonb(
+        &[0x8000_0001, 0x5000_0000 | enum_object.len() as u32],
+        &enum_object,
+    );
+    let raw = RawJsonb::new(&array);
+    assert!(raw.to_value().is_err());
+    assert_eq!(
+        from_raw_jsonb::<Vec<Variant>>(&raw).err(),
+        Some(Error::InvalidEOF)
+    );
+
+    // `[<scalar header without its JEntry>, "@\0\0\0"]`: a container member
+    // four bytes long, holding only a scalar header. Its `JEntry` was read
+    // from the next member, whose bytes `0x40000000` are a `true` `JEntry`,
+    // so this read as `[true, "@\0\0\0"]`.
+    let bytes = jsonb(
+        &[0x8000_0002, 0x5000_0004, 0x1000_0004, 0x2000_0000],
+        b"@\0\0\0",
+    );
+    let raw = RawJsonb::new(&bytes);
+    assert!(raw.to_value().is_err());
+    assert_eq!(
+        from_raw_jsonb::<serde_json::Value>(&raw),
+        Err(Error::InvalidEOF)
     );
 }

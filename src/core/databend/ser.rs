@@ -84,63 +84,41 @@ impl Serializer {
         OwnedJsonb::new(self.buffer)
     }
 
-    fn write_jentry(&mut self, jentry: JEntry) -> Result<()> {
-        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-        let jentry_bytes = jentry.encoded();
-        self.buffer.write_u32::<BigEndian>(jentry_bytes)?;
+    /// Writes a scalar: the scalar header, then the `JEntry` that `encode`
+    /// returns after appending the payload.
+    fn write_scalar(&mut self, encode: impl FnOnce(&mut Vec<u8>) -> Result<JEntry>) -> Result<()> {
+        self.buffer
+            .extend_from_slice(&SCALAR_CONTAINER_TAG.to_be_bytes());
+        let mut jentry_index = self.buffer.len();
+        self.buffer.extend_from_slice(&[0; 4]);
+        let jentry = encode(&mut self.buffer)?;
+        jentry.write_at(&mut self.buffer, &mut jentry_index);
         Ok(())
     }
 
-    fn replace_jentry(&mut self, jentry: JEntry, jentry_index: &mut usize) {
-        let jentry_bytes = jentry.encoded().to_be_bytes();
-        for (i, b) in jentry_bytes.iter().enumerate() {
-            self.buffer[*jentry_index + i] = *b;
-        }
-        *jentry_index += 4;
+    fn write_jentry(&mut self, jentry: JEntry) -> Result<()> {
+        self.write_scalar(|_| Ok(jentry))
     }
 
     fn write_number(&mut self, v: Number) -> Result<()> {
-        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-        let mut jentry_index = self.buffer.len();
-        let payload_index = jentry_index + 4;
-        // resize buffer to keep space for jentry.
-        self.buffer.resize(payload_index, 0);
-
-        let _ = v.compact_encode(&mut self.buffer)?;
-        let len = self.buffer.len() - payload_index;
-        let jentry = JEntry::make_number_jentry(len)?;
-
-        self.replace_jentry(jentry, &mut jentry_index);
-        Ok(())
+        self.write_scalar(|buf| JEntry::make_number_jentry(v.compact_encode(buf)?))
     }
 
     fn write_str(&mut self, s: &str) -> Result<()> {
-        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-        let mut jentry_index = self.buffer.len();
-        let payload_index = jentry_index + 4;
-        // resize buffer to keep space for jentry.
-        self.buffer.resize(payload_index, 0);
-
-        let jentry = JEntry::make_string_jentry(s.len())?;
-        self.buffer.extend_from_slice(s.as_bytes());
-
-        self.replace_jentry(jentry, &mut jentry_index);
-        Ok(())
+        self.write_scalar(|buf| {
+            let jentry = JEntry::make_string_jentry(s.len())?;
+            buf.extend_from_slice(s.as_bytes());
+            Ok(jentry)
+        })
     }
 
     fn write_binary(&mut self, v: &[u8]) -> Result<()> {
-        self.buffer.write_u32::<BigEndian>(SCALAR_CONTAINER_TAG)?;
-        let mut jentry_index = self.buffer.len();
-        let payload_index = jentry_index + 4;
-        // resize buffer to keep space for jentry.
-        self.buffer.resize(payload_index, 0);
-
-        // The payload is the extension type byte followed by the bytes.
-        let jentry = JEntry::make_extension_jentry(v.len().saturating_add(1))?;
-        ExtensionValue::Binary(v).compact_encode(&mut self.buffer)?;
-
-        self.replace_jentry(jentry, &mut jentry_index);
-        Ok(())
+        self.write_scalar(|buf| {
+            // The payload is the extension type byte followed by the bytes.
+            let jentry = JEntry::make_extension_jentry(v.len().saturating_add(1))?;
+            ExtensionValue::Binary(v).compact_encode(buf)?;
+            Ok(jentry)
+        })
     }
 }
 
@@ -584,23 +562,22 @@ impl ser::SerializeStruct for StructSerializer<'_> {
         Ok(())
     }
 
-    fn end(mut self) -> Result<Self::Ok> {
-        if self.name == NUMBER_STRUCT_TOKEN {
-            let num = if self.values.len() == 2 {
-                let (value_field_name, value_jsonb) = self.values.remove(1);
-                let (scale_field_name, scale_jsonb) = self.values.remove(0);
-
-                if scale_field_name != NUMBER_STRUCT_FIELD_SCALE
-                    || value_field_name != NUMBER_STRUCT_FIELD_VALUE
-                {
-                    return Err(ser::Error::custom(format!(
-                        "Invalid number struct field names: scale={}, value={}",
-                        scale_field_name, value_field_name
-                    )));
-                }
-                let scale = owned_jsonb_to_u64(scale_field_name, scale_jsonb)?;
-                let value = owned_jsonb_to_i128(value_field_name, value_jsonb)?;
-
+    fn end(self) -> Result<Self::Ok> {
+        if self.name != NUMBER_STRUCT_TOKEN {
+            let mut builder = ObjectBuilder::new();
+            for (key_str, value) in self.values.into_iter() {
+                builder.push_owned_jsonb(key_str, value)?;
+            }
+            let object_jsonb = builder.build()?;
+            self.buffer.extend_from_slice(object_jsonb.as_ref());
+            return Ok(());
+        }
+        // A decimal from `Number::serialize`: a scale and a value, which
+        // `Decimal256` splits into its high and low halves.
+        let num = match self.values.as_slice() {
+            [(NUMBER_STRUCT_FIELD_SCALE, scale), (NUMBER_STRUCT_FIELD_VALUE, value)] => {
+                let scale = Self::number_field(NUMBER_STRUCT_FIELD_SCALE, scale, Number::as_u64)?;
+                let value = Self::number_field(NUMBER_STRUCT_FIELD_VALUE, value, Number::as_i128)?;
                 if (DECIMAL64_MIN..=DECIMAL64_MAX).contains(&value)
                     && scale <= MAX_DECIMAL64_PRECISION as u64
                 {
@@ -622,98 +599,59 @@ impl ser::SerializeStruct for StructSerializer<'_> {
                     })
                 } else {
                     return Err(ser::Error::custom(format!(
-                        "Invalid number struct scale={} value={}",
-                        scale, value
+                        "Invalid number struct scale={scale} value={value}"
                     )));
                 }
-            } else if self.values.len() == 3 {
-                let (low_value_field_name, low_value_jsonb) = self.values.remove(2);
-                let (high_value_field_name, high_value_jsonb) = self.values.remove(1);
-                let (scale_field_name, scale_jsonb) = self.values.remove(0);
-
-                if scale_field_name != NUMBER_STRUCT_FIELD_SCALE
-                    || high_value_field_name != NUMBER_STRUCT_FIELD_HIGH_VALUE
-                    || low_value_field_name != NUMBER_STRUCT_FIELD_LOW_VALUE
-                {
-                    return Err(ser::Error::custom(format!(
-                        "Invalid number struct field names: scale={}, high_value={} low_value={}",
-                        scale_field_name, high_value_field_name, low_value_field_name
-                    )));
-                }
-                let scale = owned_jsonb_to_u64(scale_field_name, scale_jsonb)?;
-                let high_value = owned_jsonb_to_i128(high_value_field_name, high_value_jsonb)?;
-                let low_value = owned_jsonb_to_i128(low_value_field_name, low_value_jsonb)?;
-
-                if scale <= MAX_DECIMAL256_PRECISION as u64 {
-                    Number::Decimal256(Decimal256 {
-                        scale: scale as u8,
-                        value: i256::from_words(high_value, low_value),
-                    })
-                } else {
-                    return Err(ser::Error::custom(format!(
-                        "Invalid number struct scale={} high_value={} low_value={}",
-                        scale, high_value, low_value
-                    )));
-                }
-            } else {
-                return Err(ser::Error::custom(format!(
-                    "Invalid number of fields for number struct: {}",
-                    self.values.len()
-                )));
-            };
-
-            let mut serializer = Serializer::new();
-            serializer.write_number(num)?;
-            self.buffer.append(&mut serializer.buffer);
-        } else {
-            let mut builder = ObjectBuilder::new();
-            for (key_str, value) in self.values.into_iter() {
-                builder.push_owned_jsonb(key_str, value)?;
             }
-            let object_jsonb = builder.build()?;
-            let mut buf = object_jsonb.to_vec();
-            self.buffer.append(&mut buf);
-        }
+            [(NUMBER_STRUCT_FIELD_SCALE, scale), (NUMBER_STRUCT_FIELD_HIGH_VALUE, high), (NUMBER_STRUCT_FIELD_LOW_VALUE, low)] =>
+            {
+                let scale = Self::number_field(NUMBER_STRUCT_FIELD_SCALE, scale, Number::as_u64)?;
+                let high =
+                    Self::number_field(NUMBER_STRUCT_FIELD_HIGH_VALUE, high, Number::as_i128)?;
+                let low = Self::number_field(NUMBER_STRUCT_FIELD_LOW_VALUE, low, Number::as_i128)?;
+                if scale > MAX_DECIMAL256_PRECISION as u64 {
+                    return Err(ser::Error::custom(format!(
+                        "Invalid number struct scale={scale} high_value={high} low_value={low}"
+                    )));
+                }
+                Number::Decimal256(Decimal256 {
+                    scale: scale as u8,
+                    value: i256::from_words(high, low),
+                })
+            }
+            fields => {
+                let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
+                return Err(ser::Error::custom(format!(
+                    "Invalid number struct fields: {names:?}"
+                )));
+            }
+        };
+        let mut serializer = Serializer::new();
+        serializer.write_number(num)?;
+        self.buffer.append(&mut serializer.buffer);
         Ok(())
     }
 }
 
-fn owned_jsonb_to_u64(field: &str, owned_jsonb: OwnedJsonb) -> Result<u64> {
-    let raw_jsonb = owned_jsonb.as_raw();
-    let Ok(Some(num)) = raw_jsonb.as_number() else {
-        return Err(ser::Error::custom(format!(
-            "Invalid number struct field={} value={}",
-            field,
-            raw_jsonb.to_string()
-        )));
-    };
-    let Some(num) = num.as_u64() else {
-        return Err(ser::Error::custom(format!(
-            "Invalid number struct to u64 field={} value={}",
-            field,
-            raw_jsonb.to_string()
-        )));
-    };
-    Ok(num)
-}
-
-fn owned_jsonb_to_i128(field: &str, owned_jsonb: OwnedJsonb) -> Result<i128> {
-    let raw_jsonb = owned_jsonb.as_raw();
-    let Ok(Some(num)) = raw_jsonb.as_number() else {
-        return Err(ser::Error::custom(format!(
-            "Invalid number struct field={} value={}",
-            field,
-            raw_jsonb.to_string()
-        )));
-    };
-    let Some(num) = num.as_i128() else {
-        return Err(ser::Error::custom(format!(
-            "Invalid number struct to i128 field={} value={}",
-            field,
-            raw_jsonb.to_string()
-        )));
-    };
-    Ok(num)
+impl StructSerializer<'_> {
+    /// Reads the number in the `field` of a number struct, converted by `convert`.
+    fn number_field<T>(
+        field: &str,
+        jsonb: &OwnedJsonb,
+        convert: impl FnOnce(&Number) -> Option<T>,
+    ) -> Result<T> {
+        let raw = jsonb.as_raw();
+        match raw.as_number() {
+            Ok(Some(num)) => convert(&num),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            ser::Error::custom(format!(
+                "Invalid number struct field={field} value={}",
+                raw.to_string()
+            ))
+        })
+    }
 }
 
 impl ser::SerializeStructVariant for StructSerializer<'_> {
@@ -878,11 +816,7 @@ impl<'a> BaseEncoder<'a> {
     /// Writes an encoded `JEntry` to the buffer at the specified index.
     /// Updates the index to point to the next `JEntry` position.
     fn replace_jentry(&mut self, jentry: JEntry, jentry_index: &mut usize) {
-        let jentry_bytes = jentry.encoded().to_be_bytes();
-        for (i, b) in jentry_bytes.iter().enumerate() {
-            self.buf[*jentry_index + i] = *b;
-        }
-        *jentry_index += 4;
+        jentry.write_at(self.buf, jentry_index);
     }
 
     /// Encodes a scalar container header and reserves space for its `JEntry`.
@@ -1017,7 +951,6 @@ impl<'a> Encoder<'a> {
     /// Encodes a single `Value` and returns its `JEntry`.
     /// The `JEntry` contains metadata about the encoded value.
     fn encode_value(&mut self, value: &Value<'a>) -> Result<JEntry> {
-        let old_off = self.base_encoder.buf.len();
         let jentry = match value {
             Value::Null => JEntry::make_null_jentry(),
             Value::Bool(v) => {
@@ -1028,9 +961,7 @@ impl<'a> Encoder<'a> {
                 }
             }
             Value::Number(v) => {
-                let _ = v.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_number_jentry(len)?
+                JEntry::make_number_jentry(v.compact_encode(&mut self.base_encoder.buf)?)?
             }
             Value::String(s) => {
                 // Check the length before copying a possibly huge payload.
@@ -1041,35 +972,18 @@ impl<'a> Encoder<'a> {
                 jentry
             }
             Value::Binary(v) => {
-                let val = ExtensionValue::Binary(v);
-                let _ = val.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_extension_jentry(len)?
+                // Check the length before copying a possibly huge payload,
+                // which is a type byte and the bytes.
+                let jentry = JEntry::make_extension_jentry(v.len().saturating_add(1))?;
+                ExtensionValue::Binary(v).compact_encode(&mut self.base_encoder.buf)?;
+                jentry
             }
-            Value::Date(v) => {
-                let val = ExtensionValue::Date(v.clone());
-                let _ = val.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_extension_jentry(len)?
-            }
-            Value::Timestamp(v) => {
-                let val = ExtensionValue::Timestamp(v.clone());
-                let _ = val.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_extension_jentry(len)?
-            }
+            Value::Date(v) => self.encode_extension(ExtensionValue::Date(v.clone()))?,
+            Value::Timestamp(v) => self.encode_extension(ExtensionValue::Timestamp(v.clone()))?,
             Value::TimestampTz(v) => {
-                let val = ExtensionValue::TimestampTz(v.clone());
-                let _ = val.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_extension_jentry(len)?
+                self.encode_extension(ExtensionValue::TimestampTz(v.clone()))?
             }
-            Value::Interval(v) => {
-                let val = ExtensionValue::Interval(v.clone());
-                let _ = val.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_extension_jentry(len)?
-            }
+            Value::Interval(v) => self.encode_extension(ExtensionValue::Interval(v.clone()))?,
             Value::Array(array) => {
                 let len = self.encode_array(array)?;
                 JEntry::make_container_jentry(len)?
@@ -1081,6 +995,11 @@ impl<'a> Encoder<'a> {
         };
 
         Ok(jentry)
+    }
+
+    /// Encodes a date, timestamp or interval and returns its `JEntry`.
+    fn encode_extension(&mut self, value: ExtensionValue) -> Result<JEntry> {
+        JEntry::make_extension_jentry(value.compact_encode(&mut self.base_encoder.buf)?)
     }
 }
 
@@ -1179,10 +1098,7 @@ impl<'a> JsonAstEncoder<'a> {
                 }
             }
             JsonAst::Number(v) => {
-                let old_off = self.base_encoder.buf.len();
-                let _ = v.compact_encode(&mut self.base_encoder.buf)?;
-                let len = self.base_encoder.buf.len() - old_off;
-                JEntry::make_number_jentry(len)?
+                JEntry::make_number_jentry(v.compact_encode(&mut self.base_encoder.buf)?)?
             }
             JsonAst::String(s) => {
                 // Check the length before copying a possibly huge payload.

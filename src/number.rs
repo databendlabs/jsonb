@@ -31,8 +31,6 @@ use crate::Error;
 
 use ethnum::i256;
 use ethnum::U256;
-use num_traits::AsPrimitive;
-use num_traits::Bounded;
 use ordered_float::OrderedFloat;
 use serde::de;
 use serde::de::Deserialize;
@@ -41,99 +39,16 @@ use serde::de::Visitor;
 use serde::ser::Serialize;
 use serde::ser::Serializer;
 
-// Pre-calculate powers of 10 for common scales to avoid repeated computation
-const I128_POWERS_OF_10: [i128; 39] = [
-    1,
-    10,
-    100,
-    1000,
-    10000,
-    100000,
-    1000000,
-    10000000,
-    100000000,
-    1000000000,
-    10000000000,
-    100000000000,
-    1000000000000,
-    10000000000000,
-    100000000000000,
-    1000000000000000,
-    10000000000000000,
-    100000000000000000,
-    1000000000000000000,
-    10000000000000000000,
-    100000000000000000000,
-    1000000000000000000000,
-    10000000000000000000000,
-    100000000000000000000000,
-    1000000000000000000000000,
-    10000000000000000000000000,
-    100000000000000000000000000,
-    1000000000000000000000000000,
-    10000000000000000000000000000,
-    100000000000000000000000000000,
-    1000000000000000000000000000000,
-    10000000000000000000000000000000,
-    100000000000000000000000000000000,
-    1000000000000000000000000000000000,
-    10000000000000000000000000000000000,
-    100000000000000000000000000000000000,
-    1000000000000000000000000000000000000,
-    10000000000000000000000000000000000000,
-    100000000000000000000000000000000000000,
-];
-
-// Pre-calculate leading zeros to avoid repeated computation
-const LEADING_ZEROS: [&str; 38] = [
-    "",
-    "0",
-    "00",
-    "000",
-    "0000",
-    "00000",
-    "000000",
-    "0000000",
-    "00000000",
-    "000000000",
-    "0000000000",
-    "00000000000",
-    "000000000000",
-    "0000000000000",
-    "00000000000000",
-    "000000000000000",
-    "0000000000000000",
-    "00000000000000000",
-    "000000000000000000",
-    "0000000000000000000",
-    "00000000000000000000",
-    "000000000000000000000",
-    "0000000000000000000000",
-    "00000000000000000000000",
-    "000000000000000000000000",
-    "0000000000000000000000000",
-    "00000000000000000000000000",
-    "000000000000000000000000000",
-    "0000000000000000000000000000",
-    "00000000000000000000000000000",
-    "000000000000000000000000000000",
-    "0000000000000000000000000000000",
-    "00000000000000000000000000000000",
-    "000000000000000000000000000000000",
-    "0000000000000000000000000000000000",
-    "00000000000000000000000000000000000",
-    "000000000000000000000000000000000000",
-    "0000000000000000000000000000000000000",
-];
-
-const I128_SCALE: usize = 38;
-
-static I256_DIVIDE_SCALE: std::sync::LazyLock<i256> =
-    std::sync::LazyLock::new(|| i256::from(100000000000000000000000000000000000000_i128));
-
-/// 10^76: exclusive upper bound on the magnitude `format_decimal_i256` can split.
-static I256_FORMAT_LIMIT: std::sync::LazyLock<i256> =
-    std::sync::LazyLock::new(|| *I256_DIVIDE_SCALE * *I256_DIVIDE_SCALE);
+/// `10^i` for each `i` whose power fits an `i128`, computed at compile time.
+const I128_POWERS_OF_10: [i128; 39] = {
+    let mut powers = [1; 39];
+    let mut i = 1;
+    while i < powers.len() {
+        powers[i] = powers[i - 1] * 10;
+        i += 1;
+    }
+    powers
+};
 
 /// Represents a decimal number with 64-bit precision.
 ///
@@ -252,14 +167,15 @@ impl Decimal256 {
         if let Ok(value) = i128::try_from(self.value) {
             return decimal_to_f64(value, self.scale);
         }
-        // `itoa` stops at `i128`, so wider values parse their decimal text.
-        // The buffer fits the longest `i256` decimal, so formatting succeeds.
-        let mut buf = StackBuf::<DECIMAL_TEXT_CAPACITY>::new();
-        match format_decimal_i256(&mut buf, self.value, self.scale.into()) {
-            // Decimal formatting only writes an optional `-`, digits and one `.`.
-            Ok(()) => fast_float2::parse(buf.as_bytes()).unwrap_or(f64::NAN),
-            Err(_) => f64::NAN,
-        }
+        // `itoa` stops at `i128`, so wider values parse `<digits>e-<scale>`:
+        // a sign, at most 78 digits, `e-` and a three-digit scale.
+        use std::fmt::Write;
+        let mut digits = DigitBuf::new();
+        let digits = digits.format_u256(self.value.unsigned_abs());
+        let sign = if self.value < i256::ZERO { "-" } else { "" };
+        let mut text = StackBuf::<84>::new();
+        write!(text, "{sign}{digits}e-{}", self.scale).expect("84 bytes fit every i256");
+        fast_float2::parse(text.as_bytes()).unwrap_or(f64::NAN)
     }
 }
 
@@ -308,55 +224,6 @@ fn decimal_to_f64(value: i128, scale: u8) -> f64 {
     fast_float2::parse(&text[..len]).unwrap_or(f64::NAN)
 }
 
-impl Number {
-    /// Appends the number as JSON text to `buf`, exactly as `Serialize`
-    /// writes it through serde_json, whose integer and float formatting
-    /// (itoa and zmij) this mirrors. Non-finite floats are written as `null`.
-    pub(crate) fn write_json(&self, buf: &mut Vec<u8>) -> Result<()> {
-        match self {
-            Number::Int64(v) => buf.extend_from_slice(itoa::Buffer::new().format(*v).as_bytes()),
-            Number::UInt64(v) => buf.extend_from_slice(itoa::Buffer::new().format(*v).as_bytes()),
-            Number::Float64(v) => write_json_f64(*v, buf),
-            #[cfg(feature = "arbitrary_precision")]
-            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
-                let text = self
-                    .format_decimal_json()
-                    .map_err(|_| Error::InvalidJsonbNumber)?;
-                buf.extend_from_slice(text.as_bytes());
-            }
-            #[cfg(not(feature = "arbitrary_precision"))]
-            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
-                write_json_f64(self.as_f64(), buf)
-            }
-        }
-        Ok(())
-    }
-
-    /// Formats a decimal as the JSON text that `Serialize` and
-    /// [`Number::write_json`] write with `arbitrary_precision`.
-    ///
-    /// Fails if the text is longer than [`DECIMAL_JSON_CAPACITY`] bytes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the number is not a decimal.
-    #[cfg(feature = "arbitrary_precision")]
-    fn format_decimal_json(
-        &self,
-    ) -> std::result::Result<StackBuf<DECIMAL_JSON_CAPACITY>, std::fmt::Error> {
-        let mut text = StackBuf::new();
-        match self {
-            Number::Decimal64(v) => {
-                format_decimal_i128(&mut text, v.value as i128, v.scale as usize)
-            }
-            Number::Decimal128(v) => format_decimal_i128(&mut text, v.value, v.scale as usize),
-            Number::Decimal256(v) => format_decimal_i256(&mut text, v.value, v.scale as usize),
-            _ => unreachable!("not a decimal: {self:?}"),
-        }?;
-        Ok(text)
-    }
-}
-
 /// Longest decimal text that serialization writes. Decimals with a longer
 /// text, which need a scale above about 125, fail to serialize; the text
 /// parser never produces them.
@@ -371,10 +238,6 @@ fn write_json_f64(v: f64, buf: &mut Vec<u8>) {
         buf.extend_from_slice(b"null");
     }
 }
-
-/// Longest formatted decimal: a sign, 77 digits of an `i256`, `0.`, and up to
-/// 255 leading fractional zeros from the scale.
-const DECIMAL_TEXT_CAPACITY: usize = 1 + 77 + 2 + 255;
 
 /// A fixed-capacity buffer that formatting writes into without allocating.
 /// Writing more than `N` bytes fails.
@@ -403,6 +266,61 @@ impl<const N: usize> std::fmt::Write for StackBuf<N> {
         dest.copy_from_slice(s.as_bytes());
         self.len = end;
         Ok(())
+    }
+}
+
+/// Stack space for the decimal digits of an integer or decimal magnitude.
+struct DigitBuf {
+    itoa: itoa::Buffer,
+    /// Digits of magnitudes beyond `u128`, right-aligned; `U256::MAX` has 78.
+    /// Set only when needed, so creating the buffer does not clear 78 bytes.
+    wide: Option<[u8; 78]>,
+}
+
+impl DigitBuf {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            itoa: itoa::Buffer::new(),
+            wide: None,
+        }
+    }
+
+    #[inline]
+    fn format_u64(&mut self, value: u64) -> &str {
+        self.itoa.format(value)
+    }
+
+    #[inline]
+    fn format_u128(&mut self, value: u128) -> &str {
+        self.itoa.format(value)
+    }
+
+    /// Writes magnitudes beyond `u128` as base-10^38 chunks, each a `u128`,
+    /// instead of using `ethnum`'s `Display`, whose raw-pointer code Miri's
+    /// Stacked Borrows model rejects.
+    fn format_u256(&mut self, value: U256) -> &str {
+        if let Ok(value) = u128::try_from(value) {
+            return self.format_u128(value);
+        }
+        const CHUNK_DIGITS: usize = I128_POWERS_OF_10.len() - 1;
+        let base = U256::from(I128_POWERS_OF_10[CHUNK_DIGITS] as u128);
+        let wide = self.wide.insert([0; 78]);
+        let mut value = value;
+        let mut end = wide.len();
+        // Every chunk but the most significant has exactly 38 digits.
+        while value >= base {
+            let chunk = self.itoa.format((value % base).as_u128()).as_bytes();
+            let start = end - CHUNK_DIGITS;
+            wide[start..end - chunk.len()].fill(b'0');
+            wide[end - chunk.len()..end].copy_from_slice(chunk);
+            end = start;
+            value /= base;
+        }
+        let first = self.itoa.format(value.as_u128()).as_bytes();
+        let start = end - first.len();
+        wide[start..end].copy_from_slice(first);
+        std::str::from_utf8(&wide[start..]).expect("digits are ASCII")
     }
 }
 
@@ -559,6 +477,14 @@ impl Serialize for Number {
     }
 }
 
+/// The first byte of a number in the comparable encoding, in ascending order.
+const COMPARABLE_NEG_INFINITY: u8 = 0x01;
+const COMPARABLE_NEGATIVE: u8 = 0x02;
+const COMPARABLE_ZERO: u8 = 0x03;
+const COMPARABLE_POSITIVE: u8 = 0x04;
+const COMPARABLE_POS_INFINITY: u8 = 0x05;
+const COMPARABLE_NAN: u8 = 0x06;
+
 impl Number {
     /// Returns the i128 representation of the number, if possible.
     ///
@@ -570,7 +496,7 @@ impl Number {
         match self {
             Number::Int64(v) => Some(*v as i128),
             Number::UInt64(v) => Some(*v as i128),
-            Number::Float64(v) => exact_float_to_int(*v),
+            Number::Float64(v) => integral_float_in(*v, I128_FLOAT_RANGE).map(|v| v as i128),
             Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale),
             Number::Decimal128(v) => exact_decimal_i128(v.value, v.scale),
             Number::Decimal256(v) => {
@@ -588,22 +514,9 @@ impl Number {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Number::Int64(v) => Some(*v),
-            Number::UInt64(v) => {
-                if *v <= i64::MAX as u64 {
-                    Some(*v as i64)
-                } else {
-                    None
-                }
-            }
-            Number::Float64(v) => exact_float_to_int(*v),
-            Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale)
-                .and_then(|value| i64::try_from(value).ok()),
-            Number::Decimal128(v) => {
-                exact_decimal_i128(v.value, v.scale).and_then(|value| i64::try_from(value).ok())
-            }
-            Number::Decimal256(v) => {
-                exact_decimal_i256(v.value, v.scale).and_then(|value| i64::try_from(value).ok())
-            }
+            Number::UInt64(v) => i64::try_from(*v).ok(),
+            Number::Float64(v) => integral_float_in(*v, I64_FLOAT_RANGE).map(|v| v as i64),
+            _ => self.as_i128().and_then(|v| i64::try_from(v).ok()),
         }
     }
 
@@ -615,23 +528,10 @@ impl Number {
     /// cannot be represented as a `u64`.
     pub fn as_u64(&self) -> Option<u64> {
         match self {
-            Number::Int64(v) => {
-                if *v >= 0 {
-                    Some(*v as u64)
-                } else {
-                    None
-                }
-            }
+            Number::Int64(v) => u64::try_from(*v).ok(),
             Number::UInt64(v) => Some(*v),
-            Number::Float64(v) => exact_float_to_int(*v),
-            Number::Decimal64(v) => exact_decimal_i128(v.value as i128, v.scale)
-                .and_then(|value| u64::try_from(value).ok()),
-            Number::Decimal128(v) => {
-                exact_decimal_i128(v.value, v.scale).and_then(|value| u64::try_from(value).ok())
-            }
-            Number::Decimal256(v) => {
-                exact_decimal_i256(v.value, v.scale).and_then(|value| u64::try_from(value).ok())
-            }
+            Number::Float64(v) => integral_float_in(*v, U64_FLOAT_RANGE).map(|v| v as u64),
+            _ => self.as_i128().and_then(|v| u64::try_from(v).ok()),
         }
     }
 
@@ -644,7 +544,7 @@ impl Number {
         match self {
             Number::Int64(v) => Some(*v as i128),
             Number::UInt64(v) => Some(*v as i128),
-            Number::Float64(v) => round_float_to_int(*v),
+            Number::Float64(v) => integral_float_in(v.round(), I128_FLOAT_RANGE).map(|v| v as i128),
             Number::Decimal64(v) => round_decimal_i128(v.value as i128, v.scale),
             Number::Decimal128(v) => round_decimal_i128(v.value, v.scale),
             Number::Decimal256(v) => {
@@ -674,6 +574,7 @@ impl Number {
     /// Returns the f64 representation of the number.
     ///
     /// This method always returns a value, but may lose precision for very large numbers.
+    #[inline]
     pub fn as_f64(&self) -> f64 {
         match self {
             Number::Int64(v) => *v as f64,
@@ -737,14 +638,7 @@ impl Number {
         if let Some((a, b, both_signed)) = self.integer_operands(&other) {
             return Self::from_integer_result(a.checked_add(b), both_signed);
         }
-        match (self, other) {
-            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a + b)),
-            (a, b) => {
-                let a_float = a.as_f64();
-                let b_float = b.as_f64();
-                Ok(Number::Float64(a_float + b_float))
-            }
-        }
+        Ok(Number::Float64(self.as_f64() + other.as_f64()))
     }
 
     /// Returns the difference of the number and another number.
@@ -754,14 +648,7 @@ impl Number {
         if let Some((a, b, both_signed)) = self.integer_operands(&other) {
             return Self::from_integer_result(a.checked_sub(b), both_signed);
         }
-        match (self, other) {
-            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a - b)),
-            (a, b) => {
-                let a_float = a.as_f64();
-                let b_float = b.as_f64();
-                Ok(Number::Float64(a_float - b_float))
-            }
-        }
+        Ok(Number::Float64(self.as_f64() - other.as_f64()))
     }
 
     /// Returns the product of the number and another number.
@@ -771,14 +658,7 @@ impl Number {
         if let Some((a, b, both_signed)) = self.integer_operands(&other) {
             return Self::from_integer_result(a.checked_mul(b), both_signed);
         }
-        match (self, other) {
-            (Number::Float64(a), Number::Float64(b)) => Ok(Number::Float64(a * b)),
-            (a, b) => {
-                let a_float = a.as_f64();
-                let b_float = b.as_f64();
-                Ok(Number::Float64(a_float * b_float))
-            }
-        }
+        Ok(Number::Float64(self.as_f64() * other.as_f64()))
     }
 
     /// Returns the quotient of the number and another number.
@@ -803,26 +683,13 @@ impl Number {
             }
             return Self::from_integer_result(a.checked_rem(b), both_signed);
         }
-        match (self, other) {
-            (Number::Float64(a), Number::Float64(b)) => {
-                if b == 0.0 {
-                    return Err(Error::Message("Division by zero".to_string()));
-                }
-                Ok(Number::Float64(a % b))
-            }
-            (a, b) => {
-                let a_float = a.as_f64();
-                let b_float = b.as_f64();
-                if b_float == 0.0 {
-                    return Err(Error::Message("Division by zero".to_string()));
-                }
-                Ok(Number::Float64(a_float % b_float))
-            }
+        let divisor = other.as_f64();
+        if divisor == 0.0 {
+            return Err(Error::Message("Division by zero".to_string()));
         }
+        Ok(Number::Float64(self.as_f64() % divisor))
     }
-}
 
-impl Number {
     /// Returns the exact values of this number and `other` if both are
     /// integers, and whether both are `Int64`.
     fn integer_operands(&self, other: &Number) -> Option<(i128, i128, bool)> {
@@ -860,56 +727,272 @@ impl Number {
                 .map_err(|_| overflow()),
         }
     }
+
+    /// Returns an integer or a decimal narrower than `Decimal256` as
+    /// `(value, scale)`, its value being `value / 10^scale`.
+    fn as_scaled_i128(&self) -> Option<(i128, u8)> {
+        match self {
+            Number::Int64(v) => Some((i128::from(*v), 0)),
+            Number::UInt64(v) => Some((i128::from(*v), 0)),
+            Number::Decimal64(d) => Some((i128::from(d.value), d.scale)),
+            Number::Decimal128(d) => Some((d.value, d.scale)),
+            Number::Float64(_) | Number::Decimal256(_) => None,
+        }
+    }
+
+    /// Returns an integer or a decimal as `(value, scale)`, its value being
+    /// `value / 10^scale`.
+    fn as_scaled_i256(&self) -> Option<(i256, u8)> {
+        match self {
+            Number::Decimal256(d) => Some((d.value, d.scale)),
+            Number::Float64(_) => None,
+            _ => self
+                .as_scaled_i128()
+                .map(|(value, scale)| (i256::from(value), scale)),
+        }
+    }
+
+    /// Compares this integer or decimal with `float`.
+    ///
+    /// `as_f64` rounds to the nearest float. If that is not `float`, the exact
+    /// value and `float`'s shortest decimal round to different floats, so they
+    /// order like those floats. Only numbers that round to `float` itself
+    /// need the exact comparison.
+    fn cmp_with_float(&self, float: f64) -> Ordering {
+        if float.is_nan() {
+            return Ordering::Less;
+        }
+        match self.as_f64().partial_cmp(&float) {
+            Some(Ordering::Equal) | None => self.cmp_exact(&Number::Float64(float)),
+            Some(order) => order,
+        }
+    }
+
+    /// Compares two numbers by their exact values, taking a float as its
+    /// shortest decimal.
+    ///
+    /// This is slower than the comparisons in `cmp`, which use it only where
+    /// they cannot decide: decimals whose rescaled values overflow, and
+    /// numbers that round to the float they are compared with. Two floats
+    /// compare as floats, which orders them the same way.
+    fn cmp_exact(&self, other: &Number) -> Ordering {
+        if let (Number::Float64(l), Number::Float64(r)) = (self, other) {
+            return OrderedFloat(*l).cmp(&OrderedFloat(*r));
+        }
+        match (ExactDecimal::new(self), ExactDecimal::new(other)) {
+            (Some(l), Some(r)) => l.cmp(&r),
+            // Only non-finite floats have no decimal, and `cmp_with_float`
+            // orders those without coming here.
+            _ => OrderedFloat(self.as_f64()).cmp(&OrderedFloat(other.as_f64())),
+        }
+    }
+
+    /// Appends the number as JSON text to `buf`, exactly as `Serialize`
+    /// writes it through serde_json, whose integer and float formatting
+    /// (itoa and zmij) this mirrors. Non-finite floats are written as `null`.
+    pub(crate) fn write_json(&self, buf: &mut Vec<u8>) -> Result<()> {
+        match self {
+            Number::Int64(v) => buf.extend_from_slice(itoa::Buffer::new().format(*v).as_bytes()),
+            Number::UInt64(v) => buf.extend_from_slice(itoa::Buffer::new().format(*v).as_bytes()),
+            Number::Float64(v) => write_json_f64(*v, buf),
+            #[cfg(feature = "arbitrary_precision")]
+            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                let text = self
+                    .format_decimal_json()
+                    .map_err(|_| Error::InvalidJsonbNumber)?;
+                buf.extend_from_slice(text.as_bytes());
+            }
+            #[cfg(not(feature = "arbitrary_precision"))]
+            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                write_json_f64(self.as_f64(), buf)
+            }
+        }
+        Ok(())
+    }
+
+    /// Formats a decimal as the JSON text that `Serialize` and
+    /// [`Number::write_json`] write with `arbitrary_precision`.
+    ///
+    /// Fails if the text is longer than [`DECIMAL_JSON_CAPACITY`] bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number is not a decimal.
+    #[cfg(feature = "arbitrary_precision")]
+    fn format_decimal_json(
+        &self,
+    ) -> std::result::Result<StackBuf<DECIMAL_JSON_CAPACITY>, std::fmt::Error> {
+        let mut text = StackBuf::new();
+        self.write_decimal(&mut text)?;
+        Ok(text)
+    }
+
+    /// Returns the sign, the decimal digits of the magnitude and the scale of
+    /// an integer or decimal, whose value is `±digits / 10^scale`, or `None`
+    /// for a float.
+    #[inline]
+    fn digits<'a>(&self, buf: &'a mut DigitBuf) -> Option<(bool, &'a str, u8)> {
+        Some(match self {
+            Number::Int64(v) => (*v < 0, buf.format_u64(v.unsigned_abs()), 0),
+            Number::UInt64(v) => (false, buf.format_u64(*v), 0),
+            Number::Decimal64(d) => (d.value < 0, buf.format_u64(d.value.unsigned_abs()), d.scale),
+            Number::Decimal128(d) => (
+                d.value < 0,
+                buf.format_u128(d.value.unsigned_abs()),
+                d.scale,
+            ),
+            Number::Decimal256(d) => (
+                d.value < i256::ZERO,
+                buf.format_u256(d.value.unsigned_abs()),
+                d.scale,
+            ),
+            Number::Float64(_) => return None,
+        })
+    }
+
+    /// Writes an integer or decimal as plain decimal text: a `-` for a
+    /// negative value, the integer digits, and for a nonzero scale a `.` and
+    /// exactly `scale` fractional digits, so `Decimal64 { scale: 3, value: -5 }`
+    /// writes `-0.005`. Any scale is written, even one beyond the precision.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number is a float.
+    fn write_decimal(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        const ZEROS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let mut buf = DigitBuf::new();
+        let (negative, digits, scale) = self.digits(&mut buf).expect("not a float");
+        let scale = usize::from(scale);
+        if negative {
+            f.write_char('-')?;
+        }
+        if scale == 0 {
+            return f.write_str(digits);
+        }
+        if digits.len() > scale {
+            let (integer, fraction) = digits.split_at(digits.len() - scale);
+            f.write_str(integer)?;
+            f.write_char('.')?;
+            return f.write_str(fraction);
+        }
+        f.write_str("0.")?;
+        let mut zeros = scale - digits.len();
+        while zeros > 0 {
+            let n = zeros.min(ZEROS.len());
+            f.write_str(&ZEROS[..n])?;
+            zeros -= n;
+        }
+        f.write_str(digits)
+    }
+
+    /// Appends bytes that order byte-wise like `Number::cmp`, for
+    /// `RawJsonb::convert_to_comparable`.
+    ///
+    /// A finite nonzero number is written as its exact value
+    /// `±0.d1d2...dn × 10^e`, with `d1` and `dn` nonzero, so numbers of
+    /// different types order by value. A float is written as its shortest
+    /// decimal, the value `cmp` compares it by: the float `0.1` and the
+    /// decimal `0.1` write the same bytes. Zero, `-0.0` included, the
+    /// infinities and `NaN` write one marker byte each.
+    ///
+    /// A nonzero value is a sign marker, `e` as a big-endian `u16` biased by
+    /// `0x8000`, the digits two to a byte as `1 + 10 * d + d'` (an odd last
+    /// digit pairs with 0), and a 0 terminator. A larger exponent, or a larger
+    /// digit at the first difference, means a larger magnitude, and a digit
+    /// byte is above the terminator, so a longer digit string with the same
+    /// prefix is larger. For a negative value every byte after the marker is
+    /// inverted, which reverses that order.
+    ///
+    /// No encoding is a prefix of another, so two different numbers differ
+    /// before either ends, and the bytes that follow them never decide.
+    /// Writing numbers as `f64` used to give different numbers the same bytes,
+    /// e.g. `2^53` and `2^53 + 1`; inside an array or object the following
+    /// bytes then decided, which could reverse the order of the two containers
+    /// (found by fuzzing).
+    pub(crate) fn write_comparable(&self, buf: &mut Vec<u8>) {
+        let mut digit_buf = DigitBuf::new();
+        let (negative, digits, scale) = match self {
+            Number::Float64(v) => {
+                let Some(decimal) = ExactDecimal::from_f64(*v) else {
+                    return buf.push(if v.is_nan() {
+                        COMPARABLE_NAN
+                    } else if *v > 0.0 {
+                        COMPARABLE_POS_INFINITY
+                    } else {
+                        COMPARABLE_NEG_INFINITY
+                    });
+                };
+                // A float's shortest decimal has at most 17 digits.
+                let magnitude = u64::try_from(decimal.magnitude).expect("at most 17 digits");
+                (
+                    decimal.negative,
+                    digit_buf.format_u64(magnitude),
+                    decimal.scale,
+                )
+            }
+            Number::Int64(v) => (*v < 0, digit_buf.format_u64(v.unsigned_abs()), 0),
+            Number::UInt64(v) => (false, digit_buf.format_u64(*v), 0),
+            Number::Decimal64(d) => (
+                d.value < 0,
+                digit_buf.format_u64(d.value.unsigned_abs()),
+                i32::from(d.scale),
+            ),
+            Number::Decimal128(d) => (
+                d.value < 0,
+                digit_buf.format_u128(d.value.unsigned_abs()),
+                i32::from(d.scale),
+            ),
+            Number::Decimal256(d) => (
+                d.value < i256::ZERO,
+                digit_buf.format_u256(d.value.unsigned_abs()),
+                i32::from(d.scale),
+            ),
+        };
+        let digits = digits.as_bytes();
+        let Some(last) = digits.iter().rposition(|&d| d != b'0') else {
+            return buf.push(COMPARABLE_ZERO);
+        };
+        // Decimals have at most 78 digits and scales up to 255; floats have
+        // exponents from -323 to 309.
+        let exponent =
+            i16::try_from(digits.len() as i32 - scale).expect("decimal exponents fit an i16");
+        let start = buf.len();
+        buf.push(if negative {
+            COMPARABLE_NEGATIVE
+        } else {
+            COMPARABLE_POSITIVE
+        });
+        buf.extend_from_slice(&((exponent as u16) ^ 0x8000).to_be_bytes());
+        for pair in digits[..=last].chunks(2) {
+            let high = pair[0] - b'0';
+            let low = pair.get(1).map_or(0, |d| d - b'0');
+            buf.push(1 + 10 * high + low);
+        }
+        buf.push(0);
+        if negative {
+            for byte in &mut buf[start + 1..] {
+                *byte = !*byte;
+            }
+        }
+    }
 }
 
-fn exact_float_to_int<T>(value: f64) -> Option<T>
-where
-    T: Bounded + AsPrimitive<f64>,
-    f64: AsPrimitive<T>,
-{
-    if !value.is_finite() || value.fract() != 0.0 {
-        return None;
-    }
+/// `[-2^63, 2^63)`, the floats that `as i64` converts exactly. The bounds
+/// are exact floats; `i64::MAX as f64` rounds up to `2^63`.
+const I64_FLOAT_RANGE: std::ops::Range<f64> = (i64::MIN as f64)..-(i64::MIN as f64);
 
-    if fits_float_target_range::<T>(value) {
-        Some(value.as_())
-    } else {
-        None
-    }
-}
+/// `[0, 2^64)`, the floats that `as u64` converts exactly.
+const U64_FLOAT_RANGE: std::ops::Range<f64> = 0.0..-2.0 * (i64::MIN as f64);
 
-fn round_float_to_int<T>(value: f64) -> Option<T>
-where
-    T: Bounded + AsPrimitive<f64>,
-    f64: AsPrimitive<T>,
-{
-    if !value.is_finite() {
-        return None;
-    }
+/// `[-2^127, 2^127)`, the floats that `as i128` converts exactly.
+const I128_FLOAT_RANGE: std::ops::Range<f64> = (i128::MIN as f64)..-(i128::MIN as f64);
 
-    let rounded = value.round();
-    if fits_float_target_range::<T>(rounded) {
-        Some(rounded.as_())
-    } else {
-        None
-    }
-}
-
-// Use a half-open range so the positive bound can be expressed as `-min` for
-// signed integers, which avoids relying on an imprecise `MAX as f64`.
+/// Returns `value` if it is an integer within `range`, so the caller's `as`
+/// cast to the matching integer type is exact. `NaN` and the infinities have
+/// a `NaN` fraction and return `None`; `-0.0` counts as 0.
 #[inline]
-fn fits_float_target_range<T>(value: f64) -> bool
-where
-    T: Bounded + AsPrimitive<f64>,
-{
-    let lower = T::min_value().as_();
-    let upper_exclusive = if lower < 0.0 {
-        -lower
-    } else {
-        T::max_value().as_() + 1.0
-    };
-
-    value >= lower && value < upper_exclusive
+fn integral_float_in(value: f64, range: std::ops::Range<f64>) -> Option<f64> {
+    (value.fract() == 0.0 && range.contains(&value)).then_some(value)
 }
 
 fn exact_decimal_i128(value: i128, scale: u8) -> Option<i128> {
@@ -1098,292 +1181,48 @@ impl Ord for Number {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            // Same type comparisons - use native comparison
             (Number::Int64(l), Number::Int64(r)) => l.cmp(r),
             (Number::UInt64(l), Number::UInt64(r)) => l.cmp(r),
+            (Number::Int64(l), Number::UInt64(r)) => match u64::try_from(*l) {
+                Ok(l) => l.cmp(r),
+                Err(_) => Ordering::Less,
+            },
+            (Number::UInt64(l), Number::Int64(r)) => match u64::try_from(*r) {
+                Ok(r) => l.cmp(&r),
+                Err(_) => Ordering::Greater,
+            },
+            (Number::Decimal64(l), Number::Decimal64(r)) if l.scale == r.scale => {
+                l.value.cmp(&r.value)
+            }
+            (Number::Decimal128(l), Number::Decimal128(r)) if l.scale == r.scale => {
+                l.value.cmp(&r.value)
+            }
+            (Number::Decimal256(l), Number::Decimal256(r)) if l.scale == r.scale => {
+                l.value.cmp(&r.value)
+            }
             (Number::Float64(l), Number::Float64(r)) => OrderedFloat(*l).cmp(&OrderedFloat(*r)),
-            (Number::Decimal64(l), Number::Decimal64(r)) => {
-                // Compare decimal values with the same scale
-                if l.scale == r.scale {
-                    l.value.cmp(&r.value)
-                } else {
-                    // Adjust scales to match for proper comparison
-                    if let Some((l_val, r_val)) =
-                        adjust_decimal_scales(l.value as i128, l.scale, r.value as i128, r.scale)
-                    {
-                        l_val.cmp(&r_val)
-                    } else {
-                        self.cmp_exact(other)
-                    }
-                }
-            }
-            (Number::Decimal128(l), Number::Decimal128(r)) => {
-                // Compare decimal values with the same scale
-                if l.scale == r.scale {
-                    l.value.cmp(&r.value)
-                } else {
-                    // Adjust scales to match for proper comparison
-                    if let Some((l_val, r_val)) =
-                        adjust_decimal_scales(l.value, l.scale, r.value, r.scale)
-                    {
-                        l_val.cmp(&r_val)
-                    } else {
-                        self.cmp_exact(other)
-                    }
-                }
-            }
-            (Number::Decimal256(l), Number::Decimal256(r)) => {
-                // Compare decimal values with the same scale
-                if l.scale == r.scale {
-                    l.value.cmp(&r.value)
-                } else {
-                    // For i256 comparison with different scales, we need to adjust manually
-                    let scale_diff = l.scale as i32 - r.scale as i32;
-                    if scale_diff > 0 {
-                        // l has more decimal places, scale up r
-                        let scale_factor = i256::from(10).checked_pow(scale_diff as u32);
-                        if let Some(r_val) = scale_factor.and_then(|s| r.value.checked_mul(s)) {
-                            return l.value.cmp(&r_val);
-                        }
-                    } else {
-                        // r has more decimal places, scale up l
-                        let scale_factor = i256::from(10).checked_pow((-scale_diff) as u32);
-                        if let Some(l_val) = scale_factor.and_then(|s| l.value.checked_mul(s)) {
-                            return l_val.cmp(&r.value);
-                        }
-                    }
-                    // The scaled value overflows `i256`.
-                    self.cmp_exact(other)
-                }
-            }
-
-            // Integer to integer comparisons
-            (Number::Int64(l), Number::UInt64(r)) => {
-                if *l < 0 {
-                    Ordering::Less
-                } else {
-                    (*l as u64).cmp(r)
-                }
-            }
-            (Number::UInt64(l), Number::Int64(r)) => {
-                if *r < 0 {
-                    Ordering::Greater
-                } else {
-                    l.cmp(&(*r as u64))
-                }
-            }
-
-            // Decimal64 comparisons with other types
-            (Number::Decimal64(_), Number::Int64(r)) => {
-                // Convert Int64 to Decimal64 with scale 0
-                let r_decimal = Decimal64 {
-                    scale: 0,
-                    value: *r,
-                };
-                self.cmp(&Number::Decimal64(r_decimal))
-            }
-            (Number::Int64(l), Number::Decimal64(_)) => {
-                // Convert Int64 to Decimal64 with scale 0
-                let l_decimal = Decimal64 {
-                    scale: 0,
-                    value: *l,
-                };
-                Number::Decimal64(l_decimal).cmp(other)
-            }
-            (Number::Decimal64(_), Number::UInt64(r)) => {
-                // Check if the value fits in i64
-                if *r <= i64::MAX as u64 {
-                    // Convert UInt64 to Decimal64 with scale 0
-                    let r_decimal = Decimal64 {
-                        scale: 0,
-                        value: *r as i64,
-                    };
-                    self.cmp(&Number::Decimal64(r_decimal))
-                } else {
-                    // If it doesn't fit, Convert UInt64 to Decimal128 with scale 0
-                    let r_decimal = Decimal128 {
-                        scale: 0,
-                        value: *r as i128,
-                    };
-                    self.cmp(&Number::Decimal128(r_decimal))
-                }
-            }
-            (Number::UInt64(l), Number::Decimal64(_)) => {
-                // Check if the value fits in i64
-                if *l <= i64::MAX as u64 {
-                    // Convert UInt64 to Decimal64 with scale 0
-                    let l_decimal = Decimal64 {
-                        scale: 0,
-                        value: *l as i64,
-                    };
-                    Number::Decimal64(l_decimal).cmp(other)
-                } else {
-                    // If it doesn't fit, Convert UInt64 to Decimal128 with scale 0
-                    let l_decimal = Decimal128 {
-                        scale: 0,
-                        value: *l as i128,
-                    };
-                    Number::Decimal128(l_decimal).cmp(other)
-                }
-            }
-
-            // Decimal128 comparisons with other types
-            (Number::Decimal128(_), Number::Int64(r)) => {
-                // Convert Int64 to Decimal128 with scale 0
-                let r_decimal = Decimal128 {
-                    scale: 0,
-                    value: *r as i128,
-                };
-                self.cmp(&Number::Decimal128(r_decimal))
-            }
-            (Number::Int64(l), Number::Decimal128(_)) => {
-                // Convert Int64 to Decimal128 with scale 0
-                let l_decimal = Decimal128 {
-                    scale: 0,
-                    value: *l as i128,
-                };
-                Number::Decimal128(l_decimal).cmp(other)
-            }
-            (Number::Decimal128(_), Number::UInt64(r)) => {
-                // Convert UInt64 to Decimal128 with scale 0
-                let r_decimal = Decimal128 {
-                    scale: 0,
-                    value: *r as i128,
-                };
-                self.cmp(&Number::Decimal128(r_decimal))
-            }
-            (Number::UInt64(l), Number::Decimal128(_)) => {
-                // Convert UInt64 to Decimal128 with scale 0
-                let l_decimal = Decimal128 {
-                    scale: 0,
-                    value: *l as i128,
-                };
-                Number::Decimal128(l_decimal).cmp(other)
-            }
-
-            // Decimal256 comparisons with other types
-            (Number::Decimal256(_), Number::Int64(r)) => {
-                // Convert Int64 to Decimal256 with scale 0
-                let r_decimal = Decimal256 {
-                    scale: 0,
-                    value: i256::from(*r),
-                };
-                self.cmp(&Number::Decimal256(r_decimal))
-            }
-            (Number::Int64(l), Number::Decimal256(_)) => {
-                // Convert Int64 to Decimal256 with scale 0
-                let l_decimal = Decimal256 {
-                    scale: 0,
-                    value: i256::from(*l),
-                };
-                Number::Decimal256(l_decimal).cmp(other)
-            }
-            (Number::Decimal256(_), Number::UInt64(r)) => {
-                // Convert UInt64 to Decimal256 with scale 0
-                let r_decimal = Decimal256 {
-                    scale: 0,
-                    value: i256::from(*r),
-                };
-                self.cmp(&Number::Decimal256(r_decimal))
-            }
-            (Number::UInt64(l), Number::Decimal256(_)) => {
-                // Convert UInt64 to Decimal256 with scale 0
-                let l_decimal = Decimal256 {
-                    scale: 0,
-                    value: i256::from(*l),
-                };
-                Number::Decimal256(l_decimal).cmp(other)
-            }
-
-            // Cross-decimal comparisons - upgrade to the higher precision
-            (Number::Decimal64(l), Number::Decimal128(_)) => {
-                // Upgrade Decimal64 to Decimal128
-                let l_decimal = Decimal128 {
-                    scale: l.scale,
-                    value: l.value as i128,
-                };
-                Number::Decimal128(l_decimal).cmp(other)
-            }
-            (Number::Decimal128(_), Number::Decimal64(r)) => {
-                // Upgrade Decimal64 to Decimal128
-                let r_decimal = Decimal128 {
-                    scale: r.scale,
-                    value: r.value as i128,
-                };
-                self.cmp(&Number::Decimal128(r_decimal))
-            }
-            (Number::Decimal64(l), Number::Decimal256(_)) => {
-                // Upgrade Decimal64 to Decimal256
-                let l_decimal = Decimal256 {
-                    scale: l.scale,
-                    value: i256::from(l.value),
-                };
-                Number::Decimal256(l_decimal).cmp(other)
-            }
-            (Number::Decimal256(_), Number::Decimal64(r)) => {
-                // Upgrade Decimal64 to Decimal256
-                let r_decimal = Decimal256 {
-                    scale: r.scale,
-                    value: i256::from(r.value),
-                };
-                self.cmp(&Number::Decimal256(r_decimal))
-            }
-            (Number::Decimal128(l), Number::Decimal256(_)) => {
-                // Upgrade Decimal128 to Decimal256
-                let l_decimal = Decimal256 {
-                    scale: l.scale,
-                    value: i256::from(l.value),
-                };
-                Number::Decimal256(l_decimal).cmp(other)
-            }
-            (Number::Decimal256(_), Number::Decimal128(r)) => {
-                // Upgrade Decimal128 to Decimal256
-                let r_decimal = Decimal256 {
-                    scale: r.scale,
-                    value: i256::from(r.value),
-                };
-                self.cmp(&Number::Decimal256(r_decimal))
-            }
-
             (Number::Float64(l), _) => other.cmp_with_float(*l).reverse(),
             (_, Number::Float64(r)) => self.cmp_with_float(*r),
-        }
-    }
-}
-
-impl Number {
-    /// Compares this integer or decimal with `float`.
-    ///
-    /// `as_f64` rounds to the nearest float. If that is not `float`, the exact
-    /// value and `float`'s shortest decimal round to different floats, so they
-    /// order like those floats. Only numbers that round to `float` itself
-    /// need the exact comparison.
-    fn cmp_with_float(&self, float: f64) -> Ordering {
-        if float.is_nan() {
-            return Ordering::Less;
-        }
-        match self.as_f64().partial_cmp(&float) {
-            Some(Ordering::Equal) | None => self.cmp_exact(&Number::Float64(float)),
-            Some(order) => order,
-        }
-    }
-
-    /// Compares two numbers by their exact values, taking a float as its
-    /// shortest decimal.
-    ///
-    /// This is slower than the comparisons in `cmp`, which use it only where
-    /// they cannot decide: decimals whose rescaled values overflow, and
-    /// numbers that round to the float they are compared with. Two floats
-    /// compare as floats, which orders them the same way.
-    fn cmp_exact(&self, other: &Number) -> Ordering {
-        if let (Number::Float64(l), Number::Float64(r)) = (self, other) {
-            return OrderedFloat(*l).cmp(&OrderedFloat(*r));
-        }
-        match (ExactDecimal::new(self), ExactDecimal::new(other)) {
-            (Some(l), Some(r)) => l.cmp(&r),
-            // Only non-finite floats have no decimal, and `cmp_with_float`
-            // orders those without coming here.
-            _ => OrderedFloat(self.as_f64()).cmp(&OrderedFloat(other.as_f64())),
+            // Integers and decimals compare as `value / 10^scale` in the
+            // narrowest type that holds both, or exactly if rescaling
+            // overflows.
+            _ => match (self.as_scaled_i128(), other.as_scaled_i128()) {
+                (Some((l, l_scale)), Some((r, r_scale))) => {
+                    match adjust_decimal_scales(l, l_scale, r, r_scale) {
+                        Some((l, r)) => l.cmp(&r),
+                        None => self.cmp_exact(other),
+                    }
+                }
+                _ => match (self.as_scaled_i256(), other.as_scaled_i256()) {
+                    (Some((l, l_scale)), Some((r, r_scale))) => {
+                        match adjust_decimal256_scales(l, l_scale, r, r_scale) {
+                            Some((l, r)) => l.cmp(&r),
+                            None => self.cmp_exact(other),
+                        }
+                    }
+                    _ => unreachable!("floats are compared above"),
+                },
+            },
         }
     }
 }
@@ -1421,6 +1260,15 @@ impl ExactDecimal {
     fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
+        }
+        // Below 2^53 an integral float is an exact integer, which is its own
+        // shortest decimal; `zmij` would write the same digits.
+        if value.fract() == 0.0 && value.abs() < (1u64 << f64::MANTISSA_DIGITS) as f64 {
+            return Some(Self {
+                negative: value.is_sign_negative(),
+                magnitude: U256::from(value.abs() as u64),
+                scale: 0,
+            });
         }
         let mut buf = zmij::Buffer::new();
         // An optional `-`, digits with an optional `.` fraction, and an
@@ -1518,7 +1366,8 @@ impl ExactDecimal {
     }
 }
 
-/// A 2048-bit unsigned integer, in little-endian 64-bit limbs.
+/// A 2048-bit unsigned integer, in 64-bit limbs stored most significant
+/// first, so the derived `Ord` compares by value.
 ///
 /// That fits every rescaled magnitude in `ExactDecimal::cmp_magnitude`, which
 /// compares a float with an integer or decimal, or two decimals, but never two
@@ -1532,13 +1381,12 @@ impl WideUint {
     fn new(value: U256) -> Self {
         let (high, low) = value.into_words();
         let mut limbs = [0; 32];
-        limbs[0] = low as u64;
-        limbs[1] = (low >> 64) as u64;
-        limbs[2] = high as u64;
-        limbs[3] = (high >> 64) as u64;
-        // The derived `Ord` compares limbs from the first, so store them
-        // most significant first.
-        limbs.reverse();
+        limbs[28..].copy_from_slice(&[
+            (high >> 64) as u64,
+            high as u64,
+            (low >> 64) as u64,
+            low as u64,
+        ]);
         Self(limbs)
     }
 
@@ -1564,34 +1412,56 @@ impl WideUint {
     }
 }
 
-/// Helper function to adjust decimal scales for comparison
-///
-/// Given two decimal values with potentially different scales,
-/// this function adjusts them to have the same scale for accurate comparison.
+/// Brings two `i128` decimals to the larger scale, or returns `None` if that
+/// overflows.
 fn adjust_decimal_scales(
     l_val: i128,
     l_scale: u8,
     r_val: i128,
     r_scale: u8,
 ) -> Option<(i128, i128)> {
-    let scale_diff = l_scale as i32 - r_scale as i32;
+    // `10^diff` fits an `i128` up to 38, the end of the table.
+    let rescale = |value: i128, diff: u8| {
+        I128_POWERS_OF_10
+            .get(usize::from(diff))
+            .and_then(|factor| value.checked_mul(*factor))
+    };
+    match l_scale.cmp(&r_scale) {
+        Ordering::Greater => Some((l_val, rescale(r_val, l_scale - r_scale)?)),
+        Ordering::Less => Some((rescale(l_val, r_scale - l_scale)?, r_val)),
+        Ordering::Equal => Some((l_val, r_val)),
+    }
+}
 
-    match scale_diff.cmp(&0) {
-        Ordering::Greater => {
-            // l has more decimal places, scale up r
-            let scale_factor = 10_i128.checked_pow(scale_diff as u32)?;
-            let r_val = r_val.checked_mul(scale_factor)?;
-            Some((l_val, r_val))
-        }
-        Ordering::Less => {
-            // r has more decimal places, scale up l
-            let scale_factor = 10_i128.checked_pow((-scale_diff) as u32)?;
-            let l_val = l_val.checked_mul(scale_factor)?;
-            Some((l_val, r_val))
-        }
-        Ordering::Equal => {
-            // Same scale, no adjustment needed
-            Some((l_val, r_val))
+/// Brings two `i256` decimals to the larger scale, or returns `None` if that
+/// overflows.
+fn adjust_decimal256_scales(
+    l_val: i256,
+    l_scale: u8,
+    r_val: i256,
+    r_scale: u8,
+) -> Option<(i256, i256)> {
+    let rescale = |value: i256, diff: u8| value.checked_mul(pow10_i256(diff)?);
+    match l_scale.cmp(&r_scale) {
+        Ordering::Greater => Some((l_val, rescale(r_val, l_scale - r_scale)?)),
+        Ordering::Less => Some((rescale(l_val, r_scale - l_scale)?, r_val)),
+        Ordering::Equal => Some((l_val, r_val)),
+    }
+}
+
+/// Returns `10^exponent` if it fits an `i256`, which holds up to `10^76`.
+///
+/// Powers up to `10^38` come from `I128_POWERS_OF_10`, and larger ones take a
+/// single multiplication by `10^38`; `checked_pow` multiplies once per bit of
+/// the exponent.
+fn pow10_i256(exponent: u8) -> Option<i256> {
+    let exponent = usize::from(exponent);
+    let max = I128_POWERS_OF_10.len() - 1;
+    match exponent.checked_sub(max) {
+        None | Some(0) => Some(i256::from(I128_POWERS_OF_10[exponent])),
+        Some(rest) => {
+            let rest = *I128_POWERS_OF_10.get(rest)?;
+            Some(i256::from(I128_POWERS_OF_10[max]) * i256::from(rest))
         }
     }
 }
@@ -1602,249 +1472,13 @@ impl Display for Number {
     /// This method returns a string representation of the number in its internal format.
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            Number::Int64(v) => {
-                let mut buffer = itoa::Buffer::new();
-                let s = buffer.format(*v);
-                write!(f, "{}", s)
-            }
-            Number::UInt64(v) => {
-                let mut buffer = itoa::Buffer::new();
-                let s = buffer.format(*v);
-                write!(f, "{}", s)
-            }
-            Number::Float64(v) => {
-                let mut buffer = zmij::Buffer::new();
-                let s = buffer.format(*v);
-                write!(f, "{}", s)
-            }
-            Number::Decimal64(v) => format_decimal_i128(f, v.value as i128, v.scale as usize),
-            Number::Decimal128(v) => format_decimal_i128(f, v.value, v.scale as usize),
-            Number::Decimal256(v) => format_decimal_i256(f, v.value, v.scale as usize),
-        }
-    }
-}
-
-/// Formats an unsigned 256-bit integer in decimal.
-///
-/// Splits the value into base-10^38 chunks so each fits a `u128`, instead of
-/// relying on `ethnum`'s `Display`, whose raw-pointer code Miri's Stacked
-/// Borrows model rejects.
-fn u256_to_decimal_string(mut value: U256) -> String {
-    let base = U256::from(I128_POWERS_OF_10[I128_SCALE] as u128);
-    let mut chunks = Vec::with_capacity(3);
-    loop {
-        chunks.push((value % base).as_u128());
-        value /= base;
-        if value == U256::ZERO {
-            break;
-        }
-    }
-    let mut out = String::with_capacity(chunks.len() * I128_SCALE);
-    let mut chunks = chunks.into_iter().rev();
-    if let Some(first) = chunks.next() {
-        out.push_str(itoa::Buffer::new().format(first));
-    }
-    for chunk in chunks {
-        let digits = itoa::Buffer::new().format(chunk).to_owned();
-        out.extend(std::iter::repeat_n('0', I128_SCALE - digits.len()));
-        out.push_str(&digits);
-    }
-    out
-}
-
-/// Formats a decimal from its unsigned digit string.
-///
-/// This is the slow path for values the allocation-free formatters cannot
-/// handle, such as a scale beyond the type's precision or a magnitude that does
-/// not fit the fast path's split. Such values only come from corrupted JSONB
-/// bytes or hand-built `Decimal*` structs.
-fn format_decimal_digits(
-    f: &mut impl std::fmt::Write,
-    negative: bool,
-    digits: &str,
-    scale: usize,
-) -> std::fmt::Result {
-    if negative {
-        f.write_str("-")?;
-    }
-    if scale == 0 {
-        return f.write_str(digits);
-    }
-    if digits.len() > scale {
-        let (int_part, frac_part) = digits.split_at(digits.len() - scale);
-        f.write_str(int_part)?;
-        f.write_str(".")?;
-        return f.write_str(frac_part);
-    }
-    f.write_str("0.")?;
-    for _ in digits.len()..scale {
-        f.write_char('0')?;
-    }
-    f.write_str(digits)
-}
-
-/// Helper function to format a decimal i128 value to a formatter without string allocations
-///
-/// This function efficiently formats a decimal number with the following optimizations:
-/// 1. Uses stack-allocated buffers instead of heap allocations
-/// 2. Handles the sign separately to simplify the formatting logic
-/// 3. Uses the fast itoa library for integer-to-string conversion
-/// 4. Pre-computed zero strings for padding fractional parts
-fn format_decimal_i128(
-    f: &mut impl std::fmt::Write,
-    value: i128,
-    scale: usize,
-) -> std::fmt::Result {
-    if scale > I128_SCALE || value == i128::MIN {
-        let digits = value.unsigned_abs().to_string();
-        return format_decimal_digits(f, value < 0, &digits, scale);
-    }
-    let mut itoa_buf = itoa::Buffer::new();
-    if scale == 0 {
-        f.write_str(itoa_buf.format(value))
-    } else {
-        // Handle negative numbers by writing the minus sign and working with absolute value
-        let value = if value < 0 {
-            f.write_str("-")?;
-            -value
-        } else {
-            value
-        };
-        let pow_scale = I128_POWERS_OF_10[scale];
-        // Split the value into integer and fractional parts
-        let integer_part = value / pow_scale;
-        f.write_str(itoa_buf.format(integer_part))?;
-        f.write_str(".")?;
-
-        // Format the fractional part with leading zeros if needed
-        let fractional_part = (value % pow_scale).abs();
-        let fractional_str = itoa_buf.format(fractional_part);
-
-        let leading_zeros_count = scale - fractional_str.len();
-        if leading_zeros_count > 0 {
-            let zeros = LEADING_ZEROS[leading_zeros_count];
-            f.write_str(zeros)?;
-        }
-        f.write_str(fractional_str)
-    }
-}
-
-/// Formats a decimal i256 value to a formatter without heap allocations.
-///
-/// This function efficiently formats a 256-bit decimal number with the specified scale
-/// (number of decimal places) by splitting it into high and low 128-bit parts.
-fn format_decimal_i256(
-    f: &mut impl std::fmt::Write,
-    value: i256,
-    scale: usize,
-) -> std::fmt::Result {
-    // The fast path splits the magnitude into two parts below 10^38, which
-    // requires |value| < 10^76 and a scale within the 76-digit precision.
-    if scale > 2 * I128_SCALE || value == i256::MIN || value.abs() >= *I256_FORMAT_LIMIT {
-        let digits = u256_to_decimal_string(value.unsigned_abs());
-        return format_decimal_digits(f, value < i256::ZERO, &digits, scale);
-    }
-    // Handle negative values by writing the minus sign and negating the value
-    let value = if value < i256::ZERO {
-        f.write_str("-")?;
-        -value
-    } else {
-        value
-    };
-
-    // Split the i256 value into high and low parts for easier formatting
-    let high_part = (value / *I256_DIVIDE_SCALE).as_i128();
-    let low_part = (value % *I256_DIVIDE_SCALE).as_i128();
-    let mut itoa_buf = itoa::Buffer::new();
-
-    // Case 1: Integer-only formatting (no decimal places)
-    if scale == 0 {
-        if high_part > 0 {
-            // Format high part first (most significant digits)
-            f.write_str(itoa_buf.format(high_part))?;
-
-            // Format low part with proper zero padding to maintain place value
-            let low_str = itoa_buf.format(low_part);
-            let zeros_count = I128_SCALE - low_str.len();
-            if zeros_count > 0 {
-                let zeros = LEADING_ZEROS[zeros_count];
-                f.write_str(zeros)?;
-            }
-            f.write_str(low_str)
-        } else {
-            // Only low part has non-zero value
-            f.write_str(itoa_buf.format(low_part))
-        }
-    }
-    // Case 2: Decimal point falls within the high part (large scale)
-    else if scale >= I128_SCALE {
-        // Calculate how many decimal places are in the high part
-        let high_scale = scale - I128_SCALE;
-        let pow_scale = I128_POWERS_OF_10[high_scale];
-
-        // Format the integer portion from the high part
-        let int_part = high_part / pow_scale;
-        f.write_str(itoa_buf.format(int_part))?;
-        f.write_str(".")?;
-
-        // Format the fractional portion from the high part
-        if high_scale > 0 {
-            let high_frac_part = high_part % pow_scale;
-            let high_frac_str = itoa_buf.format(high_frac_part);
-
-            // Add leading zeros if needed
-            let high_zeros_count = high_scale - high_frac_str.len();
-            if high_zeros_count > 0 {
-                let zeros = LEADING_ZEROS[high_zeros_count];
-                f.write_str(zeros)?;
-            }
-            f.write_str(high_frac_str)?;
-        }
-
-        // Format the low part with proper zero padding
-        let mut low_buf = itoa::Buffer::new();
-        let low_frac_str = low_buf.format(low_part);
-        let low_zeros_count = I128_SCALE - low_frac_str.len();
-        if low_zeros_count > 0 {
-            let low_zeros = LEADING_ZEROS[low_zeros_count];
-            f.write_str(low_zeros)?;
-        }
-        f.write_str(low_frac_str)
-    }
-    // Case 3: Decimal point falls within the low part
-    else {
-        // Format high part if it exists (integer portion)
-        if high_part > 0 {
-            f.write_str(itoa_buf.format(high_part))?;
-        }
-        let pow_scale = I128_POWERS_OF_10[scale];
-
-        // Calculate integer part from low component
-        let int_part = low_part / pow_scale;
-        let int_str = itoa_buf.format(int_part);
-
-        // If high part exists, we need to ensure proper place value with padding
-        if high_part > 0 {
-            let int_zeros_count = I128_SCALE - scale - int_str.len();
-            if int_zeros_count > 0 {
-                let int_zeros = LEADING_ZEROS[int_zeros_count];
-                f.write_str(int_zeros)?;
+            Number::Int64(v) => f.write_str(itoa::Buffer::new().format(*v)),
+            Number::UInt64(v) => f.write_str(itoa::Buffer::new().format(*v)),
+            Number::Float64(v) => f.write_str(zmij::Buffer::new().format(*v)),
+            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                self.write_decimal(f)
             }
         }
-        f.write_str(int_str)?;
-        f.write_str(".")?;
-
-        // Format fractional part from low component with proper zero padding
-        let frac_part = low_part % pow_scale;
-        let mut frac_buf = itoa::Buffer::new();
-        let frac_str = frac_buf.format(frac_part);
-
-        let frac_zeros_count = scale - frac_str.len();
-        if frac_zeros_count > 0 {
-            let frac_zeros = LEADING_ZEROS[frac_zeros_count];
-            f.write_str(frac_zeros)?;
-        }
-        f.write_str(frac_str)
     }
 }
 
@@ -1854,6 +1488,16 @@ mod tests {
     use std::cmp::Ordering;
 
     #[test]
+    fn pow10_i256_covers_every_power_that_fits() {
+        for exponent in 0..=76u8 {
+            let expected = i256::from(10).pow(u32::from(exponent));
+            assert_eq!(pow10_i256(exponent), Some(expected), "10^{exponent}");
+        }
+        assert_eq!(pow10_i256(77), None);
+        assert_eq!(pow10_i256(u8::MAX), None);
+    }
+
+    #[test]
     fn decimal256_bounds_have_76_digits() {
         assert_eq!(DECIMAL256_MAX, i256::from(10).pow(76) - 1);
         assert_eq!(DECIMAL256_MIN, -DECIMAL256_MAX);
@@ -1861,290 +1505,67 @@ mod tests {
 
     #[test]
     fn test_number_comparison() {
-        // Test same type comparisons
-        assert_eq!(Number::Int64(10).cmp(&Number::Int64(5)), Ordering::Greater);
-        assert_eq!(Number::Int64(5).cmp(&Number::Int64(10)), Ordering::Less);
-        assert_eq!(Number::Int64(5).cmp(&Number::Int64(5)), Ordering::Equal);
-
-        assert_eq!(
-            Number::UInt64(10).cmp(&Number::UInt64(5)),
-            Ordering::Greater
-        );
-        assert_eq!(Number::UInt64(5).cmp(&Number::UInt64(10)), Ordering::Less);
-        assert_eq!(Number::UInt64(5).cmp(&Number::UInt64(5)), Ordering::Equal);
-
-        assert_eq!(
-            Number::Float64(10.0).cmp(&Number::Float64(5.0)),
-            Ordering::Greater
-        );
-        assert_eq!(
-            Number::Float64(5.0).cmp(&Number::Float64(10.0)),
-            Ordering::Less
-        );
-        assert_eq!(
-            Number::Float64(5.0).cmp(&Number::Float64(5.0)),
-            Ordering::Equal
-        );
-
-        // Test int64 and uint64 comparisons
-        assert_eq!(Number::Int64(10).cmp(&Number::UInt64(5)), Ordering::Greater);
-        assert_eq!(Number::Int64(5).cmp(&Number::UInt64(10)), Ordering::Less);
-        assert_eq!(Number::Int64(5).cmp(&Number::UInt64(5)), Ordering::Equal);
-        assert_eq!(Number::Int64(-5).cmp(&Number::UInt64(5)), Ordering::Less);
-
-        assert_eq!(Number::UInt64(10).cmp(&Number::Int64(5)), Ordering::Greater);
-        assert_eq!(Number::UInt64(5).cmp(&Number::Int64(10)), Ordering::Less);
-        assert_eq!(Number::UInt64(5).cmp(&Number::Int64(5)), Ordering::Equal);
-        assert_eq!(Number::UInt64(5).cmp(&Number::Int64(-5)), Ordering::Greater);
-
-        // Test decimal64 comparisons with same scale
-        let d1 = Decimal64 {
-            scale: 2,
-            value: 1234,
-        }; // 12.34
-        let d2 = Decimal64 {
-            scale: 2,
-            value: 5678,
-        }; // 56.78
-        assert_eq!(
-            Number::Decimal64(d1.clone()).cmp(&Number::Decimal64(d2.clone())),
-            Ordering::Less
-        );
-        assert_eq!(
-            Number::Decimal64(d2.clone()).cmp(&Number::Decimal64(d1.clone())),
-            Ordering::Greater
-        );
-        assert_eq!(
-            Number::Decimal64(d1.clone()).cmp(&Number::Decimal64(d1.clone())),
-            Ordering::Equal
-        );
-
-        // Test decimal64 comparisons with different scales
-        let d3 = Decimal64 {
-            scale: 3,
-            value: 12340,
-        }; // 12.340
-        assert_eq!(
-            Number::Decimal64(d1.clone()).cmp(&Number::Decimal64(d3.clone())),
-            Ordering::Equal
-        );
-
-        let d4 = Decimal64 {
-            scale: 1,
-            value: 123,
-        }; // 12.3
-        assert_eq!(
-            Number::Decimal64(d1.clone()).cmp(&Number::Decimal64(d4.clone())),
-            Ordering::Greater
-        );
-
-        // Test decimal128 comparisons
-        let d5 = Decimal128 {
-            scale: 2,
-            value: 1234,
-        }; // 12.34
-        let d6 = Decimal128 {
-            scale: 2,
-            value: 5678,
-        }; // 56.78
-        assert_eq!(
-            Number::Decimal128(d5.clone()).cmp(&Number::Decimal128(d6.clone())),
-            Ordering::Less
-        );
-
-        // Test decimal256 comparisons
-        let d7 = Decimal256 {
-            scale: 2,
-            value: i256::from(1234),
-        }; // 12.34
-        let d8 = Decimal256 {
-            scale: 2,
-            value: i256::from(5678),
-        }; // 56.78
-        assert_eq!(
-            Number::Decimal256(d7.clone()).cmp(&Number::Decimal256(d8.clone())),
-            Ordering::Less
-        );
-
-        // Test int64 to decimal64 comparisons
-        assert_eq!(
-            Number::Int64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 0,
-                value: 12
-            })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Int64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 1,
-                value: 120
-            })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Int64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 1,
-                value: 121
-            })),
-            Ordering::Less
-        );
-        assert_eq!(
-            Number::Int64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 1,
-                value: 119
-            })),
-            Ordering::Greater
-        );
-
-        // Test uint64 to decimal64 comparisons
-        assert_eq!(
-            Number::UInt64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 0,
-                value: 12
-            })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::UInt64(12).cmp(&Number::Decimal64(Decimal64 {
-                scale: 1,
-                value: 120
-            })),
-            Ordering::Equal
-        );
-
-        // Test float64 to decimal64 comparisons
-        assert_eq!(
-            Number::Float64(12.34).cmp(&Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1234
-            })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Float64(12.34).cmp(&Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1235
-            })),
-            Ordering::Less
-        );
-
-        // Test cross-decimal comparisons
-        // Decimal64 vs Decimal128
-        assert_eq!(
-            Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1234
+        use Ordering::*;
+        let int = Number::Int64;
+        let uint = Number::UInt64;
+        let float = Number::Float64;
+        let d64 = |value: i64, scale: u8| Number::Decimal64(Decimal64 { scale, value });
+        let d128 = |value: i128, scale: u8| Number::Decimal128(Decimal128 { scale, value });
+        let d256 = |value: i128, scale: u8| {
+            Number::Decimal256(Decimal256 {
+                scale,
+                value: i256::from(value),
             })
-            .cmp(&Number::Decimal128(Decimal128 {
-                scale: 2,
-                value: 1234
-            })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1234
-            })
-            .cmp(&Number::Decimal128(Decimal128 {
-                scale: 2,
-                value: 5678
-            })),
-            Ordering::Less
-        );
-
-        // Decimal64 vs Decimal256
-        assert_eq!(
-            Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1234
-            })
-            .cmp(&Number::Decimal256(Decimal256 {
-                scale: 2,
-                value: i256::from(1234)
-            })),
-            Ordering::Equal
-        );
-
-        // Decimal128 vs Decimal256
-        assert_eq!(
-            Number::Decimal128(Decimal128 {
-                scale: 2,
-                value: 1234
-            })
-            .cmp(&Number::Decimal256(Decimal256 {
-                scale: 2,
-                value: i256::from(1234)
-            })),
-            Ordering::Equal
-        );
-
-        // Test with different scales across decimal types
-        assert_eq!(
-            Number::Decimal64(Decimal64 {
-                scale: 2,
-                value: 1234
-            })
-            .cmp(&Number::Decimal128(Decimal128 {
-                scale: 3,
-                value: 12340
-            })),
-            Ordering::Equal
-        );
-
-        // Test edge cases
-        // Very large numbers
-        let large_int = i64::MAX;
-        let large_uint = u64::MAX;
-        let large_decimal = Decimal128 {
-            scale: 0,
-            value: i128::from(large_int),
         };
-
-        assert_eq!(
-            Number::Int64(large_int).cmp(&Number::Decimal128(large_decimal.clone())),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Decimal128(large_decimal.clone()).cmp(&Number::Int64(large_int)),
-            Ordering::Equal
-        );
-
-        assert_eq!(
-            Number::UInt64(large_uint).cmp(&Number::Decimal128(large_decimal.clone())),
-            Ordering::Greater
-        );
-        assert_eq!(
-            Number::Decimal128(large_decimal).cmp(&Number::UInt64(large_uint)),
-            Ordering::Less
-        );
-
-        // Negative numbers
-        let neg_int = -100;
-        let neg_decimal = Decimal64 {
-            scale: 0,
-            value: -100,
-        };
-
-        assert_eq!(
-            Number::Int64(neg_int).cmp(&Number::Decimal64(neg_decimal.clone())),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Decimal64(neg_decimal).cmp(&Number::UInt64(100)),
-            Ordering::Less
-        );
-
-        // Zero values
-        assert_eq!(Number::Int64(0).cmp(&Number::UInt64(0)), Ordering::Equal);
-        assert_eq!(
-            Number::Int64(0).cmp(&Number::Decimal64(Decimal64 { scale: 0, value: 0 })),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Number::Int64(0).cmp(&Number::Decimal64(Decimal64 { scale: 5, value: 0 })),
-            Ordering::Equal
-        );
+        // Each case is checked in both directions.
+        let cases = [
+            // Same types.
+            (int(10), int(5), Greater),
+            (int(5), int(5), Equal),
+            (uint(10), uint(5), Greater),
+            (uint(5), uint(5), Equal),
+            (float(10.0), float(5.0), Greater),
+            (float(5.0), float(5.0), Equal),
+            (d64(1234, 2), d64(5678, 2), Less),
+            (d64(1234, 2), d64(1234, 2), Equal),
+            (d128(1234, 2), d128(5678, 2), Less),
+            (d256(1234, 2), d256(5678, 2), Less),
+            // Same type, different scales: 12.34 vs 12.340 and 12.3.
+            (d64(1234, 2), d64(12340, 3), Equal),
+            (d64(1234, 2), d64(123, 1), Greater),
+            // Signed and unsigned integers.
+            (int(10), uint(5), Greater),
+            (int(5), uint(10), Less),
+            (int(5), uint(5), Equal),
+            (int(-5), uint(5), Less),
+            (int(0), uint(0), Equal),
+            // Integers and decimals.
+            (int(12), d64(12, 0), Equal),
+            (int(12), d64(120, 1), Equal),
+            (int(12), d64(121, 1), Less),
+            (int(12), d64(119, 1), Greater),
+            (uint(12), d64(12, 0), Equal),
+            (uint(12), d64(120, 1), Equal),
+            (int(-100), d64(-100, 0), Equal),
+            (d64(-100, 0), uint(100), Less),
+            (int(0), d64(0, 0), Equal),
+            (int(0), d64(0, 5), Equal),
+            (int(i64::MAX), d128(i64::MAX.into(), 0), Equal),
+            (uint(u64::MAX), d128(i64::MAX.into(), 0), Greater),
+            // Floats and decimals.
+            (float(12.34), d64(1234, 2), Equal),
+            (float(12.34), d64(1235, 2), Less),
+            // Decimals of different widths.
+            (d64(1234, 2), d128(1234, 2), Equal),
+            (d64(1234, 2), d128(5678, 2), Less),
+            (d64(1234, 2), d128(12340, 3), Equal),
+            (d64(1234, 2), d256(1234, 2), Equal),
+            (d128(1234, 2), d256(1234, 2), Equal),
+        ];
+        for (l, r, order) in &cases {
+            assert_eq!(l.cmp(r), *order, "{l:?} vs {r:?}");
+            assert_eq!(r.cmp(l), order.reverse(), "{r:?} vs {l:?}");
+        }
     }
 
     #[test]
@@ -2201,6 +1622,25 @@ mod tests {
 
         let u64_upper_bound = Number::Float64((u64::MAX as f64) + 1.0);
         assert_eq!(u64_upper_bound.as_u64(), None);
+
+        // Range bounds of each target type; `2^63`, `2^64` and `2^127` are
+        // exact floats one past the maximum.
+        let float = Number::Float64;
+        assert_eq!(float(-(2f64.powi(63))).as_i64(), Some(i64::MIN));
+        assert_eq!(float(2f64.powi(63)).as_i64(), None);
+        assert_eq!(
+            float(2f64.powi(64) - 2048.0).as_u64(),
+            Some(u64::MAX - 2047)
+        );
+        assert_eq!(float(-0.0).as_u64(), Some(0));
+        assert_eq!(float(-1.0).as_u64(), None);
+        assert_eq!(float(-(2f64.powi(127))).as_i128(), Some(i128::MIN));
+        assert_eq!(float(2f64.powi(127)).as_i128(), None);
+        assert_eq!(float(f64::NAN).as_i64(), None);
+        assert_eq!(float(f64::INFINITY).as_u64(), None);
+        // The largest float below `2^127`.
+        let below = 2f64.powi(127) - 2f64.powi(74);
+        assert_eq!(float(below).to_i128(), Some(i128::MAX - (1 << 74) + 1));
     }
 
     #[test]

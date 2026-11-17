@@ -2683,3 +2683,35 @@ fn init_object<'a>(entries: Vec<(&str, Value<'a>)>) -> Value<'a> {
     }
     Value::Object(map)
 }
+
+#[test]
+fn signed_indexes_do_not_overflow() {
+    let array = "[1,2,3]".parse::<OwnedJsonb>().unwrap();
+    let raw = array.as_raw();
+    assert_eq!(
+        raw.delete_by_index(i32::MIN).unwrap().to_string(),
+        "[1,2,3]"
+    );
+    assert_eq!(raw.delete_by_index(-1).unwrap().to_string(), "[1,2]");
+    let one = "1".parse::<OwnedJsonb>().unwrap();
+    assert_eq!(
+        raw.array_insert(i32::MIN, &one.as_raw())
+            .unwrap()
+            .to_string(),
+        "[1,1,2,3]"
+    );
+    assert_eq!(
+        raw.array_insert(i32::MAX, &one.as_raw())
+            .unwrap()
+            .to_string(),
+        "[1,2,3,1]"
+    );
+    for path in [
+        "$[last + 2147483647]",
+        "$[last - 2147483647]",
+        "$[-2147483648]",
+    ] {
+        let path = parse_json_path(path.as_bytes()).unwrap();
+        assert!(raw.select_by_path(&path).unwrap().is_empty());
+    }
+}

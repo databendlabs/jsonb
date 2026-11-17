@@ -16,8 +16,8 @@ use std::borrow::Cow;
 
 use ethnum::I256;
 use jsonb::{
-    from_slice, Date, Decimal128, Decimal256, Decimal64, Interval, Number, Object, Timestamp,
-    TimestampTz, Value,
+    from_raw_jsonb, from_slice, Date, Decimal128, Decimal256, Decimal64, Error, Interval, Number,
+    Object, OwnedJsonb, Timestamp, TimestampTz, Value,
 };
 
 #[test]
@@ -398,4 +398,163 @@ fn deserialize_char_accepts_one_character_of_any_width() {
             "{text:?}"
         );
     }
+}
+
+/// Reads the first value of an object, or with `KEY_ONLY` only its first
+/// key, and then stops.
+struct FirstOfMap<const KEY_ONLY: bool>;
+
+impl<'de, const KEY_ONLY: bool> serde::Deserialize<'de> for FirstOfMap<KEY_ONLY> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit<const KEY_ONLY: bool>;
+        impl<'de, const KEY_ONLY: bool> serde::de::Visitor<'de> for Visit<KEY_ONLY> {
+            type Value = FirstOfMap<KEY_ONLY>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                if KEY_ONLY {
+                    map.next_key::<String>()?;
+                } else {
+                    map.next_entry::<String, String>()?;
+                }
+                Ok(FirstOfMap)
+            }
+        }
+        deserializer.deserialize_map(Visit::<KEY_ONLY>)
+    }
+}
+
+#[test]
+fn deserializing_part_of_a_container_fails() {
+    // A tuple read two of the three numbers and stopped, so "x" was read at
+    // the third number's payload and came out as "P", the byte 0x50 that
+    // tags an unsigned integer.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Outer {
+        a: ((i32, i32), String),
+    }
+    let doc: OwnedJsonb = r#"{"a": [[1, 2, 3], "x"]}"#.parse().unwrap();
+    let result = from_raw_jsonb::<Outer>(&doc.as_raw());
+    assert!(
+        matches!(&result, Err(Error::Message(m)) if m.contains("invalid length 3")),
+        "{result:?}"
+    );
+
+    // A map visitor that stopped early used to succeed, and the members it
+    // skipped were never checked, so an invalid key went unnoticed.
+    let two: jsonb::OwnedJsonb = r#"{"a": "1", "b": "2"}"#.parse().unwrap();
+    let one: jsonb::OwnedJsonb = r#"{"a": "1"}"#.parse().unwrap();
+    // `{"a": "1", null: "2"}`.
+    let words = [
+        0x4000_0002_u32,
+        0x1000_0001,
+        0x0000_0000,
+        0x1000_0001,
+        0x1000_0001,
+    ];
+    let mut bad_key: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
+    bad_key.extend_from_slice(b"a12");
+    for (name, bytes) in [("two", two.as_ref()), ("bad key", &bad_key[..])] {
+        let raw = jsonb::RawJsonb::new(bytes);
+        let result = jsonb::from_raw_jsonb::<FirstOfMap<false>>(&raw);
+        assert!(
+            matches!(&result, Err(jsonb::Error::Message(m)) if m.contains("invalid length 2")),
+            "{name}: {:?}",
+            result.err()
+        );
+    }
+    // A key read without its value leaves the member unread too.
+    let result = jsonb::from_raw_jsonb::<FirstOfMap<true>>(&one.as_raw());
+    assert!(
+        matches!(&result, Err(jsonb::Error::Message(m)) if m.contains("invalid length 1")),
+        "{:?}",
+        result.err()
+    );
+    // Reading every member still works.
+    assert!(jsonb::from_raw_jsonb::<FirstOfMap<false>>(&one.as_raw()).is_ok());
+}
+
+/// The `size_hint` of a sequence or map before each element and after the last.
+#[derive(Debug, PartialEq)]
+struct SizeHints(Vec<Option<usize>>);
+
+impl<'de> serde::Deserialize<'de> for SizeHints {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = SizeHints;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sequence or a map")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<SizeHints, A::Error> {
+                let mut hints = vec![seq.size_hint()];
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    hints.push(seq.size_hint());
+                }
+                Ok(SizeHints(hints))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SizeHints, A::Error> {
+                let mut hints = vec![map.size_hint()];
+                while map
+                    .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                    .is_some()
+                {
+                    hints.push(map.size_hint());
+                }
+                Ok(SizeHints(hints))
+            }
+        }
+        deserializer.deserialize_any(Visit)
+    }
+}
+
+#[test]
+fn deserializer_size_hints_count_the_members_left() {
+    // The hint stayed at the container's length after members were read.
+    let array: jsonb::OwnedJsonb = "[1, 2, 3]".parse().unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<SizeHints>(&array.as_raw()),
+        Ok(SizeHints(vec![Some(3), Some(2), Some(1), Some(0)]))
+    );
+    let object: jsonb::OwnedJsonb = r#"{"a": 1, "b": 2}"#.parse().unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<SizeHints>(&object.as_raw()),
+        Ok(SizeHints(vec![Some(2), Some(1), Some(0)]))
+    );
+}
+
+#[test]
+fn deserializing_a_container_checks_the_member_type() {
+    use std::collections::HashMap;
+    // The string "@\0\0\0" has the bytes of an empty object header. Reading a
+    // map from an array member used to parse the member's payload as a
+    // header without checking its type, so this string read as `{}`.
+    let text: OwnedJsonb = r#"["@\u0000\u0000\u0000"]"#.parse().unwrap();
+    assert_eq!(
+        from_raw_jsonb::<Vec<HashMap<String, i32>>>(&text.as_raw()),
+        Err(Error::UnexpectedType)
+    );
+    // A null member has no payload, so the next member's payload was read as
+    // the header, and the string after it then read past the end.
+    let pair: OwnedJsonb = r#"[null, "@\u0000\u0000\u0000"]"#.parse().unwrap();
+    assert_eq!(
+        from_raw_jsonb::<(HashMap<String, i32>, String)>(&pair.as_raw()),
+        Err(Error::UnexpectedType)
+    );
+    let numbers: OwnedJsonb = "[1]".parse().unwrap();
+    assert_eq!(
+        from_raw_jsonb::<Vec<Vec<i32>>>(&numbers.as_raw()),
+        Err(Error::UnexpectedType)
+    );
 }

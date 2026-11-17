@@ -715,16 +715,7 @@ impl RawEntry<'_> {
             }
             JsonbItemType::Number => {
                 push_comparable_tag(buf, depth, NUMBER_LEVEL)?;
-                let n = Number::decode(entry.payload)?.as_f64();
-                // `-0.0` equals `0` but has different bits; encode them alike.
-                let n = if n == 0.0 { 0.0 } else { n };
-                // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
-                let s = n.to_bits() as i64;
-                let v = s ^ (((s >> 63) as u64) >> 1) as i64;
-                let mut b = v.to_be_bytes();
-                // Toggle top "sign" bit to ensure consistent sort order
-                b[0] ^= 0x80;
-                buf.extend_from_slice(&b);
+                Number::decode(entry.payload)?.write_comparable(buf);
             }
             JsonbItemType::String => {
                 push_comparable_tag(buf, depth, STRING_LEVEL)?;

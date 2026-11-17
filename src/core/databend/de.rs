@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
+use ethnum::i256;
 use num_traits::FromPrimitive;
 use serde::de;
 use serde::de::Deserialize;
@@ -39,6 +40,10 @@ pub struct Deserializer<'de> {
     index: usize,
     current_jentry: Option<JEntry>,
     raw: &'de RawJsonb<'de>,
+    /// The offset just past the member being read, or the end of the data
+    /// at the top level. Reads stop there, so that a member cannot read the
+    /// members after it.
+    member_end: usize,
     /// Number of arrays and objects currently being deserialized
     depth: usize,
 }
@@ -56,6 +61,7 @@ impl<'de> Deserializer<'de> {
             index: 0,
             current_jentry: None,
             raw: raw_jsonb,
+            member_end: raw_jsonb.len(),
             depth: 0,
         }
     }
@@ -81,6 +87,16 @@ impl<'de> Deserializer<'de> {
         result
     }
 
+    /// Checks that `len` bytes at the current position lie within the member
+    /// being read.
+    #[inline]
+    fn check_within(&self, len: usize) -> Result<()> {
+        match self.index.checked_add(len) {
+            Some(end) if end <= self.member_end => Ok(()),
+            _ => Err(Error::InvalidEOF),
+        }
+    }
+
     fn read_header(&mut self) -> Result<(u32, usize)> {
         let header = self.raw.read_header(self.index)?;
         self.index += 4;
@@ -102,53 +118,189 @@ impl<'de> Deserializer<'de> {
         self.index = index;
     }
 
+    /// Deserializes the member described by `jentry`, whose payload starts at
+    /// `start`, with `f`, reading nothing past its payload.
+    ///
+    /// Bounds checks used to cover the whole document, so a nested container
+    /// whose `JEntry` length was too short read the next member's bytes as
+    /// its own: `[<array of one string, without the string>, "x"]` read as
+    /// `[["x"], "x"]`, where `to_value` fails.
+    fn read_member<T>(
+        &mut self,
+        jentry: JEntry,
+        start: usize,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        // A scalar reads exactly its `JEntry` length of payload, so only a
+        // container needs its end recorded.
+        if jentry.type_code != CONTAINER_TAG {
+            self.set_jentry_with_index(jentry, start);
+            return f(self);
+        }
+        let end = match start.checked_add(jentry.length as usize) {
+            Some(end) if end <= self.member_end => end,
+            _ => return Err(Error::InvalidEOF),
+        };
+        let parent = std::mem::replace(&mut self.member_end, end);
+        self.set_jentry_with_index(jentry, start);
+        let result = f(self);
+        self.member_end = parent;
+        result
+    }
+
+    /// Takes the `JEntry` of the scalar to deserialize: the current member's,
+    /// or at the top level the one under the scalar header.
     fn read_scalar_jentry(&mut self) -> Result<JEntry> {
-        if let Some(jentry) = &self.current_jentry {
-            Ok(jentry.clone())
-        } else {
-            let (header_type, _) = self.read_header()?;
-            match header_type {
-                SCALAR_CONTAINER_TAG => {
-                    let jentry = self.read_jentry()?;
-                    Ok(jentry)
+        if let Some(jentry) = self.current_jentry.take() {
+            return Ok(jentry);
+        }
+        let (header_type, _) = self.read_header()?;
+        match header_type {
+            SCALAR_CONTAINER_TAG => {
+                let jentry = self.read_jentry()?;
+                // A scalar header never holds a container entry; see
+                // `RawJsonb::value_with_depth`.
+                if jentry.type_code == CONTAINER_TAG {
+                    return Err(Error::InvalidJsonb);
                 }
-                ARRAY_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Err(Error::UnexpectedType),
-                _ => Err(Error::InvalidJsonb),
+                Ok(jentry)
             }
+            // An array or object; `read_header` rejects unknown header types.
+            _ => Err(Error::UnexpectedType),
         }
     }
 
-    fn read_array_jentries(&mut self, header_len: usize) -> Result<VecDeque<JEntry>> {
-        let mut jentries = VecDeque::with_capacity(header_len);
-        for _ in 0..header_len {
-            let jentry = self.read_jentry()?;
-            jentries.push_back(jentry);
+    /// Reads the header of the value to deserialize as an array or object: a
+    /// container member's, or the top-level one. A scalar member, or a
+    /// scalar at the top level, gives `SCALAR_CONTAINER_TAG`.
+    ///
+    /// A member is positioned at its payload, which used to be read as a
+    /// header whatever the member's type, so the string `"@\0\0\0"` read
+    /// as an empty object.
+    fn read_container_header(&mut self) -> Result<(u32, usize)> {
+        let jentry = match self.current_jentry.take() {
+            Some(jentry) if jentry.type_code == CONTAINER_TAG => return self.read_header(),
+            Some(jentry) => jentry,
+            None => {
+                let header = self.read_header()?;
+                if header.0 != SCALAR_CONTAINER_TAG {
+                    return Ok(header);
+                }
+                self.raw.read_jentry(self.index)?
+            }
+        };
+        match jentry.type_code {
+            NULL_TAG | TRUE_TAG | FALSE_TAG | NUMBER_TAG | STRING_TAG | EXTENSION_TAG => {
+                Ok((SCALAR_CONTAINER_TAG, 0))
+            }
+            // A container under a scalar header, or an unknown type.
+            _ => Err(Error::InvalidJsonb),
+        }
+    }
+
+    /// Returns the offset just past the payloads of `jentries`, which start
+    /// at `start`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidEOF` if the payloads extend past the data,
+    /// including lengths whose sum overflows on 32-bit targets.
+    fn payloads_end<'j>(
+        &self,
+        start: usize,
+        jentries: impl IntoIterator<Item = &'j JEntry>,
+    ) -> Result<usize> {
+        let mut end = start;
+        for jentry in jentries {
+            end = end
+                .checked_add(jentry.length as usize)
+                .ok_or(Error::InvalidEOF)?;
+        }
+        if end > self.member_end {
+            return Err(Error::InvalidEOF);
+        }
+        Ok(end)
+    }
+
+    /// Deserializes the array of `len` members whose header was just read,
+    /// one nesting level deeper, and moves past it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `visitor` stops before the last member, as serde_json does. A
+    /// tuple used to stop early and leave the position inside the array, so
+    /// the next value was read at the wrong offset.
+    // Not inlined: inlined into `deserialize_any`, it slowed the scalar path
+    // that most members take.
+    #[inline(never)]
+    fn visit_array<V>(&mut self, len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let jentries = self.read_jentries(len)?;
+        let start = self.index;
+        let end = self.payloads_end(start, &jentries)?;
+        let value = self.nested(|de| {
+            let mut seq = ArrayDeserializer::new(de, jentries, start);
+            let value = visitor.visit_seq(&mut seq)?;
+            if !seq.jentries.is_empty() {
+                return Err(de::Error::invalid_length(len, &"fewer elements in array"));
+            }
+            Ok(value)
+        })?;
+        self.index = end;
+        Ok(value)
+    }
+
+    /// Deserializes the object of `len` members whose header was just read,
+    /// one nesting level deeper, and moves past it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `visitor` stops before reading the last value, as for arrays.
+    fn visit_object<V>(&mut self, len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let key_jentries = self.read_jentries(len)?;
+        let value_jentries = self.read_jentries(len)?;
+        let keys_start = self.index;
+        let values_start = self.payloads_end(keys_start, &key_jentries)?;
+        let end = self.payloads_end(values_start, &value_jentries)?;
+        let value = self.nested(|de| {
+            let mut map =
+                ObjectDeserializer::new(de, keys_start, key_jentries, values_start, value_jentries);
+            let value = visitor.visit_map(&mut map)?;
+            // A visitor that stopped early used to succeed, and the members
+            // it skipped were never checked.
+            if !map.value_jentries.is_empty() {
+                return Err(de::Error::invalid_length(len, &"fewer members in object"));
+            }
+            Ok(value)
+        })?;
+        self.index = end;
+        Ok(value)
+    }
+
+    /// Reads the `count` consecutive `JEntries` at the current position.
+    fn read_jentries(&mut self, count: usize) -> Result<VecDeque<JEntry>> {
+        // One bound check for all of them, instead of one per `JEntry`.
+        self.check_within(count.saturating_mul(4))?;
+        let mut jentries = VecDeque::with_capacity(count);
+        for _ in 0..count {
+            jentries.push_back(self.raw.read_jentry(self.index)?);
+            self.index += 4;
         }
         Ok(jentries)
-    }
-
-    fn read_object_jentries(
-        &mut self,
-        header_len: usize,
-    ) -> Result<(VecDeque<JEntry>, VecDeque<JEntry>)> {
-        let mut key_jentries = VecDeque::with_capacity(header_len);
-        for _ in 0..header_len {
-            let jentry = self.read_jentry()?;
-            key_jentries.push_back(jentry);
-        }
-        let mut value_jentries = VecDeque::with_capacity(header_len);
-        for _ in 0..header_len {
-            let jentry = self.read_jentry()?;
-            value_jentries.push_back(jentry);
-        }
-
-        Ok((key_jentries, value_jentries))
     }
 
     /// Borrows `length` payload bytes at the current index and advances past them.
     fn read_payload(&mut self, length: usize) -> Result<&'de [u8]> {
         let start = self.index;
         let end = start.checked_add(length).ok_or(Error::InvalidEOF)?;
+        if end > self.member_end {
+            return Err(Error::InvalidEOF);
+        }
         let data = self.raw.data.get(start..end).ok_or(Error::InvalidEOF)?;
         self.index = end;
         Ok(data)
@@ -158,21 +310,16 @@ impl<'de> Deserializer<'de> {
         Number::decode(self.read_payload(length)?)
     }
 
-    fn read_payload_str(&mut self, length: usize) -> Result<Cow<'_, str>> {
-        let data = self.read_payload(length)?;
-        Ok(Cow::Borrowed(decode_str(data)?))
+    fn read_payload_str(&mut self, length: usize) -> Result<&'de str> {
+        decode_str(self.read_payload(length)?)
     }
 
-    fn read_payload_extension(&mut self, length: usize) -> Result<ExtensionValue<'_>> {
+    fn read_payload_extension(&mut self, length: usize) -> Result<ExtensionValue<'de>> {
         ExtensionValue::decode(self.read_payload(length)?)
     }
 
     fn read_null(&mut self) -> Result<()> {
-        let jentry_res = self.read_scalar_jentry();
-        if jentry_res == Err(Error::UnexpectedType) {
-            return Err(Error::UnexpectedType);
-        }
-        let jentry = jentry_res?;
+        let jentry = self.read_scalar_jentry()?;
         match jentry.type_code {
             NULL_TAG => Ok(()),
             FALSE_TAG | TRUE_TAG | NUMBER_TAG | STRING_TAG | CONTAINER_TAG | EXTENSION_TAG => {
@@ -183,11 +330,7 @@ impl<'de> Deserializer<'de> {
     }
 
     fn read_bool(&mut self) -> Result<bool> {
-        let jentry_res = self.read_scalar_jentry();
-        if jentry_res == Err(Error::UnexpectedType) {
-            return Err(Error::UnexpectedType);
-        }
-        let jentry = jentry_res?;
+        let jentry = self.read_scalar_jentry()?;
         match jentry.type_code {
             FALSE_TAG => Ok(false),
             TRUE_TAG => Ok(true),
@@ -199,11 +342,7 @@ impl<'de> Deserializer<'de> {
     }
 
     fn read_number(&mut self) -> Result<Number> {
-        let jentry_res = self.read_scalar_jentry();
-        if jentry_res == Err(Error::UnexpectedType) {
-            return Err(Error::UnexpectedType);
-        }
-        let jentry = jentry_res?;
+        let jentry = self.read_scalar_jentry()?;
         match jentry.type_code {
             NUMBER_TAG => {
                 let length = jentry.length as usize;
@@ -232,47 +371,42 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    /// Reads an integer for `deserialize_i128` and `deserialize_u128`: an
+    /// `Int64`, a `UInt64`, or a decimal with scale 0, which is how
+    /// `serialize_i128` and `serialize_u128` write larger values.
+    fn read_wide_integer(&mut self) -> Result<i256> {
+        match self.read_number()? {
+            Number::Int64(n) => Ok(n.into()),
+            Number::UInt64(n) => Ok(n.into()),
+            Number::Decimal64(d) if d.scale == 0 => Ok(d.value.into()),
+            Number::Decimal128(d) if d.scale == 0 => Ok(d.value.into()),
+            Number::Decimal256(d) if d.scale == 0 => Ok(d.value),
+            _ => Err(Error::UnexpectedType),
+        }
+    }
+
     fn read_float<T>(&mut self) -> Result<T>
     where
         for<'a> T: Deserialize<'a> + FromPrimitive,
     {
-        let num = self.read_number()?;
-        match num {
-            Number::Int64(n) => T::from_i64(n).ok_or(Error::UnexpectedType),
-            Number::UInt64(n) => T::from_u64(n).ok_or(Error::UnexpectedType),
-            Number::Float64(n) => T::from_f64(n).ok_or(Error::UnexpectedType),
-            Number::Decimal64(v) => {
-                let n = v.to_float64();
-                T::from_f64(n).ok_or(Error::UnexpectedType)
-            }
-            Number::Decimal128(v) => {
-                let n = v.to_float64();
-                T::from_f64(n).ok_or(Error::UnexpectedType)
-            }
-            Number::Decimal256(v) => {
-                let n = v.to_float64();
-                T::from_f64(n).ok_or(Error::UnexpectedType)
-            }
+        match self.read_number()? {
+            Number::Int64(n) => T::from_i64(n),
+            Number::UInt64(n) => T::from_u64(n),
+            num => T::from_f64(num.as_f64()),
         }
+        .ok_or(Error::UnexpectedType)
     }
 
-    fn read_str(&mut self) -> Result<Cow<'_, str>> {
-        let jentry_res = self.read_scalar_jentry();
-        if jentry_res == Err(Error::UnexpectedType) {
-            return Err(Error::UnexpectedType);
-        }
-        let jentry = jentry_res?;
+    /// Reads a string, borrowed from the data, or an extension value as text.
+    fn read_str(&mut self) -> Result<Cow<'de, str>> {
+        let jentry = self.read_scalar_jentry()?;
         match jentry.type_code {
-            STRING_TAG => {
-                let length = jentry.length as usize;
-                let s = self.read_payload_str(length)?;
-                Ok(s)
-            }
+            STRING_TAG => Ok(Cow::Borrowed(
+                self.read_payload_str(jentry.length as usize)?,
+            )),
             EXTENSION_TAG => {
-                let length = jentry.length as usize;
-                let val = self.read_payload_extension(length)?;
-                let s = format!("{}", val);
-                Ok(Cow::Owned(s))
+                let val = self.read_payload_extension(jentry.length as usize)?;
+                Ok(Cow::Owned(val.to_string()))
             }
             NULL_TAG | FALSE_TAG | TRUE_TAG | NUMBER_TAG | CONTAINER_TAG => {
                 Err(Error::UnexpectedType)
@@ -282,8 +416,7 @@ impl<'de> Deserializer<'de> {
     }
 
     fn read_string(&mut self) -> Result<String> {
-        let s = self.read_str()?;
-        Ok(s.to_string())
+        Ok(self.read_str()?.into_owned())
     }
 
     /// Reads a value for `deserialize_bytes` and `deserialize_byte_buf`.
@@ -323,9 +456,7 @@ impl<'de> Deserializer<'de> {
             TRUE_TAG => visitor.visit_bool(true),
             FALSE_TAG => visitor.visit_bool(false),
             STRING_TAG => {
-                let length = jentry.length as usize;
-                let s = self.read_payload_str(length)?;
-                visitor.visit_string(s.to_string())
+                visitor.visit_borrowed_str(self.read_payload_str(jentry.length as usize)?)
             }
             NUMBER_TAG => {
                 let length = jentry.length as usize;
@@ -361,26 +492,12 @@ impl<'de> Deserializer<'de> {
                             visitor.visit_u64(i)
                         }
                     }
-                    Number::Float64(i) => visitor.visit_f64(i),
-                    Number::Decimal64(i) => {
-                        let v = i.to_float64();
-                        visitor.visit_f64(v)
-                    }
-                    Number::Decimal128(i) => {
-                        let v = i.to_float64();
-                        visitor.visit_f64(v)
-                    }
-                    Number::Decimal256(i) => {
-                        let v = i.to_float64();
-                        visitor.visit_f64(v)
-                    }
+                    num => visitor.visit_f64(num.as_f64()),
                 }
             }
             EXTENSION_TAG => {
-                let length = jentry.length as usize;
-                let val = self.read_payload_extension(length)?;
-                let s = format!("{}", val);
-                visitor.visit_string(s)
+                let val = self.read_payload_extension(jentry.length as usize)?;
+                visitor.visit_string(val.to_string())
             }
             CONTAINER_TAG => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
@@ -395,54 +512,34 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if let Some(jentry) = &self.current_jentry {
-            match jentry.type_code {
-                CONTAINER_TAG => {
-                    self.current_jentry = None;
-                    self.deserialize_any(visitor)
-                }
-                _ => self.read_with_jentry(jentry.clone(), visitor),
+        match self.current_jentry.take() {
+            Some(jentry) if jentry.type_code != CONTAINER_TAG => {
+                return self.read_with_jentry(jentry, visitor);
             }
-        } else {
-            let (header_type, header_len) = self.read_header()?;
-            match header_type {
-                SCALAR_CONTAINER_TAG => {
-                    let jentry = self.read_jentry()?;
-                    match jentry.type_code {
-                        // A scalar header holds a single scalar, never a
-                        // container; see `RawJsonb::value_with_depth`.
-                        CONTAINER_TAG => Err(Error::InvalidJsonb),
-                        _ => self.read_with_jentry(jentry.clone(), visitor),
-                    }
+            // A container member, read at its payload, or the top level.
+            _ => {}
+        }
+        let (header_type, header_len) = self.read_header()?;
+        match header_type {
+            SCALAR_CONTAINER_TAG => {
+                let jentry = self.read_jentry()?;
+                // `read_header` and `read_jentry` check only the document's
+                // length. A container member holding just a scalar header
+                // would read its `JEntry` from the next member, and a null or
+                // boolean then reads no payload that would fail. Arrays and
+                // objects check in `read_jentries`, and other scalar headers
+                // are at the top level, which ends with the document.
+                self.check_within(0)?;
+                match jentry.type_code {
+                    // A scalar header holds a single scalar, never a
+                    // container; see `RawJsonb::value_with_depth`.
+                    CONTAINER_TAG => Err(Error::InvalidJsonb),
+                    _ => self.read_with_jentry(jentry, visitor),
                 }
-                ARRAY_CONTAINER_TAG => {
-                    let jentries = self.read_array_jentries(header_len)?;
-                    self.nested(|de| visitor.visit_seq(ArrayDeserializer::new(de, jentries)))
-                }
-                OBJECT_CONTAINER_TAG => {
-                    let (key_jentries, value_jentries) = self.read_object_jentries(header_len)?;
-
-                    let origin_index = self.index;
-                    let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
-                    let value_length: usize =
-                        value_jentries.iter().map(|j| j.length as usize).sum();
-                    let key_payload_offset = self.index;
-                    let value_payload_offset = self.index + key_length;
-
-                    let value = self.nested(|de| {
-                        visitor.visit_map(ObjectDeserializer::new(
-                            de,
-                            key_payload_offset,
-                            key_jentries,
-                            value_payload_offset,
-                            value_jentries,
-                        ))
-                    })?;
-                    self.index = origin_index + key_length + value_length;
-                    Ok(value)
-                }
-                _ => Err(Error::InvalidJsonb),
             }
+            ARRAY_CONTAINER_TAG => self.visit_array(header_len, visitor),
+            OBJECT_CONTAINER_TAG => self.visit_object(header_len, visitor),
+            _ => Err(Error::InvalidJsonb),
         }
     }
 
@@ -509,6 +606,22 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
         visitor.visit_u64(self.read_integer()?)
     }
 
+    fn deserialize_i128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let value = self.read_wide_integer()?;
+        visitor.visit_i128(i128::try_from(value).map_err(|_| Error::UnexpectedType)?)
+    }
+
+    fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
+    where
+        V: Visitor<'de>,
+    {
+        let value = self.read_wide_integer()?;
+        visitor.visit_u128(u128::try_from(value).map_err(|_| Error::UnexpectedType)?)
+    }
+
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -540,7 +653,10 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_str(&self.read_str()?)
+        match self.read_str()? {
+            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
+            Cow::Owned(s) => visitor.visit_string(s),
+        }
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
@@ -568,11 +684,12 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let origin_index = self.index;
+        let (index, jentry) = (self.index, self.current_jentry.clone());
         if self.read_null().is_ok() {
             visitor.visit_none()
         } else {
-            self.index = origin_index;
+            self.index = index;
+            self.current_jentry = jentry;
             visitor.visit_some(self)
         }
     }
@@ -603,13 +720,9 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let (header_type, header_len) = self.read_header()?;
-        match header_type {
-            ARRAY_CONTAINER_TAG => {
-                let jentries = self.read_array_jentries(header_len)?;
-                self.nested(|de| visitor.visit_seq(ArrayDeserializer::new(de, jentries)))
-            }
-            SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Err(Error::UnexpectedType),
+        match self.read_container_header()? {
+            (ARRAY_CONTAINER_TAG, len) => self.visit_array(len, visitor),
+            (SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG, _) => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
         }
     }
@@ -637,30 +750,9 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let (header_type, header_len) = self.read_header()?;
-        match header_type {
-            OBJECT_CONTAINER_TAG => {
-                let (key_jentries, value_jentries) = self.read_object_jentries(header_len)?;
-
-                let origin_index = self.index;
-                let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
-                let value_length: usize = value_jentries.iter().map(|j| j.length as usize).sum();
-                let key_payload_offset = self.index;
-                let value_payload_offset = self.index + key_length;
-
-                let value = self.nested(|de| {
-                    visitor.visit_map(ObjectDeserializer::new(
-                        de,
-                        key_payload_offset,
-                        key_jentries,
-                        value_payload_offset,
-                        value_jentries,
-                    ))
-                })?;
-                self.index = origin_index + key_length + value_length;
-                Ok(value)
-            }
-            SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Err(Error::UnexpectedType),
+        match self.read_container_header()? {
+            (OBJECT_CONTAINER_TAG, len) => self.visit_object(len, visitor),
+            (SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG, _) => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
         }
     }
@@ -686,35 +778,40 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        let (header_type, header_len) = self.read_header()?;
-        match header_type {
-            OBJECT_CONTAINER_TAG => {
-                if header_len != 1 {
+        let (index, jentry) = (self.index, self.current_jentry.clone());
+        match self.read_container_header()? {
+            // A unit variant is its name, as `serialize_unit_variant` writes
+            // it; only an object such as `{"Unit": null}` used to be read.
+            (SCALAR_CONTAINER_TAG, _) => {
+                self.index = index;
+                self.current_jentry = jentry;
+                // Only a string: `read_str` also gives an extension value's
+                // text, so a date matched a variant renamed to its text.
+                let jentry = self.read_scalar_jentry()?;
+                if jentry.type_code != STRING_TAG {
                     return Err(Error::UnexpectedType);
                 }
+                let variant = self.read_payload_str(jentry.length as usize)?;
+                visitor.visit_enum(variant.into_deserializer())
+            }
+            // Other variants are an object with one member.
+            (OBJECT_CONTAINER_TAG, 1) => {
                 let key_jentry = self.read_jentry()?;
                 let value_jentry = self.read_jentry()?;
-
-                let origin_index = self.index;
-
-                let key_length = key_jentry.length as usize;
-                let value_length = value_jentry.length as usize;
-
+                if key_jentry.type_code != STRING_TAG {
+                    return Err(Error::InvalidJsonb);
+                }
+                let value_start = self.payloads_end(self.index, [&key_jentry])?;
+                let end = self.payloads_end(value_start, [&value_jentry])?;
                 self.set_jentry(key_jentry);
                 let key = self.read_string()?;
-                let value_payload_offset = self.index;
                 let value = self.nested(|de| {
-                    visitor.visit_enum(EnumDeserializer::new(
-                        de,
-                        key,
-                        value_jentry,
-                        value_payload_offset,
-                    ))
+                    visitor.visit_enum(EnumDeserializer::new(de, key, value_jentry, value_start))
                 })?;
-                self.index = origin_index + key_length + value_length;
+                self.index = end;
                 Ok(value)
             }
-            SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Err(Error::UnexpectedType),
+            (OBJECT_CONTAINER_TAG | ARRAY_CONTAINER_TAG, _) => Err(Error::UnexpectedType),
             _ => Err(Error::InvalidJsonb),
         }
     }
@@ -745,16 +842,25 @@ impl<'de> de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 }
 
+/// Reads the members of an array, each at its payload, as
+/// `ObjectDeserializer` reads values.
 struct ArrayDeserializer<'a, 'de: 'a> {
-    size: usize,
     de: &'a mut Deserializer<'de>,
     jentries: VecDeque<JEntry>,
+    payload_offset: usize,
 }
 
 impl<'a, 'de> ArrayDeserializer<'a, 'de> {
-    fn new(de: &'a mut Deserializer<'de>, jentries: VecDeque<JEntry>) -> Self {
-        let size = jentries.len();
-        ArrayDeserializer { size, de, jentries }
+    fn new(
+        de: &'a mut Deserializer<'de>,
+        jentries: VecDeque<JEntry>,
+        payload_offset: usize,
+    ) -> Self {
+        ArrayDeserializer {
+            de,
+            jentries,
+            payload_offset,
+        }
     }
 }
 
@@ -765,23 +871,27 @@ impl<'de> de::SeqAccess<'de> for ArrayDeserializer<'_, 'de> {
     where
         T: de::DeserializeSeed<'de>,
     {
-        if let Some(jentry) = self.jentries.pop_front() {
-            self.de.set_jentry(jentry);
-            // Deserialize an array element.
-            seed.deserialize(&mut *self.de).map(Some)
-        } else {
-            Ok(None)
-        }
+        let Some(jentry) = self.jentries.pop_front() else {
+            return Ok(None);
+        };
+        // `visit_array` checked that the payloads fit in the data, so this
+        // cannot overflow.
+        let payload_offset = self.payload_offset;
+        self.payload_offset += jentry.length as usize;
+        self.de
+            .read_member(jentry, payload_offset, |de| seed.deserialize(de))
+            .map(Some)
     }
 
+    /// The number of members not read yet; it used to stay at the array's
+    /// length.
     #[inline]
     fn size_hint(&self) -> Option<usize> {
-        Some(self.size)
+        Some(self.jentries.len())
     }
 }
 
 struct ObjectDeserializer<'a, 'de: 'a> {
-    size: usize,
     de: &'a mut Deserializer<'de>,
     key_jentries: VecDeque<JEntry>,
     key_payload_offset: usize,
@@ -797,9 +907,7 @@ impl<'a, 'de> ObjectDeserializer<'a, 'de> {
         value_payload_offset: usize,
         value_jentries: VecDeque<JEntry>,
     ) -> Self {
-        let size = key_jentries.len();
         ObjectDeserializer {
-            size,
             de,
             key_payload_offset,
             key_jentries,
@@ -817,11 +925,16 @@ impl<'de> de::MapAccess<'de> for ObjectDeserializer<'_, 'de> {
         K: de::DeserializeSeed<'de>,
     {
         if let Some(jentry) = self.key_jentries.pop_front() {
+            // A key used to be read as any type, so a map with integer keys
+            // accepted a number key.
+            if jentry.type_code != STRING_TAG {
+                return Err(Error::InvalidJsonb);
+            }
             let key_payload_offset = self.key_payload_offset;
             self.key_payload_offset += jentry.length as usize;
-            self.de.set_jentry_with_index(jentry, key_payload_offset);
-            // Deserialize an object key.
-            seed.deserialize(&mut *self.de).map(Some)
+            self.de
+                .read_member(jentry, key_payload_offset, |de| seed.deserialize(de))
+                .map(Some)
         } else {
             Ok(None)
         }
@@ -834,17 +947,17 @@ impl<'de> de::MapAccess<'de> for ObjectDeserializer<'_, 'de> {
         if let Some(jentry) = self.value_jentries.pop_front() {
             let value_payload_offset = self.value_payload_offset;
             self.value_payload_offset += jentry.length as usize;
-            self.de.set_jentry_with_index(jentry, value_payload_offset);
-            // Deserialize an object value.
-            seed.deserialize(&mut *self.de)
+            self.de
+                .read_member(jentry, value_payload_offset, |de| seed.deserialize(de))
         } else {
             Err(Error::InvalidJsonb)
         }
     }
 
+    /// The number of members whose key is not read yet.
     #[inline]
     fn size_hint(&self) -> Option<usize> {
-        Some(self.size)
+        Some(self.key_jentries.len())
     }
 }
 
@@ -888,11 +1001,8 @@ impl<'de> de::VariantAccess<'de> for EnumDeserializer<'_, 'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<()> {
-        if self.jentry.type_code == NULL_TAG {
-            Ok(())
-        } else {
-            Err(Error::UnexpectedType)
-        }
+        self.de
+            .read_member(self.jentry, self.payload_offset, |de| de.read_null())
     }
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
@@ -900,67 +1010,24 @@ impl<'de> de::VariantAccess<'de> for EnumDeserializer<'_, 'de> {
         T: de::DeserializeSeed<'de>,
     {
         self.de
-            .set_jentry_with_index(self.jentry, self.payload_offset);
-        seed.deserialize(&mut *self.de)
+            .read_member(self.jentry, self.payload_offset, |de| seed.deserialize(de))
     }
 
     fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        if self.jentry.type_code == CONTAINER_TAG {
-            let (header_type, header_len) = self.de.read_header()?;
-            match header_type {
-                ARRAY_CONTAINER_TAG => {
-                    let jentries = self.de.read_array_jentries(header_len)?;
-                    self.de
-                        .nested(|de| visitor.visit_seq(ArrayDeserializer::new(de, jentries)))
-                }
-                SCALAR_CONTAINER_TAG | OBJECT_CONTAINER_TAG => Err(Error::UnexpectedType),
-                _ => Err(Error::InvalidJsonb),
-            }
-        } else {
-            Err(Error::UnexpectedType)
-        }
+        self.de.read_member(self.jentry, self.payload_offset, |de| {
+            de::Deserializer::deserialize_seq(de, visitor)
+        })
     }
 
     fn struct_variant<V>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        self.de
-            .set_jentry_with_index(self.jentry.clone(), self.payload_offset);
-        if self.jentry.type_code == CONTAINER_TAG {
-            let (header_type, header_len) = self.de.read_header()?;
-            match header_type {
-                OBJECT_CONTAINER_TAG => {
-                    let (key_jentries, value_jentries) =
-                        self.de.read_object_jentries(header_len)?;
-
-                    let origin_index = self.de.index;
-                    let key_length: usize = key_jentries.iter().map(|j| j.length as usize).sum();
-                    let value_length: usize =
-                        value_jentries.iter().map(|j| j.length as usize).sum();
-                    let key_payload_offset = self.de.index;
-                    let value_payload_offset = self.de.index + key_length;
-
-                    let value = self.de.nested(|de| {
-                        visitor.visit_map(ObjectDeserializer::new(
-                            de,
-                            key_payload_offset,
-                            key_jentries,
-                            value_payload_offset,
-                            value_jentries,
-                        ))
-                    })?;
-                    self.de.index = origin_index + key_length + value_length;
-                    Ok(value)
-                }
-                SCALAR_CONTAINER_TAG | ARRAY_CONTAINER_TAG => Err(Error::UnexpectedType),
-                _ => Err(Error::UnexpectedType),
-            }
-        } else {
-            Err(Error::UnexpectedType)
-        }
+        self.de.read_member(self.jentry, self.payload_offset, |de| {
+            de::Deserializer::deserialize_map(de, visitor)
+        })
     }
 }

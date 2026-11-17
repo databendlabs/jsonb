@@ -12,12 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::ops::Range;
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
-
-use byteorder::BigEndian;
-use byteorder::WriteBytesExt;
 
 use super::constants::*;
 use super::jentry::encode_container_header;
@@ -25,6 +21,7 @@ use super::jentry::JEntry;
 use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
 use crate::core::NumberItem;
+use crate::core::RawEntry;
 use crate::error::Error;
 use crate::error::Result;
 use crate::OwnedJsonb;
@@ -50,25 +47,19 @@ impl<'a> ArrayBuilder<'a> {
     }
 
     pub(crate) fn push_raw_jsonb(&mut self, raw: RawJsonb<'a>) {
-        let item = JsonbItem::Raw(raw);
-        self.items.push(item);
+        self.push_jsonb_item(JsonbItem::Raw(raw));
     }
 
     pub(crate) fn push_owned_jsonb(&mut self, owned: OwnedJsonb) {
-        let item = JsonbItem::Owned(owned);
-        self.push_jsonb_item(item)
+        self.push_jsonb_item(JsonbItem::Owned(owned));
     }
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
-        let mut buf = Vec::new();
-        let header = encode_container_header(ARRAY_CONTAINER_TAG, self.items.len())?;
-        buf.write_u32::<BigEndian>(header)?;
-
-        let mut jentry_index = reserve_jentries(&mut buf, self.items.len() * 4);
-        for item in self.items.into_iter() {
-            append_jsonb_item(&mut buf, &mut jentry_index, item)?;
+        let mut writer = ContainerWriter::new(ARRAY_CONTAINER_TAG, self.items.len())?;
+        for item in self.items {
+            writer.push_item(item)?;
         }
-        Ok(OwnedJsonb::new(buf))
+        Ok(writer.finish())
     }
 }
 
@@ -104,16 +95,9 @@ impl<'a> ArrayDistinctBuilder<'a> {
         None
     }
 
+    /// Builds an array of the distinct items, in the order first pushed.
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
-        let mut buf = Vec::new();
-        let header = encode_container_header(ARRAY_CONTAINER_TAG, self.items.len())?;
-        buf.write_u32::<BigEndian>(header)?;
-
-        let mut jentry_index = reserve_jentries(&mut buf, self.items.len() * 4);
-        for item in self.items.into_iter() {
-            append_jsonb_item(&mut buf, &mut jentry_index, item)?;
-        }
-        Ok(OwnedJsonb::new(buf))
+        ArrayBuilder { items: self.items }.build()
     }
 }
 
@@ -139,13 +123,11 @@ impl<'a> ObjectBuilder<'a> {
     }
 
     pub(crate) fn push_raw_jsonb(&mut self, key: &'a str, raw: RawJsonb<'a>) -> Result<()> {
-        let item = JsonbItem::Raw(raw);
-        self.push_jsonb_item(key, item)
+        self.push_jsonb_item(key, JsonbItem::Raw(raw))
     }
 
     pub(crate) fn push_owned_jsonb(&mut self, key: &'a str, owned: OwnedJsonb) -> Result<()> {
-        let item = JsonbItem::Owned(owned);
-        self.push_jsonb_item(key, item)
+        self.push_jsonb_item(key, JsonbItem::Owned(owned))
     }
 
     pub(crate) fn contains_key(&self, key: &'a str) -> bool {
@@ -153,18 +135,14 @@ impl<'a> ObjectBuilder<'a> {
     }
 
     pub(crate) fn build(self) -> Result<OwnedJsonb> {
-        let mut buf = Vec::new();
-        let header = encode_container_header(OBJECT_CONTAINER_TAG, self.entries.len())?;
-        buf.write_u32::<BigEndian>(header)?;
-
-        let mut jentry_index = reserve_jentries(&mut buf, self.entries.len() * 8);
+        let mut writer = ContainerWriter::new(OBJECT_CONTAINER_TAG, self.entries.len())?;
         for key in self.entries.keys() {
-            append_object_key(&mut buf, &mut jentry_index, key)?;
+            writer.push_key(key)?;
         }
-        for (_, item) in self.entries.into_iter() {
-            append_jsonb_item(&mut buf, &mut jentry_index, item)?;
+        for item in self.entries.into_values() {
+            writer.push_item(item)?;
         }
-        Ok(OwnedJsonb::new(buf))
+        Ok(writer.finish())
     }
 
     pub(crate) fn build_from_entries(
@@ -174,125 +152,146 @@ impl<'a> ObjectBuilder<'a> {
         if entries.windows(2).any(|entry| entry[0].0 == entry[1].0) {
             return Err(Error::ObjectDuplicateKey);
         }
-        build_object_vec(entries)
+        let mut writer = ContainerWriter::new(OBJECT_CONTAINER_TAG, entries.len())?;
+        for (key, _) in &entries {
+            writer.push_key(key)?;
+        }
+        for (_, item) in entries {
+            writer.push_item(item)?;
+        }
+        Ok(writer.finish())
     }
 }
 
-fn build_object_vec<'a, K>(entries: Vec<(K, JsonbItem<'a>)>) -> Result<OwnedJsonb>
-where
-    K: AsRef<str>,
-{
-    let mut buf = Vec::new();
-    let header = encode_container_header(OBJECT_CONTAINER_TAG, entries.len())?;
-    buf.write_u32::<BigEndian>(header)?;
-
-    let mut jentry_index = reserve_jentries(&mut buf, entries.len() * 8);
-    for (key, _) in entries.iter() {
-        append_object_key(&mut buf, &mut jentry_index, key.as_ref())?;
-    }
-    for (_, item) in entries.into_iter() {
-        append_jsonb_item(&mut buf, &mut jentry_index, item)?;
-    }
-    Ok(OwnedJsonb::new(buf))
-}
-
-fn append_object_key(buf: &mut Vec<u8>, jentry_index: &mut usize, key: &str) -> Result<()> {
-    let jentry = JEntry::make_string_jentry(key.len())?;
-    buf.extend_from_slice(key.as_bytes());
-    replace_jentry(buf, jentry, jentry_index);
-    Ok(())
-}
-
-fn append_jsonb_item(buf: &mut Vec<u8>, jentry_index: &mut usize, item: JsonbItem) -> Result<()> {
-    match item {
-        JsonbItem::Null => {
-            let jentry = JEntry::make_null_jentry();
-            replace_jentry(buf, jentry, jentry_index);
-        }
-        JsonbItem::Boolean(v) => {
-            let jentry = if v {
-                JEntry::make_true_jentry()
-            } else {
-                JEntry::make_false_jentry()
-            };
-            replace_jentry(buf, jentry, jentry_index);
-        }
-        JsonbItem::Number(num) => match num {
-            NumberItem::Raw(data) => {
-                let jentry = JEntry::make_number_jentry(data.len())?;
-                replace_jentry(buf, jentry, jentry_index);
-                buf.extend_from_slice(data);
-            }
-            NumberItem::Number(num) => {
-                let len = num.compact_encode(&mut *buf)?;
-                let jentry = JEntry::make_number_jentry(len)?;
-                replace_jentry(buf, jentry, jentry_index);
-            }
-        },
-        JsonbItem::String(data) => {
-            let jentry = JEntry::make_string_jentry(data.len())?;
-            replace_jentry(buf, jentry, jentry_index);
-            buf.extend_from_slice(data.as_bytes());
-        }
-        JsonbItem::Extension(ext) => match ext {
-            ExtensionItem::Raw(data) => {
-                let jentry = JEntry::make_extension_jentry(data.len())?;
-                replace_jentry(buf, jentry, jentry_index);
-                buf.extend_from_slice(data);
-            }
-            ExtensionItem::Extension(ext) => {
-                let len = ext.compact_encode(&mut *buf)?;
-                let jentry = JEntry::make_extension_jentry(len)?;
-                replace_jentry(buf, jentry, jentry_index);
-            }
-        },
-        JsonbItem::Raw(raw_jsonb) => {
-            append_raw_jsonb_data(buf, jentry_index, raw_jsonb)?;
-        }
-        JsonbItem::Owned(owned_jsonb) => {
-            let raw_jsonb = owned_jsonb.as_raw();
-            append_raw_jsonb_data(buf, jentry_index, raw_jsonb)?;
-        }
-    }
-    Ok(())
-}
-
-fn append_raw_jsonb_data(
-    buf: &mut Vec<u8>,
-    jentry_index: &mut usize,
-    raw_jsonb: RawJsonb,
-) -> Result<()> {
-    let (header_type, _) = raw_jsonb.read_header(0)?;
-    if header_type == SCALAR_CONTAINER_TAG {
-        let scalar_jentry = raw_jsonb.read_jentry(4)?;
-        let range = Range {
-            start: 8,
-            end: raw_jsonb.len(),
+impl OwnedJsonb {
+    /// Encodes `item` as a JSONB value of its own.
+    pub(crate) fn from_item(item: JsonbItem<'_>) -> Result<OwnedJsonb> {
+        let payload_len = match item {
+            JsonbItem::Raw(raw_jsonb) => return Ok(raw_jsonb.to_owned()),
+            JsonbItem::Owned(owned_jsonb) => return Ok(owned_jsonb),
+            JsonbItem::Null | JsonbItem::Boolean(_) => 0,
+            JsonbItem::Number(NumberItem::Raw(data)) => data.len(),
+            JsonbItem::String(ref s) => s.len(),
+            JsonbItem::Extension(ExtensionItem::Raw(data)) => data.len(),
+            // An estimate for decoded numbers and extension values.
+            _ => 10,
         };
-        let data = raw_jsonb.slice(range)?;
-        replace_jentry(buf, scalar_jentry, jentry_index);
-        buf.extend_from_slice(data);
-    } else {
-        let jentry = JEntry::make_container_jentry(raw_jsonb.len())?;
-        replace_jentry(buf, jentry, jentry_index);
-        buf.extend_from_slice(raw_jsonb.data);
+        let mut writer = ContainerWriter::scalar(payload_len);
+        writer.push_item(item)?;
+        Ok(writer.finish())
     }
-    Ok(())
 }
 
-fn reserve_jentries(buf: &mut Vec<u8>, len: usize) -> usize {
-    let old_len = buf.len();
-    let new_len = old_len + len;
-    buf.resize(new_len, 0);
-    old_len
+/// Writes JSONB: a header, the `JEntries`, then their payloads. Each member
+/// fills the next reserved `JEntry` and appends its payload.
+struct ContainerWriter {
+    buf: Vec<u8>,
+    /// Where the next `JEntry` goes.
+    jentry_index: usize,
 }
 
-fn replace_jentry(buf: &mut [u8], jentry: JEntry, jentry_index: &mut usize) {
-    let jentry_bytes = jentry.encoded().to_be_bytes();
-    for (i, b) in jentry_bytes.iter().enumerate() {
-        buf[*jentry_index + i] = *b;
+impl ContainerWriter {
+    /// Starts an array or object of `len` members. An object has a key and a
+    /// value `JEntry` for each member.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ValueTooLarge` if `len` does not fit the header.
+    fn new(container_tag: u32, len: usize) -> Result<Self> {
+        let header = encode_container_header(container_tag, len)?;
+        let jentries = if container_tag == OBJECT_CONTAINER_TAG {
+            2 * len
+        } else {
+            len
+        };
+        Ok(Self::with_header(header, jentries, 0))
     }
-    *jentry_index += 4;
+
+    /// Starts a scalar, a single `JEntry` under the scalar header, with room
+    /// for `payload_len` payload bytes.
+    fn scalar(payload_len: usize) -> Self {
+        Self::with_header(SCALAR_CONTAINER_TAG, 1, payload_len)
+    }
+
+    fn with_header(header: u32, jentries: usize, payload_len: usize) -> Self {
+        let jentries_end = 4 + 4 * jentries;
+        let mut buf = Vec::with_capacity(jentries_end + payload_len);
+        buf.extend_from_slice(&header.to_be_bytes());
+        buf.resize(jentries_end, 0);
+        Self {
+            buf,
+            jentry_index: 4,
+        }
+    }
+
+    fn finish(self) -> OwnedJsonb {
+        OwnedJsonb::new(self.buf)
+    }
+
+    fn set_jentry(&mut self, jentry: JEntry) {
+        jentry.write_at(&mut self.buf, &mut self.jentry_index);
+    }
+
+    fn push_key(&mut self, key: &str) -> Result<()> {
+        self.set_jentry(JEntry::make_string_jentry(key.len())?);
+        self.buf.extend_from_slice(key.as_bytes());
+        Ok(())
+    }
+
+    fn push_item(&mut self, item: JsonbItem) -> Result<()> {
+        let jentry = match item {
+            JsonbItem::Null => JEntry::make_null_jentry(),
+            JsonbItem::Boolean(true) => JEntry::make_true_jentry(),
+            JsonbItem::Boolean(false) => JEntry::make_false_jentry(),
+            JsonbItem::Number(NumberItem::Raw(data)) => {
+                self.buf.extend_from_slice(data);
+                JEntry::make_number_jentry(data.len())?
+            }
+            JsonbItem::Number(NumberItem::Number(num)) => {
+                JEntry::make_number_jentry(num.compact_encode(&mut self.buf)?)?
+            }
+            JsonbItem::String(data) => {
+                // Check the length before copying a possibly huge payload.
+                let jentry = JEntry::make_string_jentry(data.len())?;
+                self.buf.extend_from_slice(data.as_bytes());
+                jentry
+            }
+            JsonbItem::Extension(ExtensionItem::Raw(data)) => {
+                self.buf.extend_from_slice(data);
+                JEntry::make_extension_jentry(data.len())?
+            }
+            JsonbItem::Extension(ExtensionItem::Extension(ext)) => {
+                JEntry::make_extension_jentry(ext.compact_encode(&mut self.buf)?)?
+            }
+            JsonbItem::Raw(raw_jsonb) => return self.push_raw(raw_jsonb),
+            JsonbItem::Owned(owned_jsonb) => return self.push_raw(owned_jsonb.as_raw()),
+        };
+        self.set_jentry(jentry);
+        Ok(())
+    }
+
+    /// Appends a JSONB value as a member: a container as a container entry,
+    /// and a scalar as an entry with its `JEntry` and payload.
+    ///
+    /// Copying everything after a scalar's `JEntry` used to copy bytes past
+    /// its payload too, which shifted the payloads of the members after it.
+    /// `from_jsonb` rejects a container entry under a scalar header and a
+    /// truncated payload.
+    fn push_raw(&mut self, raw_jsonb: RawJsonb) -> Result<()> {
+        let entry = RawEntry::from_jsonb(raw_jsonb)?;
+        let jentry = if entry.is_container() {
+            JEntry::make_container_jentry(entry.payload.len())?
+        } else {
+            JEntry {
+                type_code: entry.type_code,
+                // `from_jsonb` read the payload by this length, so it fits.
+                length: entry.payload.len() as u32,
+            }
+        };
+        self.set_jentry(jentry);
+        self.buf.extend_from_slice(entry.payload);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

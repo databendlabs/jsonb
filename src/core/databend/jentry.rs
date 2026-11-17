@@ -100,6 +100,13 @@ impl JEntry {
     pub(super) fn encoded(&self) -> u32 {
         self.type_code | self.length
     }
+
+    /// Writes this `JEntry` into the slot reserved for it at `*index`, and
+    /// moves `*index` to the next slot.
+    pub(super) fn write_at(&self, buf: &mut [u8], index: &mut usize) {
+        buf[*index..*index + 4].copy_from_slice(&self.encoded().to_be_bytes());
+        *index += 4;
+    }
 }
 
 /// Encodes an array or object container header holding `len` elements.
