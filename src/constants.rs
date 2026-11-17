@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ethnum::i256;
+
 // JSON text constants
 pub(crate) const UNICODE_LEN: usize = 4;
 
@@ -103,6 +105,10 @@ pub(crate) const DECIMAL64_MIN: i128 = -999_999_999_999_999_999i128;
 pub(crate) const DECIMAL64_MAX: i128 = 999_999_999_999_999_999i128;
 pub(crate) const DECIMAL128_MIN: i128 = -99_999_999_999_999_999_999_999_999_999_999_999_999i128;
 pub(crate) const DECIMAL128_MAX: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999i128;
+pub(crate) const DECIMAL256_MIN: i256 =
+    ethnum::int!("-9999999999999999999999999999999999999999999999999999999999999999999999999999");
+pub(crate) const DECIMAL256_MAX: i256 =
+    ethnum::int!("9999999999999999999999999999999999999999999999999999999999999999999999999999");
 
 pub(crate) const NUMBER_STRUCT_TOKEN: &str = "$jsonb::private::Number";
 pub(crate) const NUMBER_STRUCT_FIELD_SCALE: &str = "$jsonb::private::Number::Scale";

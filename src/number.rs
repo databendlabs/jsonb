@@ -18,6 +18,13 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use crate::constants::DECIMAL128_MAX;
+use crate::constants::DECIMAL256_MAX;
+use crate::constants::DECIMAL256_MIN;
+use crate::constants::DECIMAL64_MAX;
+use crate::constants::MAX_DECIMAL128_PRECISION;
+use crate::constants::MAX_DECIMAL256_PRECISION;
+use crate::constants::MAX_DECIMAL64_PRECISION;
 use crate::eisel_lemire;
 use crate::error::Result;
 use crate::Error;
@@ -142,6 +149,22 @@ pub struct Decimal64 {
 }
 
 impl Decimal64 {
+    /// Creates a decimal of `value / 10^scale`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidJsonbNumber` if `scale` or the digits of `value`
+    /// exceed precision 18.
+    pub fn new(scale: u8, value: i64) -> Result<Self> {
+        if usize::from(scale) <= MAX_DECIMAL64_PRECISION
+            && value.unsigned_abs() <= DECIMAL64_MAX as u64
+        {
+            Ok(Self { scale, value })
+        } else {
+            Err(Error::InvalidJsonbNumber)
+        }
+    }
+
     /// Converts the decimal value to a floating-point representation.
     ///
     /// This is useful when you need to perform floating-point operations,
@@ -165,6 +188,22 @@ pub struct Decimal128 {
 }
 
 impl Decimal128 {
+    /// Creates a decimal of `value / 10^scale`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidJsonbNumber` if `scale` or the digits of `value`
+    /// exceed precision 38.
+    pub fn new(scale: u8, value: i128) -> Result<Self> {
+        if usize::from(scale) <= MAX_DECIMAL128_PRECISION
+            && value.unsigned_abs() <= DECIMAL128_MAX as u128
+        {
+            Ok(Self { scale, value })
+        } else {
+            Err(Error::InvalidJsonbNumber)
+        }
+    }
+
     /// Converts the decimal value to a floating-point representation.
     ///
     /// Note that for very large values, this conversion may lose precision
@@ -189,6 +228,22 @@ pub struct Decimal256 {
 }
 
 impl Decimal256 {
+    /// Creates a decimal of `value / 10^scale`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidJsonbNumber` if `scale` or the digits of `value`
+    /// exceed precision 76.
+    pub fn new(scale: u8, value: i256) -> Result<Self> {
+        if usize::from(scale) <= MAX_DECIMAL256_PRECISION
+            && (DECIMAL256_MIN..=DECIMAL256_MAX).contains(&value)
+        {
+            Ok(Self { scale, value })
+        } else {
+            Err(Error::InvalidJsonbNumber)
+        }
+    }
+
     /// Converts the decimal value to a floating-point representation.
     ///
     /// For extremely large values, significant precision loss may occur
@@ -1797,6 +1852,12 @@ fn format_decimal_i256(
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn decimal256_bounds_have_76_digits() {
+        assert_eq!(DECIMAL256_MAX, i256::from(10).pow(76) - 1);
+        assert_eq!(DECIMAL256_MIN, -DECIMAL256_MAX);
+    }
 
     #[test]
     fn test_number_comparison() {

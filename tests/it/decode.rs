@@ -191,6 +191,101 @@ fn test_decode_decimal() {
     }
 }
 
+/// Every encoder keeps a decimal's scale and digits within the precision of
+/// its width, 18, 38 or 76. Decoding used to accept any `u8` scale and any
+/// value, which made callers overflow `10^scale`.
+#[test]
+fn decimals_beyond_their_precision_are_invalid() {
+    let e18 = 10_i64.pow(18);
+    let e38 = 10_i128.pow(38);
+    let e76 = I256::from(10).pow(76);
+    let valid = [
+        Number::Decimal64(Decimal64 {
+            scale: 18,
+            value: e18 - 1,
+        }),
+        Number::Decimal64(Decimal64 {
+            scale: 0,
+            value: 1 - e18,
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 38,
+            value: e38 - 1,
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 0,
+            value: 1 - e38,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 76,
+            value: e76 - 1,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 0,
+            value: I256::ONE - e76,
+        }),
+    ];
+    for number in valid {
+        let data = Value::Number(number.clone()).to_vec().unwrap();
+        assert_eq!(from_slice(&data).unwrap(), Value::Number(number));
+    }
+    let invalid = [
+        Number::Decimal64(Decimal64 {
+            scale: 19,
+            value: 1,
+        }),
+        Number::Decimal64(Decimal64 {
+            scale: 255,
+            value: 1,
+        }),
+        Number::Decimal64(Decimal64 {
+            scale: 0,
+            value: e18,
+        }),
+        Number::Decimal64(Decimal64 {
+            scale: 2,
+            value: i64::MIN,
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 39,
+            value: 1,
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 0,
+            value: e38,
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 0,
+            value: -e38,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 77,
+            value: I256::ONE,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 0,
+            value: e76,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 0,
+            value: I256::MIN,
+        }),
+    ];
+    for number in invalid {
+        let data = Value::Number(number.clone()).to_vec().unwrap();
+        assert!(from_slice(&data).is_err(), "{number:?}");
+    }
+    // The deprecated widths, which also store a precision byte before the
+    // scale, with scales 39 and 77.
+    let deprecated = [
+        b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x26\x27".to_vec(),
+        b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x4C\x4D".to_vec(),
+    ];
+    for data in deprecated {
+        assert!(from_slice(&data).is_err(), "{data:02x?}");
+    }
+}
+
 #[test]
 fn test_decode_array() {
     let tests = vec![(

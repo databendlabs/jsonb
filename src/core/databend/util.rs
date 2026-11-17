@@ -503,34 +503,29 @@ impl Number {
                 9 => {
                     let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[9..10].try_into().unwrap());
-                    let dec = Decimal64 { scale, value };
-                    Number::Decimal64(dec)
+                    Number::Decimal64(Decimal64::new(scale, value)?)
                 }
                 17 => {
                     let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[17..18].try_into().unwrap());
-                    let dec = Decimal128 { scale, value };
-                    Number::Decimal128(dec)
+                    Number::Decimal128(Decimal128::new(scale, value)?)
                 }
                 18 => {
                     // Compatible with deprecated Decimal128 formats, including precision
                     let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[18..19].try_into().unwrap());
-                    let dec = Decimal128 { scale, value };
-                    Number::Decimal128(dec)
+                    Number::Decimal128(Decimal128::new(scale, value)?)
                 }
                 33 => {
                     let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[33..34].try_into().unwrap());
-                    let dec = Decimal256 { scale, value };
-                    Number::Decimal256(dec)
+                    Number::Decimal256(Decimal256::new(scale, value)?)
                 }
                 34 => {
                     // Compatible with deprecated Decimal256 formats, including precision
                     let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[34..35].try_into().unwrap());
-                    let dec = Decimal256 { scale, value };
-                    Number::Decimal256(dec)
+                    Number::Decimal256(Decimal256::new(scale, value)?)
                 }
                 _ => {
                     return Err(Error::InvalidJsonbNumber);

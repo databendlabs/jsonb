@@ -2310,9 +2310,9 @@ fn test_parse_float() {
 }
 
 /// With `arbitrary_precision`, decimals serialize as their exact text, which
-/// may be at most 128 bytes long. Longer texts need a scale above 125, which
-/// the text parser never produces; serializing them fails, and `to_string`
-/// falls back to the raw bytes.
+/// may be at most 128 bytes long. Longer texts need a scale above 125, so
+/// serializing them fails. No valid JSONB decimal has such a scale: decoding
+/// rejects it, and `to_string` falls back to the raw bytes.
 #[cfg(feature = "arbitrary_precision")]
 #[test]
 fn decimal_text_is_limited_to_128_bytes() {
@@ -2321,16 +2321,15 @@ fn decimal_text_is_limited_to_128_bytes() {
         let number = Number::Decimal64(Decimal64 { scale, value: 1 });
         let expect = format!("0.{}1", "0".repeat(scale as usize - 1));
         assert_eq!(expect.len() <= 128, fits);
-        let raw = Value::Number(number.clone()).to_vec().unwrap();
-        let raw = RawJsonb::new(&raw);
         if fits {
             assert_eq!(serde_json::to_string(&number).unwrap(), expect);
-            assert_eq!(raw.to_string(), expect);
         } else {
             assert!(serde_json::to_string(&number).is_err(), "scale {scale}");
-            assert_ne!(raw.to_string(), expect);
-            assert_eq!(raw.to_pretty_string(), "null");
         }
+        let raw = Value::Number(number).to_vec().unwrap();
+        let raw = RawJsonb::new(&raw);
+        assert_ne!(raw.to_string(), expect);
+        assert_eq!(raw.to_pretty_string(), "null");
     }
 }
 
@@ -2702,7 +2701,8 @@ fn number_order_is_exact_and_transitive() {
 
     // Every triple of these numbers is ordered transitively, and the
     // comparable encoding, which converts numbers to `f64`, never reverses
-    // their order.
+    // their order. Decimals beyond their precision, such as `i64::MIN`, are
+    // not valid JSONB and have no comparable encoding.
     let mut numbers: Vec<Number> = cases
         .iter()
         .flat_map(|(l, r, _)| [l.clone(), r.clone()])
@@ -2716,17 +2716,20 @@ fn number_order_is_exact_and_transitive() {
     ]);
     let comparable = |n: &Number| {
         let encoded = Value::Number(n.clone()).to_vec().unwrap();
-        RawJsonb::new(&encoded).convert_to_comparable()
+        jsonb::from_slice(&encoded).ok()?;
+        Some(RawJsonb::new(&encoded).convert_to_comparable())
     };
     for x in &numbers {
         for y in &numbers {
             let order = x.cmp(y);
             assert_eq!(order, y.cmp(x).reverse(), "{x:?} vs {y:?}");
-            let encoded = comparable(x).cmp(&comparable(y));
-            assert!(
-                encoded == order || encoded == Equal,
-                "comparable encoding of {x:?} vs {y:?} is {encoded:?}, but they compare {order:?}"
-            );
+            if let (Some(cx), Some(cy)) = (comparable(x), comparable(y)) {
+                let encoded = cx.cmp(&cy);
+                assert!(
+                    encoded == order || encoded == Equal,
+                    "comparable encoding of {x:?} vs {y:?} is {encoded:?}, but they compare {order:?}"
+                );
+            }
             for z in &numbers {
                 if order != Greater && y.cmp(z) != Greater {
                     assert_ne!(x.cmp(z), Greater, "{x:?} <= {y:?} <= {z:?}");

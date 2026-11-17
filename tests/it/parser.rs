@@ -618,3 +618,25 @@ fn test_parse_negative_hex_at_i64_min() {
         "-9223372036854775809"
     );
 }
+
+/// `-0x4b3b4ca85a86c47a098a224000000000` is `-10^38`, one digit beyond a
+/// `Decimal128`; it used to become one, which decoding rejects.
+#[cfg(feature = "arbitrary_precision")]
+#[test]
+fn test_parse_negative_hex_beyond_decimal128() {
+    let value = parse_value(b"-0x4b3b4ca85a86c47a098a223fffffffff").unwrap();
+    assert!(
+        matches!(value, Value::Number(Number::Decimal128(ref d)) if d.value == 1 - 10_i128.pow(38)),
+        "{value:?}"
+    );
+    let value = parse_value(b"-0x4b3b4ca85a86c47a098a224000000000").unwrap();
+    assert!(
+        matches!(value, Value::Number(Number::Decimal256(_))),
+        "{value:?}"
+    );
+    let data = value.to_vec().unwrap();
+    assert_eq!(
+        jsonb::from_slice(&data).unwrap().to_string(),
+        format!("-1{}", "0".repeat(38))
+    );
+}
