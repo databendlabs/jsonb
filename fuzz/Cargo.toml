@@ -1,0 +1,57 @@
+[package]
+name = "jsonb-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keep this crate out of the parent package so `cargo test` there is unaffected.
+[workspace]
+members = ["."]
+
+[dependencies]
+ethnum = "1.5.2"
+jaq-json = "2.0.0"
+jsonb = { path = ".." }
+libfuzzer-sys = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Fuzz targets, the only binaries that `cargo fuzz` lists. `src/bin/write_seeds.rs`
+# is discovered by Cargo as a plain binary.
+[[bin]]
+name = "raw_jsonb"
+path = "src/bin/raw_jsonb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_text"
+path = "src/bin/json_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_path"
+path = "src/bin/json_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "binary_ops"
+path = "src/bin/binary_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "number"
+path = "src/bin/number.rs"
+test = false
+doc = false
+bench = false
