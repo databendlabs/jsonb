@@ -16,18 +16,14 @@ use core::ops::Range;
 use std::borrow::Cow;
 use std::io::Write;
 
-use byteorder::BigEndian;
-use byteorder::WriteBytesExt;
 use ethnum::i256;
 
 use super::constants::*;
 use super::jentry::JEntry;
 use crate::constants::enter_container;
 use crate::core::Entries;
-use crate::core::ExtensionItem;
 use crate::core::JsonbItem;
 use crate::core::JsonbItemType;
-use crate::core::NumberItem;
 use crate::core::RawEntry;
 use crate::error::*;
 use crate::extension::Date;
@@ -40,7 +36,6 @@ use crate::number::Decimal256;
 use crate::number::Decimal64;
 use crate::Number;
 use crate::Object;
-use crate::OwnedJsonb;
 use crate::RawJsonb;
 use crate::Value;
 
@@ -209,11 +204,18 @@ impl<'a> RawJsonb<'a> {
         let name_bytes = key_name.as_bytes();
         while index < length {
             let key_jentry = self.read_jentry(jentry_offset)?;
+            // Only a string key can match; another type makes the object
+            // invalid, as `Entries::object` reports.
+            if key_jentry.type_code != STRING_TAG {
+                return Err(Error::InvalidJsonb);
+            }
             let key_len = key_jentry.length as usize;
 
             index += 1;
             jentry_offset += 4;
-            item_offset += key_len;
+            // Saturates instead of overflowing on 32-bit targets; `slice`
+            // then rejects the range.
+            item_offset = item_offset.saturating_add(key_len);
 
             // check if key match the name.
             if name_len == key_len {
@@ -238,7 +240,7 @@ impl<'a> RawJsonb<'a> {
             let jentry = self.read_jentry(jentry_offset)?;
             index += 1;
             jentry_offset += 4;
-            item_offset += jentry.length as usize;
+            item_offset = item_offset.saturating_add(jentry.length as usize);
         }
 
         // read value item data
@@ -247,7 +249,7 @@ impl<'a> RawJsonb<'a> {
 
         let value_range = Range {
             start: item_offset,
-            end: item_offset + value_len,
+            end: item_offset.saturating_add(value_len),
         };
         let value_data = self.slice(value_range)?;
         let value_item = RawEntry {
@@ -283,9 +285,8 @@ impl<'a> RawJsonb<'a> {
     }
 
     // `#[inline]` here, on `read_u32`, `slice` and `JEntry::decode_jentry`:
-    // once JEntry decoding returned `Result`, Databend's `opt-level = "s"`
-    // stopped inlining them, and key lookups called them for every key, which
-    // doubled `select_by_path` on twitter.json.
+    // key lookups call them for every key, and they stopped being inlined
+    // once JEntry decoding returned `Result`.
     #[inline]
     pub(super) fn read_jentry(&self, index: usize) -> Result<JEntry> {
         let jentry_encoded = self.read_u32(index)?;
@@ -306,82 +307,6 @@ impl<'a> RawJsonb<'a> {
     #[inline]
     pub(super) fn slice(&self, range: Range<usize>) -> Result<&'a [u8]> {
         self.data.get(range).ok_or(Error::InvalidJsonb)
-    }
-}
-
-impl OwnedJsonb {
-    pub(crate) fn from_item(item: JsonbItem<'_>) -> Result<OwnedJsonb> {
-        match item {
-            JsonbItem::Raw(raw_jsonb) => Ok(raw_jsonb.to_owned()),
-            JsonbItem::Owned(owned_jsonb) => Ok(owned_jsonb),
-            _ => {
-                let mut len = match item {
-                    JsonbItem::Null => 0,
-                    JsonbItem::Boolean(_) => 0,
-                    JsonbItem::Number(NumberItem::Raw(data)) => data.len(),
-                    JsonbItem::String(ref s) => s.len(),
-                    JsonbItem::Extension(ExtensionItem::Raw(data)) => data.len(),
-                    // The estimated lengths for number and extension.
-                    _ => 10,
-                };
-
-                // add the length of header and jentry.
-                len += 8;
-                let mut buf = Vec::with_capacity(len);
-                let header = SCALAR_CONTAINER_TAG;
-                buf.write_u32::<BigEndian>(header)?;
-
-                match item {
-                    JsonbItem::Null => {
-                        let jentry = JEntry::make_null_jentry();
-                        buf.write_u32::<BigEndian>(jentry.encoded())?;
-                    }
-                    JsonbItem::Boolean(v) => {
-                        let jentry = if v {
-                            JEntry::make_true_jentry()
-                        } else {
-                            JEntry::make_false_jentry()
-                        };
-                        buf.write_u32::<BigEndian>(jentry.encoded())?;
-                    }
-                    JsonbItem::Number(num) => match num {
-                        NumberItem::Raw(data) => {
-                            let jentry = JEntry::make_number_jentry(data.len())?;
-                            buf.write_u32::<BigEndian>(jentry.encoded())?;
-                            buf.extend_from_slice(data);
-                        }
-                        NumberItem::Number(num) => {
-                            let mut data = vec![];
-                            let len = num.compact_encode(&mut data)?;
-                            let jentry = JEntry::make_number_jentry(len)?;
-                            buf.write_u32::<BigEndian>(jentry.encoded())?;
-                            buf.extend_from_slice(&data);
-                        }
-                    },
-                    JsonbItem::String(s) => {
-                        let jentry = JEntry::make_string_jentry(s.len())?;
-                        buf.write_u32::<BigEndian>(jentry.encoded())?;
-                        buf.extend_from_slice(s.as_bytes());
-                    }
-                    JsonbItem::Extension(ext) => match ext {
-                        ExtensionItem::Raw(data) => {
-                            let jentry = JEntry::make_extension_jentry(data.len())?;
-                            buf.write_u32::<BigEndian>(jentry.encoded())?;
-                            buf.extend_from_slice(data);
-                        }
-                        ExtensionItem::Extension(ext) => {
-                            let mut data = vec![];
-                            let len = ext.compact_encode(&mut data)?;
-                            let jentry = JEntry::make_extension_jentry(len)?;
-                            buf.write_u32::<BigEndian>(jentry.encoded())?;
-                            buf.extend_from_slice(&data);
-                        }
-                    },
-                    _ => unreachable!(),
-                }
-                Ok(OwnedJsonb::new(buf))
-            }
-        }
     }
 }
 
@@ -473,6 +398,10 @@ impl Number {
         };
         let len = payload.len();
         let num = match ty {
+            // Zero, NaN and the infinities are the tag byte alone.
+            NUMBER_ZERO | NUMBER_NAN | NUMBER_INF | NUMBER_NEG_INF if len != 0 => {
+                return Err(Error::InvalidJsonbNumber);
+            }
             NUMBER_ZERO => Number::UInt64(0),
             NUMBER_NAN => Number::Float64(f64::NAN),
             NUMBER_INF => Number::Float64(f64::INFINITY),
@@ -585,7 +514,7 @@ impl ExtensionValue<'_> {
             EXTENSION_BINARY => ExtensionValue::Binary(payload),
             EXTENSION_DATE => {
                 if len != 4 {
-                    return Err(Error::InvalidJsonbNumber);
+                    return Err(Error::InvalidJsonbExtension);
                 }
                 let value = i32::from_be_bytes(bytes[1..5].try_into().unwrap());
 
@@ -593,7 +522,7 @@ impl ExtensionValue<'_> {
             }
             EXTENSION_TIMESTAMP => {
                 if len != 8 {
-                    return Err(Error::InvalidJsonbNumber);
+                    return Err(Error::InvalidJsonbExtension);
                 }
                 let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
 
@@ -601,7 +530,7 @@ impl ExtensionValue<'_> {
             }
             EXTENSION_TIMESTAMP_TZ => {
                 if len != 9 && len != 12 {
-                    return Err(Error::InvalidJsonbNumber);
+                    return Err(Error::InvalidJsonbExtension);
                 }
                 let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
                 let offset = if len == 9 {
@@ -615,7 +544,7 @@ impl ExtensionValue<'_> {
             }
             EXTENSION_INTERVAL => {
                 if len != 16 {
-                    return Err(Error::InvalidJsonbNumber);
+                    return Err(Error::InvalidJsonbExtension);
                 }
                 let months = i32::from_be_bytes(bytes[1..5].try_into().unwrap());
                 let days = i32::from_be_bytes(bytes[5..9].try_into().unwrap());

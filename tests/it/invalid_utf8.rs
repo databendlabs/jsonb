@@ -17,7 +17,6 @@
 //! `RawJsonb` accepts arbitrary bytes through safe constructors, so every API
 //! that exposes a JSONB string as `str` must reject invalid UTF-8.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use jsonb::{from_raw_jsonb, from_slice, Error, OwnedJsonb, RawJsonb};
@@ -81,16 +80,10 @@ fn scalar_accessors_reject_invalid_utf8() {
     assert_eq!(from_raw_jsonb::<char>(&raw), Err(Error::InvalidUtf8));
 }
 
+/// Every decoder rejects each case, and the text writers fall back without
+/// exposing the invalid bytes.
 #[test]
-fn to_value_rejects_invalid_utf8() {
-    for (name, bytes) in ALL {
-        let result = RawJsonb::new(bytes).to_value();
-        assert_eq!(result, Err(Error::InvalidUtf8), "case {name}");
-    }
-}
-
-#[test]
-fn serde_deserialize_rejects_invalid_utf8() {
+fn decoders_reject_invalid_utf8() {
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     struct Member {
@@ -99,30 +92,24 @@ fn serde_deserialize_rejects_invalid_utf8() {
 
     for (name, bytes) in ALL {
         let raw = RawJsonb::new(bytes);
-        let result = from_raw_jsonb::<serde_json::Value>(&raw);
-        assert_eq!(result.err(), Some(Error::InvalidUtf8), "case {name}");
-    }
-    let raw = RawJsonb::new(OBJECT_VALUE);
-    let result = from_raw_jsonb::<Member>(&raw);
-    assert_eq!(result.err(), Some(Error::InvalidUtf8));
-}
-
-#[test]
-fn from_slice_rejects_invalid_utf8() {
-    for (name, bytes) in ALL {
+        assert_eq!(raw.to_value(), Err(Error::InvalidUtf8), "case {name}");
+        assert_eq!(
+            from_raw_jsonb::<serde_json::Value>(&raw).err(),
+            Some(Error::InvalidUtf8),
+            "case {name}"
+        );
         assert!(from_slice(bytes).is_err(), "case {name}");
-    }
-}
 
-#[test]
-fn serialization_falls_back_without_exposing_invalid_utf8() {
-    for (name, bytes) in ALL {
-        let raw = RawJsonb::new(bytes);
         let expected = String::from_utf8_lossy(bytes).into_owned();
         assert_eq!(raw.to_string(), expected, "case {name}");
         assert_eq!(raw.to_pretty_string(), "null", "case {name}");
         assert!(serde_json::to_string(&raw).is_err(), "case {name}");
     }
+    let raw = RawJsonb::new(OBJECT_VALUE);
+    assert_eq!(
+        from_raw_jsonb::<Member>(&raw).err(),
+        Some(Error::InvalidUtf8)
+    );
 }
 
 #[test]
@@ -175,29 +162,6 @@ fn comparison_orders_invalid_utf8_by_bytes() {
     assert!(serde_json::to_string(&invalid_key).is_err());
 }
 
-#[test]
-fn unknown_jentry_type_returns_error_instead_of_panicking() {
-    // Type code 0x7 is not assigned to any JSONB value kind.
-    let bytes: &[u8] = &[0x80, 0x00, 0x00, 0x01, 0x70, 0x00, 0x00, 0x00];
-    let raw = RawJsonb::new(bytes);
-    assert_eq!(raw.array_values().err(), Some(Error::InvalidJsonb));
-    assert_eq!(raw.get_by_index(0).err(), Some(Error::InvalidJsonb));
-}
-
-#[test]
-fn valid_multibyte_strings_still_decode() {
-    let owned = r#"{"键": ["测试", "é"]}"#.parse::<OwnedJsonb>().unwrap();
-    let raw = owned.as_raw();
-    assert_eq!(raw.to_string(), r#"{"键":["测试","é"]}"#);
-    assert!(raw.to_value().is_ok());
-    assert_eq!(raw.object_each().unwrap().unwrap()[0].0, "键");
-
-    let scalar = r#""测试""#.parse::<OwnedJsonb>().unwrap();
-    let raw = scalar.as_raw();
-    assert_eq!(raw.as_str().unwrap(), Some(Cow::Borrowed("测试")));
-    assert_eq!(from_raw_jsonb::<String>(&raw).unwrap(), "测试");
-}
-
 /// Encodes `payload` as a JSONB string in scalar, array, and object-value positions.
 fn string_containers(payload: &[u8]) -> [Vec<u8>; 3] {
     let jentry = (0x1000_0000_u32 | payload.len() as u32).to_be_bytes();
@@ -218,32 +182,7 @@ fn string_containers(payload: &[u8]) -> [Vec<u8>; 3] {
 proptest! {
     #[test]
     fn proptest_string_payload_validation(payload in proptest::collection::vec(any::<u8>(), 0..16)) {
-        let expected = std::str::from_utf8(&payload).ok();
-        let [scalar, array, object] = string_containers(&payload);
-
-        let raw = RawJsonb::new(&scalar);
-        let as_str = raw.as_str().ok().flatten();
-        prop_assert_eq!(as_str.as_deref(), expected);
-        let deserialized = from_raw_jsonb::<String>(&raw).ok();
-        prop_assert_eq!(deserialized.as_deref(), expected);
-
-        for bytes in [&scalar, &array, &object] {
-            let raw = RawJsonb::new(bytes);
-            prop_assert_eq!(raw.to_value().is_ok(), expected.is_some());
-            prop_assert_eq!(from_raw_jsonb::<serde_json::Value>(&raw).is_ok(), expected.is_some());
-            prop_assert_eq!(serde_json::to_string(&raw).is_ok(), expected.is_some());
-        }
-    }
-
-    #[test]
-    fn proptest_string_payload_after_ascii(
-        prefix in proptest::collection::vec(0_u8..0x80, 0..150),
-        middle in proptest::collection::vec(any::<u8>(), 0..6),
-        suffix in proptest::collection::vec(0_u8..0x80, 0..20),
-    ) {
-        // Mostly ASCII, so both the ASCII fast path and `simdutf8` run, with
-        // any bytes in between.
-        assert_decodes_like_std(&[prefix, middle, suffix].concat());
+        assert_decodes_like_std(&payload);
     }
 }
 

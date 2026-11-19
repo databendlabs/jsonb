@@ -210,13 +210,19 @@ impl<'a> Entries<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error if a key `JEntry` lies outside the data.
+    /// Returns an error if a key `JEntry` lies outside the data, and
+    /// `Error::InvalidJsonb` if a key is not a string.
     pub(crate) fn object(raw: RawJsonb<'a>, len: usize) -> Result<(Self, Self)> {
         let keys = Self::keys(raw, len);
-        // The value payloads start after all key payloads.
+        // The value payloads start after all key payloads. Every key is read
+        // here anyway, so check their types once for all callers.
         let mut keys_len = 0usize;
         for i in 0..len {
-            keys_len = keys_len.saturating_add(raw.read_jentry(4 + 4 * i)?.length as usize);
+            let key = raw.read_jentry(4 + 4 * i)?;
+            if key.type_code != STRING_TAG {
+                return Err(Error::InvalidJsonb);
+            }
+            keys_len = keys_len.saturating_add(key.length as usize);
         }
         let values = Self {
             raw,
@@ -225,11 +231,6 @@ impl<'a> Entries<'a> {
             remaining: len,
         };
         Ok((keys, values))
-    }
-
-    /// Returns the number of entries not read yet.
-    pub(crate) fn remaining(&self) -> usize {
-        self.remaining
     }
 
     /// Ends the iteration, after an error.
@@ -243,9 +244,7 @@ impl<'a> Entries<'a> {
     ///
     /// Returns an error if the `JEntry` or its payload lies outside the data.
     // `#[inline]` here and on `next` lets callers in other modules, such as
-    // `json_writer.rs` and `iterator.rs`, inline the walk; without it,
-    // comparison and `to_string` were 5% to 20% slower with Databend's
-    // `opt-level = "s"` release profile when they were in other modules.
+    // `json_writer.rs` and `iterator.rs`, inline the walk.
     #[inline]
     fn read_next(&mut self) -> Result<RawEntry<'a>> {
         let jentry = self.raw.read_jentry(self.jentry_index)?;
@@ -280,6 +279,10 @@ impl<'a> Iterator for Entries<'a> {
     }
 }
 
+/// Exact for valid JSONB. An entry that lies outside the data ends the
+/// iteration after its error, so invalid JSONB can yield fewer entries than
+/// `len` gave; callers use `len` only to size buffers and as the container's
+/// length, and get the error when they read the entry.
 impl ExactSizeIterator for Entries<'_> {}
 
 impl FusedIterator for Entries<'_> {}

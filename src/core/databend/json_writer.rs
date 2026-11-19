@@ -84,10 +84,8 @@ impl JsonWriter {
                 let (keys, values) = Entries::object(raw, header_len)?;
                 self.buf.push(b'{');
                 for (i, (key, value)) in keys.zip(values).enumerate() {
+                    // `Entries::object` checked that the key is a string.
                     let key = key?;
-                    if key.type_code != STRING_TAG {
-                        return Err(Error::InvalidJsonb);
-                    }
                     self.begin_member(i, inner);
                     self.write_str(key.payload);
                     let colon: &[u8] = if self.pretty { b": " } else { b":" };
