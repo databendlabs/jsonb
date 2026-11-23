@@ -679,10 +679,11 @@ type ArithmeticOp = (
 
 /// Fuzzes two `Number`s built from arbitrary bytes.
 ///
-/// Arithmetic, conversion, and formatting must not panic. Integer arithmetic
-/// must never return a wrong value, and may fail only when the exact result
-/// does not fit the result type. Comparison must be antisymmetric and the
-/// comparable encoding must never reverse it. Formatted numbers must parse
+/// Arithmetic, conversion, and formatting must not panic. Integer `add`,
+/// `sub`, `mul` and `rem` must never return a wrong value, and may fail only
+/// when the exact result does not fit the result type; `div` divides as
+/// `f64`. Comparison must be antisymmetric and the comparable encoding must
+/// order the numbers the same way. Formatted numbers must parse
 /// back to equal values. Decoding must accept exactly the decimals whose scale
 /// and digits fit their precision.
 pub fn check_number(mut data: &[u8]) {
