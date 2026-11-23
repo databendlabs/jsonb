@@ -15,6 +15,7 @@
 //! Iterators that decode the entries of JSONB containers into `JsonbItem`s,
 //! validating strings as UTF-8. They read the entries with [`Entries`].
 
+use std::borrow::Cow;
 use std::iter::FusedIterator;
 
 use super::constants::*;
@@ -25,32 +26,36 @@ use crate::error::Result;
 use crate::RawJsonb;
 
 /// Implements `Iterator`, `ExactSizeIterator` and `FusedIterator` for an
-/// iterator with `read_next`, `remaining` and `stop` methods.
+/// iterator with a `read_next` method that reads from the `Entries` fields
+/// listed, the first of which counts the remaining items.
+///
+/// `len` is the number of items not read yet, as for any `ExactSizeIterator`;
+/// before the first `next` it is the length of the container. It is exact
+/// for valid JSONB; on invalid JSONB the iteration ends at the first error,
+/// as below, so fewer items than `len` can follow.
 ///
 /// The iterator stops after the first error, including an error decoding an
 /// entry that `Entries` read successfully. Retrying would return the same
 /// error forever, and `nth`/`count` would then loop over every remaining index.
 macro_rules! impl_fused_iterator {
-    ($iter:ident, $item:ty) => {
+    ($iter:ident, $item:ty, $first:ident $(, $rest:ident)*) => {
         impl<'a> Iterator for $iter<'a> {
             type Item = Result<$item>;
 
             // `#[inline]` here, on `read_next` and on `RawEntry::into_item`
-            // lets callers such as the JSONPath selector inline the decoding;
-            // without it, `select_by_path` was up to 25% slower with
-            // Databend's `opt-level = "s"` release profile.
+            // lets callers such as the JSONPath selector inline the decoding.
             #[inline]
             fn next(&mut self) -> Option<Self::Item> {
                 let item = self.read_next()?;
                 if item.is_err() {
-                    self.stop();
+                    self.$first.stop();
+                    $(self.$rest.stop();)*
                 }
                 Some(item)
             }
 
             fn size_hint(&self) -> (usize, Option<usize>) {
-                let remaining = self.remaining();
-                (remaining, Some(remaining))
+                self.$first.size_hint()
             }
         }
 
@@ -63,7 +68,6 @@ macro_rules! impl_fused_iterator {
 /// Iterates over the elements of an array, decoded.
 pub(crate) struct ArrayIterator<'a> {
     entries: Entries<'a>,
-    length: usize,
 }
 
 impl<'a> ArrayIterator<'a> {
@@ -79,12 +83,7 @@ impl<'a> ArrayIterator<'a> {
     pub(crate) fn new_with_len(raw_jsonb: RawJsonb<'a>, length: usize) -> Self {
         Self {
             entries: Entries::new(raw_jsonb, length),
-            length,
         }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.length
     }
 
     /// Returns the element at `index` among the remaining ones, or the first
@@ -94,7 +93,7 @@ impl<'a> ArrayIterator<'a> {
     /// after an error it would then return `None` for an index in range.
     pub(crate) fn get(mut self, index: usize) -> Result<Option<JsonbItem<'a>>> {
         // Return at once past the end, so `usize::MAX` reads nothing.
-        if index >= self.remaining() {
+        if index >= self.len() {
             return Ok(None);
         }
         for item in self.by_ref().take(index) {
@@ -107,22 +106,13 @@ impl<'a> ArrayIterator<'a> {
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
         Some(self.entries.next()?.and_then(RawEntry::into_item))
     }
-
-    fn remaining(&self) -> usize {
-        self.entries.remaining()
-    }
-
-    fn stop(&mut self) {
-        self.entries.stop();
-    }
 }
 
-impl_fused_iterator!(ArrayIterator, JsonbItem<'a>);
+impl_fused_iterator!(ArrayIterator, JsonbItem<'a>, entries);
 
 /// Iterates over the keys of an object, decoded.
 pub(crate) struct ObjectKeyIterator<'a> {
     keys: Entries<'a>,
-    length: usize,
 }
 
 impl<'a> ObjectKeyIterator<'a> {
@@ -131,37 +121,25 @@ impl<'a> ObjectKeyIterator<'a> {
         if header_type == OBJECT_CONTAINER_TAG {
             Ok(Some(Self {
                 keys: Entries::keys(raw_jsonb, header_len),
-                length: header_len,
             }))
         } else {
             Ok(None)
         }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.length
-    }
-
+    /// Reads the next key, which must be a string.
     #[inline]
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
-        Some(self.keys.next()?.and_then(RawEntry::into_item))
-    }
-
-    fn remaining(&self) -> usize {
-        self.keys.remaining()
-    }
-
-    fn stop(&mut self) {
-        self.keys.stop();
+        let key = self.keys.next()?.and_then(|key| key.object_key());
+        Some(key.map(|key| JsonbItem::String(Cow::Borrowed(key))))
     }
 }
 
-impl_fused_iterator!(ObjectKeyIterator, JsonbItem<'a>);
+impl_fused_iterator!(ObjectKeyIterator, JsonbItem<'a>, keys);
 
 /// Iterates over the values of an object, decoded.
 pub(crate) struct ObjectValueIterator<'a> {
     values: Entries<'a>,
-    length: usize,
 }
 
 impl<'a> ObjectValueIterator<'a> {
@@ -169,42 +147,25 @@ impl<'a> ObjectValueIterator<'a> {
         let (header_type, header_len) = raw_jsonb.read_header(0)?;
         if header_type == OBJECT_CONTAINER_TAG {
             let (_, values) = Entries::object(raw_jsonb, header_len)?;
-            Ok(Some(Self {
-                values,
-                length: header_len,
-            }))
+            Ok(Some(Self { values }))
         } else {
             Ok(None)
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
-        self.length
     }
 
     #[inline]
     fn read_next(&mut self) -> Option<Result<JsonbItem<'a>>> {
         Some(self.values.next()?.and_then(RawEntry::into_item))
     }
-
-    fn remaining(&self) -> usize {
-        self.values.remaining()
-    }
-
-    fn stop(&mut self) {
-        self.values.stop();
-    }
 }
 
-impl_fused_iterator!(ObjectValueIterator, JsonbItem<'a>);
+impl_fused_iterator!(ObjectValueIterator, JsonbItem<'a>, values);
 
 /// Iterates over the members of an object: each key, as a string, with its
 /// value decoded.
 pub(crate) struct ObjectIterator<'a> {
     keys: Entries<'a>,
     values: Entries<'a>,
-    length: usize,
 }
 
 impl<'a> ObjectIterator<'a> {
@@ -219,15 +180,7 @@ impl<'a> ObjectIterator<'a> {
 
     pub(crate) fn new_with_len(raw_jsonb: RawJsonb<'a>, length: usize) -> Result<Self> {
         let (keys, values) = Entries::object(raw_jsonb, length)?;
-        Ok(Self {
-            keys,
-            values,
-            length,
-        })
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.length
+        Ok(Self { keys, values })
     }
 
     #[inline]
@@ -236,18 +189,9 @@ impl<'a> ObjectIterator<'a> {
         let value = self.values.next()?;
         Some(key.and_then(|key| Ok((key, value?.into_item()?))))
     }
-
-    fn remaining(&self) -> usize {
-        self.keys.remaining()
-    }
-
-    fn stop(&mut self) {
-        self.keys.stop();
-        self.values.stop();
-    }
 }
 
-impl_fused_iterator!(ObjectIterator, (&'a str, JsonbItem<'a>));
+impl_fused_iterator!(ObjectIterator, (&'a str, JsonbItem<'a>), keys, values);
 
 #[cfg(test)]
 mod tests {

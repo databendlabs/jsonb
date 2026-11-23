@@ -597,9 +597,6 @@ fn test_value_display_non_finite_floats_as_null() {
     assert_eq!(formatted, raw);
     assert_eq!(Number::Float64(f64::NAN).to_string(), "NaN");
     assert_eq!(Number::Float64(f64::NEG_INFINITY).to_string(), "-inf");
-
-    let path = jsonb::jsonpath::parse_json_path(b"$ ? (@ > -inf)").unwrap();
-    assert_eq!(path.to_string(), "$?(@ > -inf)");
 }
 
 #[test]

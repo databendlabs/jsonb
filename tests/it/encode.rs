@@ -304,31 +304,6 @@ fn test_encode_extension() {
     );
 }
 
-#[test]
-fn test_serialize_bytes_as_binary() {
-    // Serializes as bytes, like `serde_bytes`; `Vec<u8>` serializes as a sequence.
-    struct Bytes(&'static [u8]);
-    impl serde::Serialize for Bytes {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            serializer.serialize_bytes(self.0)
-        }
-    }
-
-    // `serialize_bytes` used to be `todo!()` and panicked.
-    let scalar = jsonb::to_owned_jsonb(&Bytes(&[1, 2, 3])).unwrap();
-    assert_eq!(scalar.as_ref(), Value::Binary(&[1, 2, 3]).to_vec().unwrap());
-
-    let nested = jsonb::to_owned_jsonb(&(Bytes(b""), [("k", Bytes(&[0xff]))])).unwrap();
-    let expected = Value::Array(vec![
-        Value::Binary(b""),
-        Value::Array(vec![Value::Array(vec![
-            Value::String(Cow::Borrowed("k")),
-            Value::Binary(&[0xff]),
-        ])]),
-    ]);
-    assert_eq!(nested.as_raw().to_value().unwrap(), expected);
-}
-
 /// Bytes that serialize with `serialize_bytes` and deserialize with
 /// `deserialize_bytes` (`OWNED == false`) or `deserialize_byte_buf`, accepting
 /// only byte callbacks.
@@ -365,6 +340,11 @@ impl<'de, const OWNED: bool> serde::Deserialize<'de> for ByteValue<OWNED> {
 
 #[test]
 fn test_bytes_round_trip_as_binary() {
+    // `serialize_bytes` used to be `todo!()` and panicked, and it writes the
+    // same bytes as `Value::Binary`.
+    let scalar = jsonb::to_owned_jsonb(&ByteValue::<false>(vec![1, 2, 3])).unwrap();
+    assert_eq!(scalar.as_ref(), Value::Binary(&[1, 2, 3]).to_vec().unwrap());
+
     // `deserialize_bytes` and `deserialize_byte_buf` used to format binary
     // values as hexadecimal text, so `[1, 2, 3]` read back as the string
     // "010203", which byte-only visitors rejected.
@@ -400,4 +380,107 @@ fn test_bytes_round_trip_as_binary() {
     }
     check::<false>();
     check::<true>();
+}
+
+#[test]
+fn unit_variants_round_trip() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    enum Kind {
+        Unit,
+        Newtype(i32),
+        Tuple(i32, bool),
+        Struct { id: u8 },
+    }
+    // A unit variant serializes as its name, but deserializing only accepted
+    // an object such as `{"Unit": null}`, so it failed to read back.
+    let values = vec![
+        Kind::Unit,
+        Kind::Newtype(-1),
+        Kind::Tuple(2, true),
+        Kind::Struct { id: 3 },
+    ];
+    let jsonb = jsonb::to_owned_jsonb(&values).unwrap();
+    assert_eq!(
+        jsonb.to_string(),
+        r#"["Unit",{"Newtype":-1},{"Tuple":[2,true]},{"Struct":{"id":3}}]"#
+    );
+    assert_eq!(
+        jsonb::from_raw_jsonb::<Vec<Kind>>(&jsonb.as_raw()).unwrap(),
+        values
+    );
+    let one = jsonb::to_owned_jsonb(&Kind::Unit).unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<Kind>(&one.as_raw()).unwrap(),
+        Kind::Unit
+    );
+
+    // A name of a variant that has data is an error, as in serde_json.
+    let text: jsonb::OwnedJsonb = r#""Newtype""#.parse().unwrap();
+    assert!(jsonb::from_raw_jsonb::<Kind>(&text.as_raw()).is_err());
+
+    // Only a string reads as a unit variant: a date read as its text,
+    // "1970-01-02", so it matched a variant renamed to that text.
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    enum Day {
+        #[serde(rename = "1970-01-02")]
+        Second,
+    }
+    // A date read as its text, "1970-01-02", so it matched the variant.
+    let date = Value::Date(Date { value: 1 }).to_vec().unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<Day>(&jsonb::RawJsonb::new(&date)),
+        Err(jsonb::Error::UnexpectedType)
+    );
+    let in_array = Value::Array(vec![Value::Date(Date { value: 1 })])
+        .to_vec()
+        .unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<Vec<Day>>(&jsonb::RawJsonb::new(&in_array)),
+        Err(jsonb::Error::UnexpectedType)
+    );
+    // The string still reads as the variant, and a date still reads as a string.
+    let text: jsonb::OwnedJsonb = r#""1970-01-02""#.parse().unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<Day>(&text.as_raw()),
+        Ok(Day::Second)
+    );
+    assert_eq!(
+        jsonb::from_raw_jsonb::<String>(&jsonb::RawJsonb::new(&date)),
+        Ok("1970-01-02".to_string())
+    );
+}
+
+#[test]
+fn i128_and_u128_round_trip() {
+    // `serialize_i128` and `serialize_u128` write decimals with scale 0, but
+    // the deserializer had no `deserialize_i128` or `deserialize_u128`, so
+    // serde's default rejected them.
+    for v in [0, 1, -1, i64::MIN as i128 - 1, i128::MIN, i128::MAX] {
+        let jsonb = jsonb::to_owned_jsonb(&v).unwrap();
+        assert_eq!(jsonb::from_raw_jsonb::<i128>(&jsonb.as_raw()), Ok(v), "{v}");
+    }
+    for v in [0, 1, u64::MAX as u128 + 1, u128::MAX] {
+        let jsonb = jsonb::to_owned_jsonb(&v).unwrap();
+        assert_eq!(jsonb::from_raw_jsonb::<u128>(&jsonb.as_raw()), Ok(v), "{v}");
+    }
+    // Plain integers read as either type.
+    let small: jsonb::OwnedJsonb = "-7".parse().unwrap();
+    assert_eq!(jsonb::from_raw_jsonb::<i128>(&small.as_raw()), Ok(-7));
+    let big: jsonb::OwnedJsonb = "18446744073709551615".parse().unwrap();
+    assert_eq!(
+        jsonb::from_raw_jsonb::<u128>(&big.as_raw()),
+        Ok(u64::MAX as u128)
+    );
+    // Out of range values, fractions and floats are rejected.
+    let negative = jsonb::to_owned_jsonb(&-1i128).unwrap();
+    assert!(jsonb::from_raw_jsonb::<u128>(&negative.as_raw()).is_err());
+    let max = jsonb::to_owned_jsonb(&u128::MAX).unwrap();
+    assert!(jsonb::from_raw_jsonb::<i128>(&max.as_raw()).is_err());
+    for text in ["1.5", "1e3"] {
+        let jsonb: jsonb::OwnedJsonb = text.parse().unwrap();
+        assert!(
+            jsonb::from_raw_jsonb::<i128>(&jsonb.as_raw()).is_err(),
+            "{text}"
+        );
+    }
 }

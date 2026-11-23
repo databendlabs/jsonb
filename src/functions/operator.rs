@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 
 use crate::constants::*;
+use crate::core::push_comparable_bytes;
 use crate::core::ArrayBuilder;
 use crate::core::ArrayIterator;
 use crate::core::Entries;
@@ -699,8 +700,7 @@ impl RawEntry<'_> {
                 let (keys, values) = Entries::object(entry.container(), len)?;
                 for (key, value) in keys.zip(values) {
                     push_comparable_tag(buf, child_depth, STRING_LEVEL)?;
-                    buf.extend_from_slice(key?.payload);
-                    buf.push(0);
+                    push_comparable_bytes(buf, key?.payload);
                     value?.write_comparable(child_depth, buf)?;
                 }
             }
@@ -715,26 +715,15 @@ impl RawEntry<'_> {
             }
             JsonbItemType::Number => {
                 push_comparable_tag(buf, depth, NUMBER_LEVEL)?;
-                let n = Number::decode(entry.payload)?.as_f64();
-                // `-0.0` equals `0` but has different bits; encode them alike.
-                let n = if n == 0.0 { 0.0 } else { n };
-                // https://github.com/rust-lang/rust/blob/9c20b2a8cc7588decb6de25ac6a7912dcef24d65/library/core/src/num/f32.rs#L1176-L1260
-                let s = n.to_bits() as i64;
-                let v = s ^ (((s >> 63) as u64) >> 1) as i64;
-                let mut b = v.to_be_bytes();
-                // Toggle top "sign" bit to ensure consistent sort order
-                b[0] ^= 0x80;
-                buf.extend_from_slice(&b);
+                Number::decode(entry.payload)?.write_comparable(buf);
             }
             JsonbItemType::String => {
                 push_comparable_tag(buf, depth, STRING_LEVEL)?;
-                buf.extend_from_slice(entry.payload);
-                buf.push(0);
+                push_comparable_bytes(buf, entry.payload);
             }
             JsonbItemType::Extension => {
                 push_comparable_tag(buf, depth, EXTENSION_LEVEL)?;
-                buf.extend_from_slice(entry.payload);
-                buf.push(0);
+                ExtensionValue::decode(entry.payload)?.write_comparable(buf);
             }
         }
         Ok(())

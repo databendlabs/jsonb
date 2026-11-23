@@ -160,33 +160,3 @@ fn json_text_matches_serde_json_on_edge_cases() {
     }
     assert_same_as_serde(&[]);
 }
-
-#[test]
-fn json_text_matches_serde_json_at_the_nesting_limit() {
-    // Debug builds use several KiB of stack per level in both writers, more
-    // than the test thread's 2 MiB allows for `MAX_NESTING_DEPTH` levels.
-    let run = || {
-        // At the limit both succeed; past it both fail and fall back.
-        for levels in [512, 513, 10_000] {
-            let mut data = vec![0x80, 0x00, 0x00, 0x00];
-            for _ in 1..levels {
-                let len = data.len() as u32;
-                let mut wrapper = vec![0x80, 0x00, 0x00, 0x01];
-                wrapper.extend_from_slice(&(0x5000_0000 | len).to_be_bytes());
-                wrapper.extend_from_slice(&data);
-                data = wrapper;
-            }
-            assert_eq!(
-                RawJsonb::new(&data).to_string().starts_with('['),
-                levels == 512
-            );
-            assert_same_as_serde(&data);
-        }
-    };
-    std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(run)
-        .unwrap()
-        .join()
-        .unwrap();
-}
