@@ -270,6 +270,11 @@ impl Ord for RawJsonb<'_> {
 ///   (e.g., trailing characters after the expected JSONB structure).
 /// * `Err(e)`: If any other Serde deserialization error occurs.
 ///
+/// # Numbers and extension values
+///
+/// Decimals are read as the nearest `f64`; use `serde_json::to_value` to keep
+/// their digits. Extension values are read as their `Display` text.
+///
 /// # Examples
 ///
 /// ```
