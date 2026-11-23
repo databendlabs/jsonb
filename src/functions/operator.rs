@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 
 use crate::constants::*;
+use crate::core::push_comparable_bytes;
 use crate::core::ArrayBuilder;
 use crate::core::ArrayIterator;
 use crate::core::Entries;
@@ -699,8 +700,7 @@ impl RawEntry<'_> {
                 let (keys, values) = Entries::object(entry.container(), len)?;
                 for (key, value) in keys.zip(values) {
                     push_comparable_tag(buf, child_depth, STRING_LEVEL)?;
-                    buf.extend_from_slice(key?.payload);
-                    buf.push(0);
+                    push_comparable_bytes(buf, key?.payload);
                     value?.write_comparable(child_depth, buf)?;
                 }
             }
@@ -719,13 +719,11 @@ impl RawEntry<'_> {
             }
             JsonbItemType::String => {
                 push_comparable_tag(buf, depth, STRING_LEVEL)?;
-                buf.extend_from_slice(entry.payload);
-                buf.push(0);
+                push_comparable_bytes(buf, entry.payload);
             }
             JsonbItemType::Extension => {
                 push_comparable_tag(buf, depth, EXTENSION_LEVEL)?;
-                buf.extend_from_slice(entry.payload);
-                buf.push(0);
+                ExtensionValue::decode(entry.payload)?.write_comparable(buf);
             }
         }
         Ok(())

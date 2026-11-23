@@ -81,12 +81,29 @@ pub struct Timestamp {
 /// timezone-aware datetime operations. The timestamp is stored in UTC,
 /// and the offset indicates the local timezone.
 /// Standard JSON has no native timezone-aware timestamp type.
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+///
+/// Values order by their instant, then by offset, so that equal instants
+/// with different offsets are distinct but adjacent. The derived order
+/// compared the offset first, so a later instant could sort before an
+/// earlier one.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimestampTz {
     /// Timezone offset in seconds from UTC
     pub offset: i32,
     /// Microseconds since Unix epoch (January 1, 1970 00:00:00 UTC)
     pub value: i64,
+}
+
+impl Ord for TimestampTz {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.value, self.offset).cmp(&(other.value, other.offset))
+    }
+}
+
+impl PartialOrd for TimestampTz {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Represents a time interval or duration.

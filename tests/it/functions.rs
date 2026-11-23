@@ -2715,3 +2715,103 @@ fn signed_indexes_do_not_overflow() {
         assert!(raw.select_by_path(&path).unwrap().is_empty());
     }
 }
+
+#[test]
+fn comparable_encoding_matches_partial_cmp() {
+    // An instant orders before a later one whatever the offsets. The derived
+    // order compared the offset first.
+    let early = TimestampTz {
+        offset: 3600,
+        value: 0,
+    };
+    let late = TimestampTz {
+        offset: 0,
+        value: 1,
+    };
+    assert!(early < late);
+
+    let mut scalars = vec![
+        // Signed fields used to be compared as two's complement bytes, so
+        // negative values sorted after positive ones.
+        Value::Date(Date { value: -1 }),
+        Value::Date(Date { value: 0 }),
+        Value::Date(Date { value: 1 }),
+        Value::Timestamp(Timestamp { value: i64::MIN }),
+        Value::Timestamp(Timestamp { value: -1 }),
+        Value::Timestamp(Timestamp { value: 0 }),
+        Value::TimestampTz(early),
+        Value::TimestampTz(late),
+        Value::TimestampTz(TimestampTz {
+            offset: -3600,
+            value: 0,
+        }),
+        Value::TimestampTz(TimestampTz {
+            offset: 0,
+            value: -1,
+        }),
+        Value::Interval(Interval {
+            months: -1,
+            days: 0,
+            micros: 0,
+        }),
+        Value::Interval(Interval {
+            months: 0,
+            days: -1,
+            micros: 5,
+        }),
+        Value::Interval(Interval {
+            months: 0,
+            days: 0,
+            micros: -5,
+        }),
+        Value::Binary(b""),
+        Value::Binary(b"a"),
+        Value::Binary(b"a\0"),
+        Value::Binary(b"a\0b"),
+        Value::Binary(b"\xff"),
+        // A `0` terminator was a prefix of an embedded `\0`.
+        Value::String(Cow::Borrowed("")),
+        Value::String(Cow::Borrowed("a")),
+        Value::String(Cow::Borrowed("a\0")),
+        Value::String(Cow::Borrowed("a\0b")),
+        Value::String(Cow::Borrowed("ab")),
+        Value::Number(Number::Int64(-1)),
+        Value::Number(Number::UInt64(1)),
+        Value::Bool(true),
+        Value::Null,
+    ];
+    let mut object = Object::new();
+    object.insert("a\0".to_string(), Value::Number(Number::UInt64(0)));
+    scalars.push(Value::Object(object));
+    let mut object = Object::new();
+    object.insert("a".to_string(), Value::Number(Number::UInt64(9)));
+    scalars.push(Value::Object(object));
+
+    // Each value alone, and followed by another member, where the bytes after
+    // a value's encoding must not decide the order.
+    let mut values = Vec::new();
+    for v in &scalars {
+        values.push(v.clone());
+        values.push(Value::Array(vec![v.clone()]));
+        values.push(Value::Array(vec![
+            v.clone(),
+            Value::Number(Number::UInt64(1)),
+        ]));
+        values.push(Value::Array(vec![v.clone(), Value::Null]));
+    }
+    let encoded: Vec<Vec<u8>> = values.iter().map(|v| v.to_vec().unwrap()).collect();
+    for (a, a_bytes) in values.iter().zip(&encoded) {
+        let a_raw = RawJsonb::new(a_bytes);
+        let a_key = a_raw.convert_to_comparable();
+        assert!(!a_key.is_empty(), "{a:?}");
+        for (b, b_bytes) in values.iter().zip(&encoded) {
+            let b_raw = RawJsonb::new(b_bytes);
+            let order = a_raw.partial_cmp(&b_raw).unwrap();
+            assert_eq!(
+                a_key.cmp(&b_raw.convert_to_comparable()),
+                order,
+                "{a:?} vs {b:?}"
+            );
+        }
+    }
+}

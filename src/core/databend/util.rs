@@ -469,6 +469,44 @@ impl Number {
 }
 
 impl ExtensionValue<'_> {
+    /// Appends the comparable encoding of this value: its type byte, then
+    /// its fields in the order `PartialOrd` compares them.
+    ///
+    /// Signed fields are written big-endian with the sign bit flipped, so
+    /// negative values sort before positive ones. The raw payload has them
+    /// in two's complement, which sorted `Date { value: -1 }` after
+    /// `Date { value: 0 }`, and it holds a `TimestampTz` offset after the
+    /// instant.
+    pub(crate) fn write_comparable(&self, buf: &mut Vec<u8>) {
+        let i32_key = |v: i32| (v as u32 ^ 1 << 31).to_be_bytes();
+        let i64_key = |v: i64| (v as u64 ^ 1 << 63).to_be_bytes();
+        match self {
+            ExtensionValue::Binary(v) => {
+                buf.push(EXTENSION_BINARY);
+                push_comparable_bytes(buf, v);
+            }
+            ExtensionValue::Date(v) => {
+                buf.push(EXTENSION_DATE);
+                buf.extend_from_slice(&i32_key(v.value));
+            }
+            ExtensionValue::Timestamp(v) => {
+                buf.push(EXTENSION_TIMESTAMP);
+                buf.extend_from_slice(&i64_key(v.value));
+            }
+            ExtensionValue::TimestampTz(v) => {
+                buf.push(EXTENSION_TIMESTAMP_TZ);
+                buf.extend_from_slice(&i64_key(v.value));
+                buf.extend_from_slice(&i32_key(v.offset));
+            }
+            ExtensionValue::Interval(v) => {
+                buf.push(EXTENSION_INTERVAL);
+                buf.extend_from_slice(&i32_key(v.months));
+                buf.extend_from_slice(&i32_key(v.days));
+                buf.extend_from_slice(&i64_key(v.micros));
+            }
+        }
+    }
+
     #[inline]
     pub(crate) fn compact_encode<W: Write>(&self, mut writer: W) -> Result<usize> {
         match self {
@@ -561,6 +599,25 @@ impl ExtensionValue<'_> {
         };
         Ok(val)
     }
+}
+
+/// Appends `bytes` so that byte-wise comparison orders them as the bytes do
+/// and no encoding is a prefix of another: each `0x00` is written as
+/// `0x00 0xFF`, followed by the terminator `0x00 0x00`.
+///
+/// A plain `0` terminator was a prefix of a `\0` in the bytes, so in an
+/// array or object the bytes after it decided the order: `["a", 1]` sorted
+/// after `["a\u0000"]`.
+pub(crate) fn push_comparable_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
+    let mut chunks = bytes.split(|&b| b == 0);
+    if let Some(first) = chunks.next() {
+        buf.extend_from_slice(first);
+    }
+    for chunk in chunks {
+        buf.extend_from_slice(&[0, 0xFF]);
+        buf.extend_from_slice(chunk);
+    }
+    buf.extend_from_slice(&[0, 0]);
 }
 
 /// Decodes a JSONB string payload.

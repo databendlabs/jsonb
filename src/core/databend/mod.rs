@@ -28,3 +28,4 @@ pub(crate) use entry::*;
 pub(crate) use iterator::*;
 pub(crate) use json_writer::JsonWriter;
 pub use ser::*;
+pub(crate) use util::push_comparable_bytes;
