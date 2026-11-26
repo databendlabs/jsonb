@@ -22,8 +22,10 @@ keywords = ["json", "jsonb", "jsonpath"]
 license = "Apache-2.0"
 name = "jsonb"
 repository = "https://github.com/databendlabs/jsonb"
-version = "0.5.6"
+version = "0.6.0"
 rust-version = "1.85"
+# Benchmark documents, read only when the benchmarks run.
+exclude = ["/data"]
 
 [dependencies]
 byteorder = "1.5.0"

@@ -1,3 +1,39 @@
+## [v0.6.0] - 2026-11-28
+
+### Breaking Changes
+
+- `Value::to_vec` and `Value::write_to_vec` return `Result` instead of panicking or writing corrupt JSONB. They fail with `Error::ValueTooLarge` or `Error::RecursionLimitExceeded` (#108), and with `Error::InvalidJsonbNumber` for decimals whose scale or digits exceed the precision of their type (#114)
+- `Value` and `ExtensionValue` have a new `TimestampNtz` variant, so exhaustive matches on them need a new arm (#113)
+- `Error` has new variants `RecursionLimitExceeded`, `ValueTooLarge` and `JsonPathTooComplex` (#108, #109)
+- `convert_to_comparable` writes new bytes for numbers, strings, object keys and extension values, so stored comparable keys must be rebuilt (#111)
+- `TimestampTz` orders by its instant, then by its offset (#111)
+- Number comparison is exact, so some results change where the old order was inconsistent (#109)
+- Malformed JSONB that used to decode, or decode wrongly, now fails, some of it with `InvalidJsonb` or `InvalidJsonbExtension` (#108, #111)
+- Deserialization passes strings through `visit_borrowed_str`, so a visitor that implements only `visit_string` no longer receives them (#111)
+
+### Deprecated
+
+- `parse_value_standard_mode`, `parse_owned_jsonb_standard_mode` and `parse_owned_jsonb_standard_mode_with_buf`; use `ParseOptions::new().standard_mode(true)` (#114)
+
+### Added
+
+- Feat: Support direct conversion between `JSONB` and `jaq_json::Val` (#102)
+- Feat: Add allocation-free scalar path visitors (#104)
+- Feat: Add `Decimal64::new`, `Decimal128::new` and `Decimal256::new`, which check scale and precision (#109)
+- Feat: Add the `TimestampNtz` extension type (#113)
+- Feat: Add `ParseOptions` to choose the syntax, reject out-of-range numbers instead of rounding them, and allow duplicate keys keeping the last value (#114)
+- Test: Add benchmarks for JSONB reading, writing, array functions and JSONPath (#110)
+- Test: Add fuzz targets for JSONB, JSON text, JSONPath and numbers (#112)
+
+### Fixed
+
+- Fix: Render `Timestamp` and `TimestampTz` up to 9999-12-31 23:59:59.999999 (#107)
+- Fix: Reject unterminated quoted JSONPath fields (#106)
+- Fix: Harden JSONB encoding and decoding against malformed input (#108)
+- Fix: Make number arithmetic, number comparison and JSONPath exact and bounded (#109)
+- Fix: Bound JSONB deserialization to each member, and make `convert_to_comparable` agree with comparison for numbers, extension values and strings holding `\0` (#111)
+- Fix: Read decimals beyond their precision, written by older versions, as the narrowest wider decimal or the nearest `f64` instead of failing (#114)
+
 ## [v0.5.6] - 2026-03-27
 
 ### Added
@@ -173,6 +209,7 @@
 - Implement `JSONB` encodes and decodes.
 - Implemented a number of `JSONB` functions.
 
+[v0.6.0]: https://github.com/databendlabs/jsonb/compare/v0.5.6...v0.6.0
 [v0.5.6]: https://github.com/databendlabs/jsonb/compare/v0.5.5...v0.5.6
 [v0.5.5]: https://github.com/databendlabs/jsonb/compare/v0.5.4...v0.5.5
 [v0.5.4]: https://github.com/databendlabs/jsonb/compare/v0.5.3...v0.5.4
