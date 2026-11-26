@@ -7,7 +7,7 @@ Coverage-guided fuzzing with [cargo-fuzz] (libFuzzer + AddressSanitizer).
 | Target | Input | Checks |
 |---|---|---|
 | `raw_jsonb` | Arbitrary bytes as JSONB | Every read/transform API; a value that decodes re-encodes to stable bytes and decodes back to an equal value; `from_raw_jsonb::<serde_json::Value>` agrees with `to_value`, with decimals as the nearest `f64` |
-| `json_text` | Arbitrary bytes as JSON text | All parsers and encoders agree byte for byte; `Value` and `RawJsonb` format the same valid JSON, which parses back to an equal value; standard mode accepts what `serde_json` accepts |
+| `json_text` | Arbitrary bytes as JSON text | All parsers and encoders agree byte for byte; `Value` and `RawJsonb` format the same valid JSON, which parses back to an equal value; standard mode accepts what `serde_json` accepts; `ParseOptions::reject_out_of_range_numbers` changes nothing but failing at integers no exact type holds and numbers beyond `f64`; `allow_duplicate_keys` keeps the last value of a key, as `serde_json` does |
 | `json_path` | Arbitrary bytes as a JSONPath, key path, or canonical key path | Evaluation against fixed documents; formatted paths parse back to the same path |
 | `binary_ops` | Two or three values separated by `0x00`, each parsed as JSON text when possible | Two-value APIs; comparison is a total order that agrees with `Value::cmp` and with the byte order of `convert_to_comparable`, also against fixed extension values and strings holding `\0` |
 | `number` | Two `Number`s of any variant | `add`, `sub`, `mul` and `rem` never return a wrong integer and fail only on overflow; `div` divides as `f64` and fails only on a zero divisor; formatted numbers parse back to equal values |

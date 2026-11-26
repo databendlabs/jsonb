@@ -418,12 +418,26 @@ type ParseMode = (
 /// mode must also accept what `serde_json` accepts.
 pub fn check_json_text(data: &[u8]) {
     check_against_serde_json(data);
-    let modes: [ParseMode; 2] = [
+    for options in [ParseOptions::new(), standard()] {
+        check_reject_out_of_range_numbers(options, data);
+        check_allow_duplicate_keys(options, data);
+    }
+    let modes: [ParseMode; 4] = [
         (parse_owned_jsonb, parse_owned_jsonb_with_buf, parse_value),
         (
-            parse_owned_jsonb_standard_mode,
-            parse_owned_jsonb_standard_mode_with_buf,
-            parse_value_standard_mode,
+            |data| standard().parse_owned_jsonb(data),
+            |data, buf| standard().parse_owned_jsonb_with_buf(data, buf),
+            |data: &[u8]| standard().parse_value(data),
+        ),
+        (
+            |data| checked(ParseOptions::new()).parse_owned_jsonb(data),
+            |data, buf| checked(ParseOptions::new()).parse_owned_jsonb_with_buf(data, buf),
+            |data: &[u8]| checked(ParseOptions::new()).parse_value(data),
+        ),
+        (
+            |data| checked(standard()).parse_owned_jsonb(data),
+            |data, buf| checked(standard()).parse_owned_jsonb_with_buf(data, buf),
+            |data: &[u8]| checked(standard()).parse_value(data),
         ),
     ];
     for (parse_owned, parse_owned_with_buf, parse) in modes {
@@ -503,7 +517,8 @@ pub fn check_json_text(data: &[u8]) {
 ///
 /// Only this direction holds: standard mode knowingly accepts raw control
 /// characters and lone surrogates that `serde_json` rejects. It rejects
-/// duplicate object keys by design, which `serde_json` accepts.
+/// duplicate object keys by default; with `allow_duplicate_keys`, it keeps the
+/// last value of each key as `serde_json` does.
 fn check_against_serde_json(data: &[u8]) {
     // With `arbitrary_precision`, serde_json reads an object keyed by this
     // marker as a number, so its `Value` is not a faithful reference.
@@ -517,7 +532,7 @@ fn check_against_serde_json(data: &[u8]) {
     let Ok(expect) = serde_json::from_slice::<serde_json::Value>(data) else {
         return;
     };
-    match parse_value_standard_mode(data) {
+    match standard().parse_value(data) {
         Ok(got) => assert!(
             same_as_serde_json(&got, &expect),
             "standard mode parses {got}, serde_json parses {expect}"
@@ -525,6 +540,93 @@ fn check_against_serde_json(data: &[u8]) {
         Err(err) if err.to_string().starts_with("duplicate object attribute") => {}
         Err(err) => panic!("standard mode rejects JSON that serde_json accepts: {err}"),
     }
+    match standard().allow_duplicate_keys(true).parse_value(data) {
+        Ok(got) => assert!(
+            same_as_serde_json(&got, &expect),
+            "with duplicate keys, standard mode parses {got}, serde_json parses {expect}"
+        ),
+        Err(err) => {
+            panic!("with duplicate keys, standard mode rejects JSON that serde_json accepts: {err}")
+        }
+    }
+}
+
+/// Checks that allowing duplicate keys only accepts input that fails with a
+/// duplicate key otherwise, and keeps everything else the same.
+fn check_allow_duplicate_keys(options: ParseOptions, data: &[u8]) {
+    let allowed = options.allow_duplicate_keys(true).parse_value(data);
+    let is_duplicate = |err: &Error| err.to_string().starts_with("duplicate object attribute");
+    match (options.parse_value(data), &allowed) {
+        (Ok(a), Ok(b)) => assert_eq!(&a, b, "allowing duplicate keys changed a value"),
+        (Ok(_), Err(err)) => panic!("allowing duplicate keys rejects more: {err}"),
+        (Err(err), _) if is_duplicate(&err) => {}
+        (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "errors differ"),
+        (Err(err), Ok(_)) => panic!("allowing duplicate keys accepts input failing with {err}"),
+    }
+    if let Err(err) = &allowed {
+        assert!(!is_duplicate(err), "duplicate keys are allowed, but {err}");
+    }
+}
+
+/// Options for standard JSON syntax.
+fn standard() -> ParseOptions {
+    ParseOptions::new().standard_mode(true)
+}
+
+/// `options` with out-of-range numbers rejected.
+fn checked(options: ParseOptions) -> ParseOptions {
+    options.reject_out_of_range_numbers(true)
+}
+
+/// Checks that rejecting out-of-range numbers changes nothing but failing at
+/// a number that would otherwise be stored as a different value: an integer
+/// that no exact type holds, or a number beyond the `f64` range.
+fn check_reject_out_of_range_numbers(options: ParseOptions, data: &[u8]) {
+    let rounded = options.parse_value(data);
+    let err = match (&rounded, &checked(options).parse_value(data)) {
+        (Ok(a), Ok(b)) => {
+            return assert_eq!(a, b, "rejecting out-of-range numbers changed a value")
+        }
+        (Err(a), Err(b)) if a.to_string() == b.to_string() => return,
+        (Err(err), Ok(_)) => panic!("rejecting out-of-range numbers accepts more: {err}"),
+        (_, Err(err)) => err.to_string(),
+    };
+    // The new error is earlier than the old one, or where parsing succeeded,
+    // and at the end of a number.
+    let pos = err
+        .strip_prefix("invalid number, pos ")
+        .and_then(|pos| pos.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            panic!("rejecting out-of-range numbers fails with {err}, otherwise {rounded:?}")
+        });
+    let before = &data[..pos];
+    let start = before
+        .iter()
+        .rposition(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'-' | b'+' | b'.')))
+        .map_or(0, |i| i + 1);
+    let token = &before[start..];
+    // Parsed alone, the number becomes a float: infinity, or the rounded
+    // value of an integer, written without fraction digits or exponent.
+    let digits = token
+        .strip_prefix(b"-")
+        .or_else(|| token.strip_prefix(b"+"))
+        .unwrap_or(token);
+    let hex = digits.len() > 1 && digits[0] == b'0' && matches!(digits[1], b'x' | b'X');
+    let integer = if hex {
+        !digits.contains(&b'.')
+    } else {
+        !digits.iter().any(|b| matches!(b, b'e' | b'E'))
+            && digits
+                .split(|&b| b == b'.')
+                .nth(1)
+                .is_none_or(<[u8]>::is_empty)
+    };
+    let alone = options.parse_value(token);
+    assert!(
+        matches!(alone, Ok(Value::Number(Number::Float64(v))) if v.is_infinite() || integer),
+        "rejected {:?}, which parses alone as {alone:?}",
+        String::from_utf8_lossy(token)
+    );
 }
 
 /// Compares a parsed `Value` with a `serde_json::Value` of the same text.
@@ -537,7 +639,7 @@ fn same_as_serde_json(got: &Value<'_>, expect: &serde_json::Value) -> bool {
         // Representations differ by design (decimals, overflow to infinity),
         // so compare with this crate's reading of the digits serde_json kept.
         (Value::Number(a), Json::Number(b)) => {
-            matches!(parse_value_standard_mode(b.to_string().as_bytes()), Ok(Value::Number(b)) if *a == b)
+            matches!(standard().parse_value(b.to_string().as_bytes()), Ok(Value::Number(b)) if *a == b)
         }
         (Value::Array(a), Json::Array(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_as_serde_json(a, b))
