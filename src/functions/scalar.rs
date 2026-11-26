@@ -1471,7 +1471,7 @@ impl RawJsonb<'_> {
         Ok(matches!(jsonb_item_type, JsonbItemType::Object(_)))
     }
 
-    /// Checks if the JSONB value is a extension(binary, date, timestamp, timestamp_tz, interval, timestamp_ntz) value.
+    /// Checks if the JSONB value is a extension(binary, date, timestamp, timestamp_tz, timestamp_ntz, interval) value.
     ///
     /// This function checks if the JSONB value represents a extension value.
     ///
