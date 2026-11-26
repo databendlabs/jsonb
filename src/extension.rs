@@ -48,10 +48,10 @@ pub enum ExtensionValue<'a> {
     Timestamp(Timestamp),
     /// Timestamp with microsecond precision and timezone offset information
     TimestampTz(TimestampTz),
+    /// Timestamp with microsecond precision as a wall clock not tied to any timezone
+    TimestampNtz(TimestampNtz),
     /// Time interval representation for duration calculations
     Interval(Interval),
-    /// Wall-clock date and time with microsecond precision that is not tied to any timezone
-    TimestampNtz(TimestampNtz),
 }
 
 /// Represents a calendar date (year, month, day) without time component.
@@ -108,17 +108,15 @@ impl PartialOrd for TimestampTz {
     }
 }
 
-/// Represents a wall-clock date and time that is not tied to any timezone,
-/// like SQL `TIMESTAMP WITHOUT TIME ZONE` or Snowflake `TIMESTAMP_NTZ`.
+/// Represents a timestamp as a wall clock not tied to any timezone.
 ///
-/// The value is the number of microseconds from `1970-01-01 00:00:00` to the
-/// wall clock, counted as if both were in UTC. It is not an instant, so it
-/// must not be compared with or converted to a `Timestamp` without choosing a
-/// timezone first.
+/// Stores a local date and time, like SQL `TIMESTAMP WITHOUT TIME ZONE`,
+/// which is not an instant and is read the same in every timezone.
+/// The value is counted as if the wall clock were in UTC.
 /// Standard JSON has no native wall-clock timestamp type.
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct TimestampNtz {
-    /// Microseconds from `1970-01-01 00:00:00` to the wall clock
+    /// Microseconds since `1970-01-01 00:00:00` on the wall clock
     pub value: i64,
 }
 
@@ -192,17 +190,6 @@ impl Display for Timestamp {
     }
 }
 
-impl Display for TimestampNtz {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        let datetime = epoch_micros_to_datetime(self.value, 0);
-        // `epoch_micros_to_datetime` saturates to a datetime within jiff's
-        // range, and the format only uses fields every civil datetime has.
-        let text = strtime::format(TIMESTAMP_FORMAT, datetime)
-            .expect("a civil datetime always formats with TIMESTAMP_FORMAT");
-        f.write_str(&text)
-    }
-}
-
 impl Display for TimestampTz {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         // Clamp out-of-range offsets to jiff's supported range, like the timestamp.
@@ -220,6 +207,17 @@ impl Display for TimestampTz {
         let text = tm.to_string(TIMESTAMP_TIMEZONE_FORMAT).expect(
             "a civil datetime with an offset always formats with TIMESTAMP_TIMEZONE_FORMAT",
         );
+        f.write_str(&text)
+    }
+}
+
+impl Display for TimestampNtz {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let datetime = epoch_micros_to_datetime(self.value, 0);
+        // `epoch_micros_to_datetime` saturates to a datetime within jiff's
+        // range, and the format only uses fields every civil datetime has.
+        let text = strtime::format(TIMESTAMP_FORMAT, datetime)
+            .expect("a civil datetime always formats with TIMESTAMP_FORMAT");
         f.write_str(&text)
     }
 }
@@ -294,8 +292,8 @@ impl Display for ExtensionValue<'_> {
             ExtensionValue::Date(v) => write!(f, "{}", v),
             ExtensionValue::Timestamp(v) => write!(f, "{}", v),
             ExtensionValue::TimestampTz(v) => write!(f, "{}", v),
-            ExtensionValue::Interval(v) => write!(f, "{}", v),
             ExtensionValue::TimestampNtz(v) => write!(f, "{}", v),
+            ExtensionValue::Interval(v) => write!(f, "{}", v),
         }
     }
 }
@@ -316,17 +314,17 @@ impl PartialOrd for ExtensionValue<'_> {
             ExtensionValue::Date(_) => 1,
             ExtensionValue::Timestamp(_) => 2,
             ExtensionValue::TimestampTz(_) => 3,
-            ExtensionValue::Interval(_) => 4,
-            // Last, so that the order of the existing types is unchanged.
+            // Sorts after `Interval`, so that the order of the existing types is unchanged.
             ExtensionValue::TimestampNtz(_) => 5,
+            ExtensionValue::Interval(_) => 4,
         };
         let other_level = match other {
             ExtensionValue::Binary(_) => 0,
             ExtensionValue::Date(_) => 1,
             ExtensionValue::Timestamp(_) => 2,
             ExtensionValue::TimestampTz(_) => 3,
-            ExtensionValue::Interval(_) => 4,
             ExtensionValue::TimestampNtz(_) => 5,
+            ExtensionValue::Interval(_) => 4,
         };
         let res = self_level.cmp(&other_level);
         if matches!(res, Ordering::Greater | Ordering::Less) {
@@ -346,10 +344,10 @@ impl PartialOrd for ExtensionValue<'_> {
             (ExtensionValue::TimestampTz(self_data), ExtensionValue::TimestampTz(other_data)) => {
                 Some(self_data.cmp(other_data))
             }
-            (ExtensionValue::Interval(self_data), ExtensionValue::Interval(other_data)) => {
+            (ExtensionValue::TimestampNtz(self_data), ExtensionValue::TimestampNtz(other_data)) => {
                 Some(self_data.cmp(other_data))
             }
-            (ExtensionValue::TimestampNtz(self_data), ExtensionValue::TimestampNtz(other_data)) => {
+            (ExtensionValue::Interval(self_data), ExtensionValue::Interval(other_data)) => {
                 Some(self_data.cmp(other_data))
             }
             (_, _) => None,
