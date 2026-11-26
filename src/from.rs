@@ -292,6 +292,10 @@ impl<'a> From<Value<'a>> for JsonValue {
                 let s = format!("{}", v);
                 JsonValue::String(s)
             }
+            Value::TimestampNtz(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
             Value::Array(arr) => {
                 let mut vals: Vec<JsonValue> = Vec::with_capacity(arr.len());
                 for val in arr {

@@ -22,6 +22,7 @@ use crate::error::*;
 use crate::extension::Date;
 use crate::extension::Interval;
 use crate::extension::Timestamp;
+use crate::extension::TimestampNtz;
 use crate::extension::TimestampTz;
 use crate::number::Number;
 use crate::ExtensionValue;
@@ -1470,7 +1471,7 @@ impl RawJsonb<'_> {
         Ok(matches!(jsonb_item_type, JsonbItemType::Object(_)))
     }
 
-    /// Checks if the JSONB value is a extension(binary, date, timestamp, timestamp_tz, interval) value.
+    /// Checks if the JSONB value is a extension(binary, date, timestamp, timestamp_tz, interval, timestamp_ntz) value.
     ///
     /// This function checks if the JSONB value represents a extension value.
     ///
@@ -1882,6 +1883,94 @@ impl RawJsonb<'_> {
                 let val = ext.as_extension_value()?;
                 match val {
                     ExtensionValue::TimestampTz(v) => Ok(Some(v)),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Checks if the JSONB value is a timestamp ntz value.
+    ///
+    /// This function checks if the JSONB value represents a timestamp without time zone value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - If the value is a timestamp ntz value.
+    /// * `Ok(false)` - If the value is not a timestamp ntz value.
+    /// * `Err(Error)` - If the JSONB data is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::TimestampNtz;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // TimestampNtz value
+    /// let timestamp_ntz_value = Value::TimestampNtz(TimestampNtz { value: 1760140800000000 });
+    /// let buf = timestamp_ntz_value.to_vec().unwrap();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert!(raw_jsonb.is_timestamp_ntz().unwrap());
+    /// ```
+    pub fn is_timestamp_ntz(&self) -> Result<bool> {
+        let jsonb_item_type = self.jsonb_item_type()?;
+        match jsonb_item_type {
+            JsonbItemType::Extension => {
+                let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+                match jsonb_item {
+                    JsonbItem::Extension(ext) => {
+                        let val = ext.as_extension_value()?;
+                        match val {
+                            ExtensionValue::TimestampNtz(_v) => Ok(true),
+                            _ => Ok(false),
+                        }
+                    }
+                    _ => Err(Error::InvalidJsonb),
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Extracts a timestamp ntz value from a JSONB value.
+    ///
+    /// This function attempts to extract a timestamp without time zone value from the JSONB value.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The JSONB value.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(TimestampNtz))` - If the value is a timestamp ntz value, the extracted timestamp value.
+    /// * `Ok(None)` - If the value is not a timestamp ntz value.
+    /// * `Err(Error)` - If the JSONB data is invalid or if the timestamp ntz value cannot be decoded.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonb::TimestampNtz;
+    /// use jsonb::RawJsonb;
+    /// use jsonb::Value;
+    ///
+    /// // TimestampNtz value
+    /// let timestamp_ntz_value = Value::TimestampNtz(TimestampNtz { value: 1760140800000000 });
+    /// let buf = timestamp_ntz_value.to_vec().unwrap();
+    /// let raw_jsonb = RawJsonb::new(&buf);
+    /// assert_eq!(raw_jsonb.as_timestamp_ntz().unwrap(), Some(TimestampNtz { value: 1760140800000000 }));
+    /// ```
+    pub fn as_timestamp_ntz(&self) -> Result<Option<TimestampNtz>> {
+        let jsonb_item = JsonbItem::from_raw_jsonb(*self)?;
+        match jsonb_item {
+            JsonbItem::Extension(ext) => {
+                let val = ext.as_extension_value()?;
+                match val {
+                    ExtensionValue::TimestampNtz(v) => Ok(Some(v)),
                     _ => Ok(None),
                 }
             }

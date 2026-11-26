@@ -984,6 +984,9 @@ impl<'a> Encoder<'a> {
                 self.encode_extension(ExtensionValue::TimestampTz(v.clone()))?
             }
             Value::Interval(v) => self.encode_extension(ExtensionValue::Interval(v.clone()))?,
+            Value::TimestampNtz(v) => {
+                self.encode_extension(ExtensionValue::TimestampNtz(v.clone()))?
+            }
             Value::Array(array) => {
                 let len = self.encode_array(array)?;
                 JEntry::make_container_jentry(len)?

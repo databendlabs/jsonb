@@ -20,7 +20,7 @@ use std::borrow::Cow;
 
 use jsonb::{
     Date, Decimal128, Decimal256, Decimal64, Interval, Number, Object, RawJsonb, Timestamp,
-    TimestampTz, Value,
+    TimestampNtz, TimestampTz, Value,
 };
 use proptest::prelude::*;
 use serde::Serialize;
@@ -117,6 +117,8 @@ fn value() -> impl Strategy<Value = Value<'static>> {
             -1_000_000_000_000_000i64..1_000_000_000_000_000
         )
             .prop_map(|(offset, value)| Value::TimestampTz(TimestampTz { offset, value })),
+        (-1_000_000_000_000_000i64..1_000_000_000_000_000)
+            .prop_map(|value| Value::TimestampNtz(TimestampNtz { value })),
         (any::<i32>(), any::<i32>(), any::<i64>()).prop_map(|(months, days, micros)| {
             Value::Interval(Interval {
                 months,

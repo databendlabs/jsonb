@@ -53,6 +53,7 @@ impl RawJsonb<'_> {
     /// * `"timestamp"`
     /// * `"timestamp_tz"`
     /// * `"interval"`
+    /// * `"timestamp_ntz"`
     ///
     /// # Arguments
     ///
@@ -126,6 +127,7 @@ impl RawJsonb<'_> {
                             ExtensionValue::Timestamp(_v) => Ok(TYPE_TIMESTAMP),
                             ExtensionValue::TimestampTz(_v) => Ok(TYPE_TIMESTAMP_TZ),
                             ExtensionValue::Interval(_v) => Ok(TYPE_INTERVAL),
+                            ExtensionValue::TimestampNtz(_v) => Ok(TYPE_TIMESTAMP_NTZ),
                         }
                     }
                     _ => Err(Error::InvalidJsonb),

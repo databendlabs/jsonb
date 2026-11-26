@@ -38,6 +38,7 @@ use crate::Decimal64;
 use crate::Interval;
 use crate::Number;
 use crate::Timestamp;
+use crate::TimestampNtz;
 use crate::TimestampTz;
 
 pub type Object<'a> = BTreeMap<String, Value<'a>>;
@@ -75,6 +76,9 @@ pub enum Value<'a> {
     /// Extended type: Represents a time interval or duration
     /// Useful for time difference calculations and scheduling
     Interval(Interval),
+    /// Extended type: Represents a wall-clock timestamp that is not tied to any timezone
+    /// Stored as microseconds from `1970-01-01 00:00:00` to the wall clock
+    TimestampNtz(TimestampNtz),
     /// Represents a JSON array of values
     Array(Vec<Value<'a>>),
     /// Represents a JSON object as key-value pairs
@@ -157,6 +161,7 @@ impl Debug for Value<'_> {
             Value::Timestamp(ref v) => formatter.debug_tuple("Timestamp").field(v).finish(),
             Value::TimestampTz(ref v) => formatter.debug_tuple("TimestampTz").field(v).finish(),
             Value::Interval(ref v) => formatter.debug_tuple("Interval").field(v).finish(),
+            Value::TimestampNtz(ref v) => formatter.debug_tuple("TimestampNtz").field(v).finish(),
             Value::Array(ref v) => {
                 formatter.write_str("Array(")?;
                 Debug::fmt(v, formatter)?;
@@ -205,6 +210,9 @@ impl Display for Value<'_> {
                 write!(f, "\"{}\"", v)
             }
             Value::Interval(v) => {
+                write!(f, "\"{}\"", v)
+            }
+            Value::TimestampNtz(v) => {
                 write!(f, "\"{}\"", v)
             }
             Value::Array(ref vs) => {
@@ -444,6 +452,19 @@ impl<'a> Value<'a> {
         matches!(self, Value::Interval(_v))
     }
 
+    /// Returns true if this value is a timestamp without time zone extension.
+    pub fn is_timestamp_ntz(&self) -> bool {
+        matches!(self, Value::TimestampNtz(_v))
+    }
+
+    /// Returns the timestamp without time zone if this value is that extension.
+    pub fn as_timestamp_ntz(&self) -> Option<&TimestampNtz> {
+        match self {
+            Value::TimestampNtz(v) => Some(v),
+            _ => None,
+        }
+    }
+
     /// Returns the interval if this value is an interval extension.
     pub fn as_interval(&self) -> Option<&Interval> {
         match self {
@@ -612,6 +633,7 @@ impl<'a> Value<'a> {
             Value::Timestamp(_) => JsonbItemType::Extension,
             Value::TimestampTz(_) => JsonbItemType::Extension,
             Value::Interval(_) => JsonbItemType::Extension,
+            Value::TimestampNtz(_) => JsonbItemType::Extension,
             Value::Array(arr) => JsonbItemType::Array(arr.len()),
             Value::Object(obj) => JsonbItemType::Object(obj.len()),
         }
@@ -624,6 +646,7 @@ impl<'a> Value<'a> {
             Value::Timestamp(v) => Some(ExtensionValue::Timestamp(v.clone())),
             Value::TimestampTz(v) => Some(ExtensionValue::TimestampTz(v.clone())),
             Value::Interval(v) => Some(ExtensionValue::Interval(v.clone())),
+            Value::TimestampNtz(v) => Some(ExtensionValue::TimestampNtz(v.clone())),
             _ => None,
         }
     }

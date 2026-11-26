@@ -37,6 +37,7 @@ use jsonb::Object;
 use jsonb::OwnedJsonb;
 use jsonb::RawJsonb;
 use jsonb::Timestamp;
+use jsonb::TimestampNtz;
 use jsonb::TimestampTz;
 use jsonb::Value;
 use nom::AsBytes;
@@ -1028,6 +1029,29 @@ fn test_to_string() {
             }),
             r#""10 months 20 days 00:05:00""#,
         ),
+        // A wall clock renders without an offset.
+        (
+            Value::TimestampNtz(TimestampNtz {
+                value: 190390000000,
+            }),
+            r#""1970-01-03 04:53:10.000000""#,
+        ),
+        (
+            Value::TimestampNtz(TimestampNtz {
+                value: 253402300799999999,
+            }),
+            r#""9999-12-31 23:59:59.999999""#,
+        ),
+        (
+            Value::TimestampNtz(TimestampNtz {
+                value: -62135596800000000,
+            }),
+            r#""0001-01-01 00:00:00.000000""#,
+        ),
+        (
+            Value::TimestampNtz(TimestampNtz { value: i64::MIN }),
+            r#""-9999-01-01 00:00:00.000000""#,
+        ),
         (
             Value::Interval(Interval {
                 months: -14,
@@ -1392,6 +1416,12 @@ fn test_type_of() {
                 micros: 300000000,
             }),
             "INTERVAL",
+        ),
+        (
+            Value::TimestampNtz(TimestampNtz {
+                value: 190390000000,
+            }),
+            "TIMESTAMP_NTZ",
         ),
         (
             Value::Number(Number::Decimal64(Decimal64 {
@@ -2764,6 +2794,11 @@ fn comparable_encoding_matches_partial_cmp() {
             days: 0,
             micros: -5,
         }),
+        // Sorts after every other extension type, and never equals a
+        // `Timestamp` with the same value.
+        Value::TimestampNtz(TimestampNtz { value: i64::MIN }),
+        Value::TimestampNtz(TimestampNtz { value: -1 }),
+        Value::TimestampNtz(TimestampNtz { value: 0 }),
         Value::Binary(b""),
         Value::Binary(b"a"),
         Value::Binary(b"a\0"),
@@ -2814,4 +2849,41 @@ fn comparable_encoding_matches_partial_cmp() {
             );
         }
     }
+}
+
+#[test]
+fn test_timestamp_ntz() {
+    let ntz = TimestampNtz {
+        value: 1760140800000000,
+    };
+    let ntz_buf = Value::TimestampNtz(ntz.clone()).to_vec().unwrap();
+    let ntz_raw = RawJsonb::new(&ntz_buf);
+    assert!(ntz_raw.is_extension_value().unwrap());
+    assert!(ntz_raw.is_timestamp_ntz().unwrap());
+    assert_eq!(ntz_raw.as_timestamp_ntz().unwrap(), Some(ntz.clone()));
+    // A wall clock is not an instant, so it is neither read as one nor equal
+    // to one with the same value.
+    assert!(!ntz_raw.is_timestamp().unwrap());
+    assert!(!ntz_raw.is_timestamp_tz().unwrap());
+    assert_eq!(ntz_raw.as_timestamp().unwrap(), None);
+    assert_eq!(ntz_raw.as_timestamp_tz().unwrap(), None);
+
+    let ts_buf = Value::Timestamp(Timestamp { value: ntz.value })
+        .to_vec()
+        .unwrap();
+    let ts_raw = RawJsonb::new(&ts_buf);
+    assert!(!ts_raw.is_timestamp_ntz().unwrap());
+    assert_eq!(ts_raw.as_timestamp_ntz().unwrap(), None);
+    assert_ne!(ntz_raw, ts_raw);
+    assert_eq!(ntz_raw.partial_cmp(&ts_raw), Some(Ordering::Greater));
+
+    let str_buf = r#""2025-10-11 00:00:00.000000""#.parse::<OwnedJsonb>().unwrap();
+    assert!(!str_buf.as_raw().is_timestamp_ntz().unwrap());
+    assert_eq!(str_buf.as_raw().as_timestamp_ntz().unwrap(), None);
+
+    let value = from_slice(&ntz_buf).unwrap();
+    assert!(value.is_timestamp_ntz());
+    assert_eq!(value.as_timestamp_ntz(), Some(&ntz));
+    assert!(!value.is_timestamp());
+    assert_eq!(value.to_string(), r#""2025-10-11 00:00:00.000000""#);
 }
