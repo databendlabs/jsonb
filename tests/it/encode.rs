@@ -16,8 +16,8 @@ use std::borrow::Cow;
 
 use ethnum::I256;
 use jsonb::{
-    Date, Decimal128, Decimal256, Decimal64, Interval, Number, Object, Timestamp, TimestampTz,
-    Value,
+    Date, Decimal128, Decimal256, Decimal64, Interval, Number, Object, Timestamp, TimestampNtz,
+    TimestampTz, Value,
 };
 
 #[test]
@@ -301,6 +301,14 @@ fn test_encode_extension() {
         .to_vec()
         .unwrap(),
         b"\x20\0\0\0\x60\0\0\x11\x40\0\0\0\x0A\0\0\0\x14\0\0\0\0\x11\xE1\xA3\0"
+    );
+    assert_eq!(
+        Value::TimestampNtz(TimestampNtz {
+            value: 1760140800000000
+        })
+        .to_vec()
+        .unwrap(),
+        b"\x20\0\0\0\x60\0\0\x09\x50\0\x06\x40\xd6\xb7\x23\x80\0"
     );
 }
 

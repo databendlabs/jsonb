@@ -91,6 +91,7 @@ pub(crate) const TYPE_BINARY: &str = "BINARY";
 pub(crate) const TYPE_DATE: &str = "DATE";
 pub(crate) const TYPE_TIMESTAMP: &str = "TIMESTAMP";
 pub(crate) const TYPE_TIMESTAMP_TZ: &str = "TIMESTAMP_TZ";
+pub(crate) const TYPE_TIMESTAMP_NTZ: &str = "TIMESTAMP_NTZ";
 pub(crate) const TYPE_INTERVAL: &str = "INTERVAL";
 
 pub(crate) const MAX_DECIMAL64_PRECISION: usize = 18;

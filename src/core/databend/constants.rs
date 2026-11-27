@@ -45,6 +45,7 @@ pub(super) const EXTENSION_DATE: u8 = 0x10;
 pub(super) const EXTENSION_TIMESTAMP: u8 = 0x20;
 pub(super) const EXTENSION_TIMESTAMP_TZ: u8 = 0x30;
 pub(super) const EXTENSION_INTERVAL: u8 = 0x40;
+pub(super) const EXTENSION_TIMESTAMP_NTZ: u8 = 0x50;
 
 // @todo support offset mode
 #[allow(dead_code)]

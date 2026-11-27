@@ -99,6 +99,7 @@ pub fn exercise_unary(raw: RawJsonb<'_>) {
     );
     let _ = raw.as_timestamp().map(|v| v.map(|v| v.to_string()));
     let _ = raw.as_timestamp_tz().map(|v| v.map(|v| v.to_string()));
+    let _ = raw.as_timestamp_ntz().map(|v| v.map(|v| v.to_string()));
     let _ = raw.as_interval().map(|v| v.map(|v| v.to_string()));
 
     let _ = (raw.array_length(), raw.array_values(), raw.array_distinct());
@@ -207,6 +208,7 @@ fn serde_json_model(value: &Value<'_>) -> serde_json::Value {
         Value::Timestamp(v) => text(ExtensionValue::Timestamp(v.clone())),
         Value::TimestampTz(v) => text(ExtensionValue::TimestampTz(v.clone())),
         Value::Interval(v) => text(ExtensionValue::Interval(v.clone())),
+        Value::TimestampNtz(v) => text(ExtensionValue::TimestampNtz(v.clone())),
         Value::Array(items) => Json::Array(items.iter().map(serde_json_model).collect()),
         Value::Object(object) => Json::Object(
             object
@@ -971,6 +973,9 @@ fn fixed_values() -> &'static [(RawJsonb<'static>, Value<'static>)] {
                 interval(0, -1, 1),
                 interval(0, 0, -1),
                 interval(0, 0, 0),
+                Value::TimestampNtz(TimestampNtz { value: i64::MIN }),
+                Value::TimestampNtz(TimestampNtz { value: -1 }),
+                Value::TimestampNtz(TimestampNtz { value: 0 }),
                 Value::Binary(b""),
                 Value::Binary(b"a"),
                 Value::Binary(b"a\0"),

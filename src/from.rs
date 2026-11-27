@@ -288,6 +288,10 @@ impl<'a> From<Value<'a>> for JsonValue {
                 let s = format!("{}", v);
                 JsonValue::String(s)
             }
+            Value::TimestampNtz(v) => {
+                let s = format!("{}", v);
+                JsonValue::String(s)
+            }
             Value::Interval(v) => {
                 let s = format!("{}", v);
                 JsonValue::String(s)
