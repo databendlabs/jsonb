@@ -1714,9 +1714,9 @@ fn number_order_is_exact_and_transitive() {
         float(f64::from_bits((two_53 as f64).to_bits() + 1)),
         dec64(i64::MIN, 0),
     ]);
+    // Decimals beyond their precision do not encode.
     let comparable = |n: &Number| {
-        let encoded = Value::Number(n.clone()).to_vec().unwrap();
-        jsonb::from_slice(&encoded).ok()?;
+        let encoded = Value::Number(n.clone()).to_vec().ok()?;
         Some(RawJsonb::new(&encoded).convert_to_comparable())
     };
     for x in &numbers {

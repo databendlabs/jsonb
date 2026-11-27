@@ -788,7 +788,7 @@ type ArithmeticOp = (
 /// when the exact result does not fit the result type; `div` divides as
 /// `f64`. Comparison must be antisymmetric and the comparable encoding must
 /// order the numbers the same way. Formatted numbers must parse
-/// back to equal values. Decoding must accept exactly the decimals whose scale
+/// back to equal values. Encoding must accept exactly the decimals whose scale
 /// and digits fit their precision.
 pub fn check_number(mut data: &[u8]) {
     let (Some(a), Some(b)) = (read_number(&mut data), read_number(&mut data)) else {
@@ -846,13 +846,10 @@ pub fn check_number(mut data: &[u8]) {
         b.cmp(&a).reverse(),
         "comparison is not antisymmetric: {a:?} vs {b:?}"
     );
-    // Decimals beyond their precision are not valid JSONB and have no
-    // comparable encoding.
+    // Decimals beyond their precision do not encode.
     let comparable = |n: &Number| {
-        let encoded = Value::Number(n.clone()).to_vec().unwrap();
-        let raw = RawJsonb::new(&encoded);
-        raw.to_value().ok()?;
-        Some(raw.convert_to_comparable())
+        let encoded = Value::Number(n.clone()).to_vec().ok()?;
+        Some(RawJsonb::new(&encoded).convert_to_comparable())
     };
     if let (Some(a_encoded), Some(b_encoded)) = (comparable(&a), comparable(&b)) {
         assert_comparable_order(order, &a_encoded, &b_encoded, || format!("{a:?} vs {b:?}"));
@@ -893,10 +890,10 @@ fn assert_comparable_order(order: Ordering, a: &[u8], b: &[u8], what: impl Fn() 
     );
 }
 
-/// Checks that `n` decodes after encoding exactly when it is valid: always for
-/// integers and floats, and for decimals when `DecimalXX::new` accepts its
-/// scale and value. A decoded decimal keeps its width, scale and value; other
-/// numbers keep their value, though e.g. `UInt64(0)` may decode as `Int64(0)`.
+/// Checks that `n` encodes exactly when it is valid: always for integers and
+/// floats, and for decimals when `DecimalXX::new` accepts its scale and value.
+/// A decoded decimal keeps its width, scale and value; other numbers keep their
+/// value, though e.g. `UInt64(0)` may decode as `Int64(0)`.
 fn check_number_round_trip(n: &Number) {
     let valid = match n {
         Number::Decimal64(d) => Decimal64::new(d.scale, d.value).is_ok(),
@@ -904,28 +901,31 @@ fn check_number_round_trip(n: &Number) {
         Number::Decimal256(d) => Decimal256::new(d.scale, d.value).is_ok(),
         Number::Int64(_) | Number::UInt64(_) | Number::Float64(_) => true,
     };
-    let encoded = Value::Number(n.clone()).to_vec().unwrap();
+    let encoded = match Value::Number(n.clone()).to_vec() {
+        Ok(encoded) => encoded,
+        Err(err) => {
+            assert!(!valid, "{n:?} is valid but does not encode: {err:?}");
+            return;
+        }
+    };
+    assert!(valid, "{n:?} is beyond its precision but encodes");
     // `to_value`, unlike `from_slice`, does not fall back to parsing JSON text.
     match RawJsonb::new(&encoded).to_value() {
-        Ok(Value::Number(decoded)) => {
-            assert!(valid, "{n:?} is beyond its precision but decodes");
-            match n {
-                Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
-                    assert_eq!(
-                        format!("{decoded:?}"),
-                        format!("{n:?}"),
-                        "decimal changed in a round trip"
-                    );
-                }
-                _ => assert_eq!(
-                    decoded.cmp(n),
-                    Ordering::Equal,
-                    "{n:?} decodes as {decoded:?}"
-                ),
+        Ok(Value::Number(decoded)) => match n {
+            Number::Decimal64(_) | Number::Decimal128(_) | Number::Decimal256(_) => {
+                assert_eq!(
+                    format!("{decoded:?}"),
+                    format!("{n:?}"),
+                    "decimal changed in a round trip"
+                );
             }
-        }
-        Ok(other) => panic!("{n:?} decodes as {other:?}"),
-        Err(err) => assert!(!valid, "{n:?} is valid but does not decode: {err:?}"),
+            _ => assert_eq!(
+                decoded.cmp(n),
+                Ordering::Equal,
+                "{n:?} decodes as {decoded:?}"
+            ),
+        },
+        other => panic!("{n:?} decodes as {other:?}"),
     }
 }
 
