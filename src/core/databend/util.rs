@@ -30,6 +30,7 @@ use crate::extension::Date;
 use crate::extension::ExtensionValue;
 use crate::extension::Interval;
 use crate::extension::Timestamp;
+use crate::extension::TimestampNtz;
 use crate::extension::TimestampTz;
 use crate::number::Decimal128;
 use crate::number::Decimal256;
@@ -121,6 +122,7 @@ impl<'a> RawJsonb<'a> {
     /// - `Value::Timestamp(Timestamp)` - represents a timestamp
     /// - `Value::TimestampTz(TimestampTz)` - represents a timestamp with timezone
     /// - `Value::Interval(Interval)` - represents a time interval
+    /// - `Value::TimestampNtz(TimestampNtz)` - represents a timestamp without timezone
     /// - `Value::Array(Vec<Value<'a>>)` - represents an array
     /// - `Value::Object(Object)` - represents an object
     ///
@@ -504,6 +506,10 @@ impl ExtensionValue<'_> {
                 buf.extend_from_slice(&i32_key(v.days));
                 buf.extend_from_slice(&i64_key(v.micros));
             }
+            ExtensionValue::TimestampNtz(v) => {
+                buf.push(EXTENSION_TIMESTAMP_NTZ);
+                buf.extend_from_slice(&i64_key(v.value));
+            }
         }
     }
 
@@ -538,6 +544,11 @@ impl ExtensionValue<'_> {
                 writer.write_all(&v.days.to_be_bytes())?;
                 writer.write_all(&v.micros.to_be_bytes())?;
                 Ok(17)
+            }
+            ExtensionValue::TimestampNtz(v) => {
+                writer.write_all(&[EXTENSION_TIMESTAMP_NTZ])?;
+                writer.write_all(&v.value.to_be_bytes())?;
+                Ok(9)
             }
         }
     }
@@ -592,6 +603,14 @@ impl ExtensionValue<'_> {
                     days,
                     micros,
                 })
+            }
+            EXTENSION_TIMESTAMP_NTZ => {
+                if len != 8 {
+                    return Err(Error::InvalidJsonbExtension);
+                }
+                let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
+
+                ExtensionValue::TimestampNtz(TimestampNtz { value })
             }
             _ => {
                 return Err(Error::InvalidJsonbExtension);
@@ -659,6 +678,7 @@ impl<'a> RawEntry<'a> {
                 ExtensionValue::Timestamp(v) => Value::Timestamp(v),
                 ExtensionValue::TimestampTz(v) => Value::TimestampTz(v),
                 ExtensionValue::Interval(v) => Value::Interval(v),
+                ExtensionValue::TimestampNtz(v) => Value::TimestampNtz(v),
             }),
             CONTAINER_TAG => self.container().value_with_depth(depth),
             _ => Err(Error::InvalidJsonb),

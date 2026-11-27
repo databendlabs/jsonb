@@ -1283,6 +1283,7 @@ impl RawJsonb<'_> {
                         ExtensionValue::Date(value) => Value::Date(value),
                         ExtensionValue::Timestamp(value) => Value::Timestamp(value),
                         ExtensionValue::TimestampTz(value) => Value::TimestampTz(value),
+                        ExtensionValue::TimestampNtz(value) => Value::TimestampNtz(value),
                         ExtensionValue::Interval(value) => Value::Interval(value),
                     };
                     visitor(current_paths, value)?;

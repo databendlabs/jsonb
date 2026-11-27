@@ -17,7 +17,7 @@ use std::borrow::Cow;
 use ethnum::I256;
 use jsonb::{
     from_raw_jsonb, from_slice, Date, Decimal128, Decimal256, Decimal64, Error, Interval, Number,
-    Object, OwnedJsonb, Timestamp, TimestampTz, Value,
+    Object, OwnedJsonb, Timestamp, TimestampNtz, TimestampTz, Value,
 };
 
 #[test]
@@ -361,6 +361,12 @@ fn test_decode_extension() {
                 months: 10,
                 days: 20,
                 micros: 300000000,
+            }),
+        ),
+        (
+            b"\x20\0\0\0\x60\0\0\x09\x50\0\x06\x40\xd6\xb7\x23\x80\0".to_vec(),
+            Value::TimestampNtz(TimestampNtz {
+                value: 1760140800000000,
             }),
         ),
     ];

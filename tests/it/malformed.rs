@@ -270,6 +270,8 @@ fn display_does_not_panic_on_out_of_range_values() {
             days: i32::MIN,
             micros: i64::MIN,
         }),
+        Value::TimestampNtz(TimestampNtz { value: i64::MAX }),
+        Value::TimestampNtz(TimestampNtz { value: i64::MIN }),
     ];
     for value in &values {
         let mut buf = Vec::new();
@@ -463,6 +465,7 @@ fn mutation_corpus() -> Vec<Vec<u8>> {
             days: 2,
             micros: 3,
         }),
+        Value::TimestampNtz(TimestampNtz { value: -1 }),
         Value::Array(vec![Value::Binary(b"z"), Value::Date(Date { value: 1 })]),
     ] {
         let mut buf = Vec::new();

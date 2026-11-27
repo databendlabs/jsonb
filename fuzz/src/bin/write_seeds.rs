@@ -136,6 +136,9 @@ fn main() -> std::io::Result<()> {
             days: -2,
             micros: 3_600_000_001,
         }),
+        Value::TimestampNtz(TimestampNtz {
+            value: 1_700_000_000_000_000,
+        }),
     ]);
     let e76 = ethnum::I256::from(10).pow(76);
     let boundaries = Value::Array(vec![
@@ -167,6 +170,7 @@ fn main() -> std::io::Result<()> {
         })),
         Value::Date(Date { value: i32::MAX }),
         Value::Timestamp(Timestamp { value: i64::MIN }),
+        Value::TimestampNtz(TimestampNtz { value: i64::MAX }),
         Value::Interval(Interval {
             months: i32::MIN,
             days: i32::MIN,
