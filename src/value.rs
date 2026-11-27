@@ -479,7 +479,9 @@ impl<'a> Value<'a> {
     ///
     /// Returns `Error::ValueTooLarge` if a string, binary value, or nested
     /// array/object is 256 MiB or larger, or if an array/object has 2^29 or
-    /// more elements. `buf` is then restored to its original length.
+    /// more elements, and `Error::InvalidJsonbNumber` if a decimal's scale or
+    /// digits exceed the precision of its type (see `Decimal64::new`). `buf`
+    /// is then restored to its original length.
     pub fn write_to_vec(&self, buf: &mut Vec<u8>) -> Result<()> {
         append_or_restore(buf, |buf| Encoder::new(buf).encode(self))
     }
@@ -488,8 +490,8 @@ impl<'a> Value<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `Error::ValueTooLarge` under the same conditions as
-    /// [`Value::write_to_vec`].
+    /// Returns `Error::ValueTooLarge` or `Error::InvalidJsonbNumber` under the
+    /// same conditions as [`Value::write_to_vec`].
     pub fn to_vec(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         self.write_to_vec(&mut buf)?;

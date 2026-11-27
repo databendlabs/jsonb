@@ -372,19 +372,24 @@ impl Number {
                 writer.write_all(&v.to_be_bytes())?;
                 Ok(9)
             }
+            // Decimals beyond their precision are rejected here, so nothing
+            // this crate writes needs `widen_decimal` to read.
             Self::Decimal64(v) => {
+                Decimal64::new(v.scale, v.value)?;
                 writer.write_all(&[NUMBER_DECIMAL])?;
                 writer.write_all(&v.value.to_be_bytes())?;
                 writer.write_all(&v.scale.to_be_bytes())?;
                 Ok(10)
             }
             Self::Decimal128(v) => {
+                Decimal128::new(v.scale, v.value)?;
                 writer.write_all(&[NUMBER_DECIMAL])?;
                 writer.write_all(&v.value.to_be_bytes())?;
                 writer.write_all(&v.scale.to_be_bytes())?;
                 Ok(18)
             }
             Self::Decimal256(v) => {
+                Decimal256::new(v.scale, v.value)?;
                 writer.write_all(&[NUMBER_DECIMAL])?;
                 writer.write_all(&v.value.to_be_bytes())?;
                 writer.write_all(&v.scale.to_be_bytes())?;
@@ -434,29 +439,40 @@ impl Number {
                 9 => {
                     let value = i64::from_be_bytes(bytes[1..9].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[9..10].try_into().unwrap());
-                    Number::Decimal64(Decimal64::new(scale, value)?)
+                    Decimal64::new(scale, value).map_or_else(
+                        |_| widen_decimal(scale, i256::from(value)),
+                        Number::Decimal64,
+                    )
                 }
                 17 => {
                     let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[17..18].try_into().unwrap());
-                    Number::Decimal128(Decimal128::new(scale, value)?)
+                    Decimal128::new(scale, value).map_or_else(
+                        |_| widen_decimal(scale, i256::from(value)),
+                        Number::Decimal128,
+                    )
                 }
                 18 => {
                     // Compatible with deprecated Decimal128 formats, including precision
                     let value = i128::from_be_bytes(bytes[1..17].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[18..19].try_into().unwrap());
-                    Number::Decimal128(Decimal128::new(scale, value)?)
+                    Decimal128::new(scale, value).map_or_else(
+                        |_| widen_decimal(scale, i256::from(value)),
+                        Number::Decimal128,
+                    )
                 }
                 33 => {
                     let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[33..34].try_into().unwrap());
-                    Number::Decimal256(Decimal256::new(scale, value)?)
+                    Decimal256::new(scale, value)
+                        .map_or_else(|_| widen_decimal(scale, value), Number::Decimal256)
                 }
                 34 => {
                     // Compatible with deprecated Decimal256 formats, including precision
                     let value = i256::from_be_bytes(bytes[1..33].try_into().unwrap());
                     let scale = u8::from_be_bytes(bytes[34..35].try_into().unwrap());
-                    Number::Decimal256(Decimal256::new(scale, value)?)
+                    Decimal256::new(scale, value)
+                        .map_or_else(|_| widen_decimal(scale, value), Number::Decimal256)
                 }
                 _ => {
                     return Err(Error::InvalidJsonbNumber);
@@ -467,6 +483,27 @@ impl Number {
             }
         };
         Ok(num)
+    }
+}
+
+/// Reads a stored decimal whose scale or digits exceed the precision of its
+/// type as the narrowest wider decimal that holds it, or as the nearest `f64`
+/// beyond precision 76.
+///
+/// Encoding rejects such decimals, but older writers stored them: an earlier
+/// Avro import, for example, wrote `0.0000000000000000001` as
+/// `Decimal64 { scale: 19, value: 1 }`. Reading them by their value keeps
+/// that data readable and orders it by value.
+fn widen_decimal(scale: u8, value: i256) -> Number {
+    if let Some(d) = i128::try_from(value)
+        .ok()
+        .and_then(|value| Decimal128::new(scale, value).ok())
+    {
+        return Number::Decimal128(d);
+    }
+    match Decimal256::new(scale, value) {
+        Ok(d) => Number::Decimal256(d),
+        Err(_) => Number::Float64(Decimal256 { scale, value }.to_float64()),
     }
 }
 

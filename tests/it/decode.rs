@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use ethnum::I256;
 use jsonb::{
     from_raw_jsonb, from_slice, Date, Decimal128, Decimal256, Decimal64, Error, Interval, Number,
-    Object, OwnedJsonb, Timestamp, TimestampNtz, TimestampTz, Value,
+    Object, OwnedJsonb, RawJsonb, Timestamp, TimestampNtz, TimestampTz, Value,
 };
 
 #[test]
@@ -192,10 +193,11 @@ fn test_decode_decimal() {
 }
 
 /// Every encoder keeps a decimal's scale and digits within the precision of
-/// its width, 18, 38 or 76. Decoding used to accept any `u8` scale and any
-/// value, which made callers overflow `10^scale`.
+/// its width, 18, 38 or 76, and rejects other decimals. Older writers stored
+/// some, so decoding reads them by their value: as the narrowest wider decimal
+/// that holds them, or as the nearest `f64` beyond precision 76.
 #[test]
-fn decimals_beyond_their_precision_are_invalid() {
+fn decimals_beyond_their_precision() {
     let e18 = 10_i64.pow(18);
     let e38 = 10_i128.pow(38);
     let e76 = I256::from(10).pow(76);
@@ -271,18 +273,112 @@ fn decimals_beyond_their_precision_are_invalid() {
             value: I256::MIN,
         }),
     ];
-    for number in invalid {
-        let data = Value::Number(number.clone()).to_vec().unwrap();
-        assert!(from_slice(&data).is_err(), "{number:?}");
+    // The decimal each one is read as, written by an older encoder.
+    let f64_of = |text: &str| Number::Float64(text.parse().unwrap());
+    let widened = [
+        Number::Decimal128(Decimal128 {
+            scale: 19,
+            value: 1,
+        }),
+        f64_of("1e-255"),
+        Number::Decimal128(Decimal128 {
+            scale: 0,
+            value: e18.into(),
+        }),
+        Number::Decimal128(Decimal128 {
+            scale: 2,
+            value: i64::MIN.into(),
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 39,
+            value: I256::ONE,
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 0,
+            value: I256::from(e38),
+        }),
+        Number::Decimal256(Decimal256 {
+            scale: 0,
+            value: -I256::from(e38),
+        }),
+        f64_of("1e-77"),
+        f64_of(&e76.to_string()),
+        f64_of(&I256::MIN.to_string()),
+    ];
+    // A scalar holding the number payload of an older encoder: the decimal tag,
+    // the value and the scale.
+    let stored = |number: &Number| {
+        let mut payload = vec![0x70];
+        match number {
+            Number::Decimal64(d) => {
+                payload.extend_from_slice(&d.value.to_be_bytes());
+                payload.push(d.scale);
+            }
+            Number::Decimal128(d) => {
+                payload.extend_from_slice(&d.value.to_be_bytes());
+                payload.push(d.scale);
+            }
+            Number::Decimal256(d) => {
+                payload.extend_from_slice(&d.value.to_be_bytes());
+                payload.push(d.scale);
+            }
+            _ => unreachable!(),
+        }
+        let mut data = 0x2000_0000_u32.to_be_bytes().to_vec();
+        data.extend_from_slice(&(0x2000_0000 | payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+        data
+    };
+    for (number, expect) in invalid.iter().zip(widened) {
+        let value = Value::Number(number.clone());
+        assert_eq!(value.to_vec(), Err(Error::InvalidJsonbNumber), "{number:?}");
+        let mut buf = vec![1];
+        assert_eq!(value.write_to_vec(&mut buf), Err(Error::InvalidJsonbNumber));
+        assert_eq!(buf, [1], "{number:?}");
+
+        let data = stored(number);
+        let raw = RawJsonb::new(&data);
+        assert_eq!(
+            from_slice(&data).unwrap(),
+            Value::Number(expect.clone()),
+            "{number:?}"
+        );
+        assert_eq!(raw.as_number().unwrap(), Some(expect.clone()), "{number:?}");
+        // It reads, prints, compares and sorts as the decimal it is read as.
+        let expect_data = Value::Number(expect).to_vec().unwrap();
+        let expect_raw = RawJsonb::new(&expect_data);
+        assert_eq!(raw.to_string(), expect_raw.to_string(), "{number:?}");
+        assert_eq!(
+            raw.partial_cmp(&expect_raw),
+            Some(Ordering::Equal),
+            "{number:?}"
+        );
+        assert_eq!(
+            raw.convert_to_comparable(),
+            expect_raw.convert_to_comparable()
+        );
     }
     // The deprecated widths, which also store a precision byte before the
     // scale, with scales 39 and 77.
     let deprecated = [
-        b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x26\x27".to_vec(),
-        b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x4C\x4D".to_vec(),
+        (
+            b"\x20\0\0\0\x20\0\0\x13\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x26\x27".to_vec(),
+            Number::Decimal256(Decimal256 {
+                scale: 39,
+                value: I256::new(1234),
+            }),
+        ),
+        (
+            b"\x20\0\0\0\x20\0\0\x23\x70\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x04\xD2\x4C\x4D".to_vec(),
+            f64_of("1234e-77"),
+        ),
     ];
-    for data in deprecated {
-        assert!(from_slice(&data).is_err(), "{data:02x?}");
+    for (data, expect) in deprecated {
+        assert_eq!(
+            from_slice(&data).unwrap(),
+            Value::Number(expect),
+            "{data:02x?}"
+        );
     }
 }
 
