@@ -38,7 +38,7 @@ use std::cmp::Ordering;
 
 use ethnum::i256;
 use jsonb::RawJsonb;
-use jsonb::{parse_value, parse_value_standard_mode};
+use jsonb::{parse_value, ParseOptions};
 use jsonb::{Decimal128, Decimal256, Decimal64, Number, Value};
 use ordered_float::OrderedFloat;
 
@@ -1318,7 +1318,10 @@ fn test_parse_decimal() {
     }
     // standard json
     for test in tests {
-        let v = parse_value_standard_mode(test.as_bytes()).unwrap();
+        let v = ParseOptions::new()
+            .standard_mode(true)
+            .parse_value(test.as_bytes())
+            .unwrap();
         let s = OrderedFloat(v.as_f64().unwrap());
         let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
@@ -1363,7 +1366,10 @@ fn test_parse_float() {
 
     // standard json
     for (expected, test) in tests {
-        let v = parse_value_standard_mode(test.as_bytes()).unwrap();
+        let v = ParseOptions::new()
+            .standard_mode(true)
+            .parse_value(test.as_bytes())
+            .unwrap();
         let s = format!("{v}");
         let buf = v.to_vec().unwrap();
         let r = RawJsonb::new(&buf);
@@ -1708,9 +1714,9 @@ fn number_order_is_exact_and_transitive() {
         float(f64::from_bits((two_53 as f64).to_bits() + 1)),
         dec64(i64::MIN, 0),
     ]);
+    // Decimals beyond their precision do not encode.
     let comparable = |n: &Number| {
-        let encoded = Value::Number(n.clone()).to_vec().unwrap();
-        jsonb::from_slice(&encoded).ok()?;
+        let encoded = Value::Number(n.clone()).to_vec().ok()?;
         Some(RawJsonb::new(&encoded).convert_to_comparable())
     };
     for x in &numbers {

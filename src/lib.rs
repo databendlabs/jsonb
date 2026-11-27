@@ -92,11 +92,15 @@ pub use owned::to_owned_jsonb;
 pub use owned::OwnedJsonb;
 pub use parser::from_slice;
 pub use parser::parse_owned_jsonb;
+#[allow(deprecated)]
 pub use parser::parse_owned_jsonb_standard_mode;
+#[allow(deprecated)]
 pub use parser::parse_owned_jsonb_standard_mode_with_buf;
 pub use parser::parse_owned_jsonb_with_buf;
 pub use parser::parse_value;
+#[allow(deprecated)]
 pub use parser::parse_value_standard_mode;
+pub use parser::ParseOptions;
 pub use raw::from_raw_jsonb;
 pub use raw::RawJsonb;
 pub use value::*;

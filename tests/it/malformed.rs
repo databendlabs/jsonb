@@ -314,13 +314,22 @@ fn text_parsers_enforce_nesting_limit() {
             };
             let ok = text(MAX_DEPTH);
             assert!(parse_value(ok.as_bytes()).is_ok());
-            assert!(parse_value_standard_mode(ok.as_bytes()).is_ok());
+            assert!(ParseOptions::new()
+                .standard_mode(true)
+                .parse_value(ok.as_bytes())
+                .is_ok());
             assert!(parse_owned_jsonb(ok.as_bytes()).is_ok());
             for depth in [MAX_DEPTH + 1, 100_000] {
                 let deep = text(depth);
                 let err = Some(Error::RecursionLimitExceeded);
                 assert_eq!(parse_value(deep.as_bytes()).err(), err, "{open} x {depth}");
-                assert_eq!(parse_value_standard_mode(deep.as_bytes()).err(), err);
+                assert_eq!(
+                    ParseOptions::new()
+                        .standard_mode(true)
+                        .parse_value(deep.as_bytes())
+                        .err(),
+                    err
+                );
                 assert_eq!(parse_owned_jsonb(deep.as_bytes()).err(), err);
                 assert_eq!(deep.parse::<OwnedJsonb>().err(), err);
             }

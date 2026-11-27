@@ -14,7 +14,10 @@
 
 use std::borrow::Cow;
 
-use jsonb::{parse_value, parse_value_standard_mode, Number, Object, Value};
+use jsonb::{
+    parse_owned_jsonb, parse_owned_jsonb_with_buf, parse_value, Number, Object, OwnedJsonb,
+    ParseOptions, Value,
+};
 
 fn test_parse_err(errors: &[(&str, &'static str)]) {
     for &(s, err) in errors {
@@ -32,7 +35,9 @@ fn test_parse_ok(tests: Vec<(&str, Value<'_>)>) {
 
 fn test_parse_standard_err(errors: &[(&str, &'static str)]) {
     for &(s, err) in errors {
-        let res = parse_value_standard_mode(s.as_bytes());
+        let res = ParseOptions::new()
+            .standard_mode(true)
+            .parse_value(s.as_bytes());
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().to_string(), err);
     }
@@ -40,7 +45,13 @@ fn test_parse_standard_err(errors: &[(&str, &'static str)]) {
 
 fn test_parse_standard_ok(tests: Vec<(&str, Value<'_>)>) {
     for (s, val) in tests {
-        assert_eq!(parse_value_standard_mode(s.as_bytes()).unwrap(), val);
+        assert_eq!(
+            ParseOptions::new()
+                .standard_mode(true)
+                .parse_value(s.as_bytes())
+                .unwrap(),
+            val
+        );
     }
 }
 
@@ -579,7 +590,10 @@ fn test_value_display_is_json() {
         let formatted = value.to_string();
         let raw = jsonb::RawJsonb::new(&value.to_vec().unwrap()).to_string();
         assert_eq!(formatted, raw, "{text}");
-        let reparsed = parse_value_standard_mode(formatted.as_bytes()).unwrap();
+        let reparsed = ParseOptions::new()
+            .standard_mode(true)
+            .parse_value(formatted.as_bytes())
+            .unwrap();
         assert_eq!(reparsed, value, "{text}");
         serde_json::from_str::<serde_json::Value>(&formatted)
             .unwrap_or_else(|err| panic!("{formatted} is not JSON: {err}"));
@@ -636,4 +650,196 @@ fn test_parse_negative_hex_beyond_decimal128() {
         jsonb::from_slice(&data).unwrap().to_string(),
         format!("-1{}", "0".repeat(38))
     );
+}
+
+#[test]
+fn reject_out_of_range_numbers() {
+    let digits_80 = "9".repeat(80);
+    let rejected = [
+        (
+            ParseOptions::new().standard_mode(true),
+            "18446744073709551616",
+            20,
+        ),
+        (
+            ParseOptions::new().standard_mode(true),
+            "-9223372036854775809",
+            20,
+        ),
+        (
+            ParseOptions::new().standard_mode(true),
+            "123456789012345678901234567890",
+            30,
+        ),
+        (
+            ParseOptions::new().standard_mode(true),
+            r#"{"n": 18446744073709551616}"#,
+            26,
+        ),
+        (ParseOptions::new().standard_mode(true), "[1, 1e400]", 9),
+        (ParseOptions::new().standard_mode(true), "-1e400", 6),
+        (ParseOptions::new(), "1e400", 5),
+        (ParseOptions::new(), "[+1E+400]", 8),
+        // More digits than a decimal holds.
+        (ParseOptions::new(), &digits_80, 80),
+        (ParseOptions::new(), &format!("-{digits_80}."), 82),
+    ];
+    // Without `arbitrary_precision`, integers that a decimal would hold
+    // exactly are rounded too.
+    #[cfg(not(feature = "arbitrary_precision"))]
+    let rejected = [
+        rejected.as_slice(),
+        &[
+            (ParseOptions::new(), "18446744073709551616", 20),
+            (ParseOptions::new(), "-0009223372036854775809", 23),
+            (ParseOptions::new(), "123456789012345678901234567890.", 31),
+            (ParseOptions::new(), "0x10000000000000000", 19),
+            (ParseOptions::new(), "-0x8000000000000001", 19),
+        ],
+    ]
+    .concat();
+    for (options, s, pos) in rejected {
+        let options = options.reject_out_of_range_numbers(true);
+        let expect = format!("invalid number, pos {pos}");
+        let err = |res: Result<(), jsonb::Error>| res.unwrap_err().to_string();
+        assert_eq!(
+            err(options.parse_value(s.as_bytes()).map(drop)),
+            expect,
+            "{s}"
+        );
+        assert_eq!(
+            err(options.parse_owned_jsonb(s.as_bytes()).map(drop)),
+            expect,
+            "{s}"
+        );
+        let mut buf = Vec::new();
+        assert_eq!(
+            err(options.parse_owned_jsonb_with_buf(s.as_bytes(), &mut buf)),
+            expect,
+            "{s}"
+        );
+        // The default options round the same numbers instead.
+        let rounded = options
+            .reject_out_of_range_numbers(false)
+            .parse_value(s.as_bytes());
+        assert!(rounded.is_ok(), "{s}");
+    }
+
+    // Everything else parses as with the default options, which match the
+    // `parse_*` functions.
+    let accepted = [
+        "18446744073709551615",
+        "-9223372036854775808",
+        "0.1",
+        "1.7976931348623157e308",
+        "1e-400",
+        "123456789012345678901234567890.0",
+        r#"{"a":[1,-2,3.5,"x",null,true]}"#,
+    ];
+    let extended_only = [
+        "Infinity",
+        "-infinity",
+        "0xFFFFFFFFFFFFFFFF",
+        "+.5e3",
+        #[cfg(feature = "arbitrary_precision")]
+        "123456789012345678901234567890",
+        #[cfg(feature = "arbitrary_precision")]
+        "0x10000000000000000",
+    ];
+    type ParseValue = for<'a> fn(&'a [u8]) -> Result<Value<'a>, jsonb::Error>;
+    type ParseOwned = fn(&[u8]) -> Result<OwnedJsonb, jsonb::Error>;
+    type ParseWithBuf = fn(&[u8], &mut Vec<u8>) -> Result<(), jsonb::Error>;
+    // The deprecated standard mode functions still match the options.
+    #[allow(deprecated)]
+    let functions: [(ParseOptions, ParseValue, ParseOwned, ParseWithBuf); 2] = [
+        (
+            ParseOptions::new().standard_mode(true),
+            jsonb::parse_value_standard_mode,
+            jsonb::parse_owned_jsonb_standard_mode,
+            jsonb::parse_owned_jsonb_standard_mode_with_buf,
+        ),
+        (
+            ParseOptions::new(),
+            parse_value,
+            parse_owned_jsonb,
+            parse_owned_jsonb_with_buf,
+        ),
+    ];
+    for (options, value, owned, with_buf) in functions {
+        let extra: &[&str] = if options == ParseOptions::new() {
+            &extended_only
+        } else {
+            &[]
+        };
+        for s in accepted.iter().chain(extra) {
+            let s = s.as_bytes();
+            let owned: OwnedJsonb = owned(s).unwrap();
+            let mut buf = vec![1];
+            with_buf(s, &mut buf).unwrap();
+            assert_eq!(&buf[1..], owned.as_ref());
+            for options in [options, options.reject_out_of_range_numbers(true)] {
+                assert_eq!(
+                    options.parse_value(s).unwrap(),
+                    value(s).unwrap(),
+                    "{options:?}"
+                );
+                assert_eq!(options.parse_owned_jsonb(s).unwrap(), owned, "{options:?}");
+                let mut buf = vec![1];
+                options.parse_owned_jsonb_with_buf(s, &mut buf).unwrap();
+                assert_eq!(&buf[1..], owned.as_ref(), "{options:?}");
+            }
+        }
+    }
+    assert_eq!(ParseOptions::default(), ParseOptions::new());
+}
+
+#[test]
+fn allow_duplicate_keys() {
+    let cases = [
+        (r#"{"a":1,"a":2}"#, r#"{"a":2}"#),
+        (
+            r#"{"b":1,"a":2,"b":3,"a":4,"c":5}"#,
+            r#"{"a":4,"b":3,"c":5}"#,
+        ),
+        (
+            r#"{"a":{"x":1,"x":2},"a":[{"y":1,"y":{}}]}"#,
+            r#"{"a":[{"y":{}}]}"#,
+        ),
+        (
+            r#"[{"a":null,"a":true},{"a":1}]"#,
+            r#"[{"a":true},{"a":1}]"#,
+        ),
+    ];
+    for syntax in [ParseOptions::new().standard_mode(true), ParseOptions::new()] {
+        for (s, expect) in cases {
+            // Rejected by default, with the error of the `parse_*` functions.
+            let err = syntax.parse_value(s.as_bytes()).unwrap_err().to_string();
+            assert!(err.starts_with("duplicate object attribute"), "{s}: {err}");
+            assert_eq!(err, parse_value(s.as_bytes()).unwrap_err().to_string());
+
+            let options = syntax.allow_duplicate_keys(true);
+            let expect_value = parse_value(expect.as_bytes()).unwrap();
+            assert_eq!(
+                options.parse_value(s.as_bytes()).unwrap(),
+                expect_value,
+                "{s}"
+            );
+            let owned = options.parse_owned_jsonb(s.as_bytes()).unwrap();
+            assert_eq!(owned, parse_owned_jsonb(expect.as_bytes()).unwrap(), "{s}");
+            let mut buf = Vec::new();
+            options
+                .parse_owned_jsonb_with_buf(s.as_bytes(), &mut buf)
+                .unwrap();
+            assert_eq!(buf, owned.to_vec(), "{s}");
+        }
+    }
+    // Unquoted and single-quoted keys of extended syntax are the same key.
+    let options = ParseOptions::new().allow_duplicate_keys(true);
+    assert_eq!(
+        options.parse_value(br#"{a:1,'a':2,"a":3}"#).unwrap(),
+        parse_value(br#"{"a":3}"#).unwrap()
+    );
+    // Both options combine.
+    let options = options.reject_out_of_range_numbers(true);
+    assert!(options.parse_value(br#"{"a":1,"a":1e400}"#).is_err());
 }

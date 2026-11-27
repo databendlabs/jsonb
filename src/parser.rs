@@ -255,59 +255,157 @@ pub fn from_slice(buf: &[u8]) -> Result<Value<'_>> {
 /// multiple leading zeros, decimal points without digits, and empty array elements.
 /// Numeric values are preferentially parsed as decimal values to ensure that precision is not lost.
 ///
+/// This is `ParseOptions::new().parse_value(buf)`; see [`ParseOptions`] for
+/// standard syntax and other options.
+///
 /// Inspired by `https://github.com/jorgecarleitao/json-deserializer`
 /// Thanks Jorge Leitao.
 pub fn parse_value(buf: &[u8]) -> Result<Value<'_>> {
-    let mut parser = Parser::new(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_value()
+    ParseOptions::new().parse_value(buf)
 }
 
 /// Parse JSON text to JSONB Value with standard mode.
 /// The parser will follow standard JSON syntax rules.
+#[deprecated(
+    since = "0.6.0",
+    note = "use `ParseOptions::new().standard_mode(true).parse_value(buf)`"
+)]
 pub fn parse_value_standard_mode(buf: &[u8]) -> Result<Value<'_>> {
-    let mut parser = Parser::new_standard_mode(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_value()
+    ParseOptions::new().standard_mode(true).parse_value(buf)
 }
 
 /// Parses JSON text into an owned JSONB binary representation.
 /// The parser will follow extended JSON syntax rules.
+///
+/// This is `ParseOptions::new().parse_owned_jsonb(buf)`; see [`ParseOptions`].
 pub fn parse_owned_jsonb(buf: &[u8]) -> Result<OwnedJsonb> {
-    let size = buf.len();
-    let mut parser = Parser::new(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb(size)
+    ParseOptions::new().parse_owned_jsonb(buf)
 }
 
 /// Parses JSON text into an owned JSONB binary representation using standard JSON syntax rules.
 /// The parser will follow standard JSON syntax rules.
+#[deprecated(
+    since = "0.6.0",
+    note = "use `ParseOptions::new().standard_mode(true).parse_owned_jsonb(buf)`"
+)]
 pub fn parse_owned_jsonb_standard_mode(buf: &[u8]) -> Result<OwnedJsonb> {
-    let size = buf.len();
-    let mut parser = Parser::new_standard_mode(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb(size)
+    ParseOptions::new()
+        .standard_mode(true)
+        .parse_owned_jsonb(buf)
 }
 
 /// Parses JSON text into a provided buffer as JSONB binary representation.
 /// The parser will follow extended JSON syntax rules.
+///
+/// This is `ParseOptions::new().parse_owned_jsonb_with_buf(buf, result_buf)`;
+/// see [`ParseOptions`].
 pub fn parse_owned_jsonb_with_buf(buf: &[u8], result_buf: &mut Vec<u8>) -> Result<()> {
-    let size = buf.len();
-    let mut parser = Parser::new(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb_with_buffer(size, result_buf)
+    ParseOptions::new().parse_owned_jsonb_with_buf(buf, result_buf)
 }
 
 /// Parses JSON text into a provided buffer as JSONB binary representation using standard JSON syntax rules.
 /// The parser will follow standard JSON syntax rules.
+#[deprecated(
+    since = "0.6.0",
+    note = "use `ParseOptions::new().standard_mode(true).parse_owned_jsonb_with_buf(buf, result_buf)`"
+)]
 pub fn parse_owned_jsonb_standard_mode_with_buf(
     buf: &[u8],
     result_buf: &mut Vec<u8>,
 ) -> Result<()> {
-    let size = buf.len();
-    let mut parser = Parser::new_standard_mode(buf);
-    let json_ast = parser.parse()?;
-    json_ast.into_owned_jsonb_with_buffer(size, result_buf)
+    ParseOptions::new()
+        .standard_mode(true)
+        .parse_owned_jsonb_with_buf(buf, result_buf)
+}
+
+/// Options for parsing JSON text.
+///
+/// [`ParseOptions::new`] selects extended syntax with every option off, as
+/// [`parse_value`], [`parse_owned_jsonb`] and [`parse_owned_jsonb_with_buf`]
+/// use. Each setter turns one option on or off.
+///
+/// # Examples
+///
+/// ```
+/// use jsonb::ParseOptions;
+///
+/// let options = ParseOptions::new()
+///     .standard_mode(true)
+///     .reject_out_of_range_numbers(true);
+/// assert!(options.parse_value(b"18446744073709551615").is_ok());
+/// assert!(options.parse_value(b"18446744073709551616").is_err());
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseOptions {
+    standard_mode: bool,
+    reject_out_of_range_numbers: bool,
+    allow_duplicate_keys: bool,
+}
+
+impl ParseOptions {
+    /// Extended JSON syntax with every option off. Same as `default()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets whether to follow standard JSON syntax (RFC 8259) instead of
+    /// extended syntax. Off by default.
+    ///
+    /// Extended syntax also accepts leading plus signs, leading zeros, decimal
+    /// points without digits, `NaN` and `Infinity`, literals in any case,
+    /// hexadecimal numbers, single quoted strings, unquoted object keys and
+    /// empty array elements, and
+    /// stores numbers that fit as decimals with `arbitrary_precision`.
+    #[must_use]
+    pub fn standard_mode(mut self, standard: bool) -> Self {
+        self.standard_mode = standard;
+        self
+    }
+
+    /// Sets whether numbers that would be stored as a different value fail to
+    /// parse instead. Off by default.
+    ///
+    /// Such numbers are integers outside the `i64` and `u64` ranges, which
+    /// otherwise become the nearest `f64`, and numbers beyond the `f64` range,
+    /// which otherwise become infinity. They fail with an `invalid number`
+    /// syntax error at the end of the number. In extended syntax with the
+    /// `arbitrary_precision` feature, integers of up to 76 digits are stored
+    /// exactly as decimals, so only longer ones fail. Fractions and exponents
+    /// within the `f64` range still round to the nearest `f64`, and the
+    /// `Infinity` literal of extended syntax is still accepted.
+    #[must_use]
+    pub fn reject_out_of_range_numbers(mut self, reject: bool) -> Self {
+        self.reject_out_of_range_numbers = reject;
+        self
+    }
+
+    /// Sets whether an object may repeat a key, keeping the value that comes
+    /// last. Off by default, where a repeated key fails with a `duplicate
+    /// object attribute` syntax error.
+    #[must_use]
+    pub fn allow_duplicate_keys(mut self, allow: bool) -> Self {
+        self.allow_duplicate_keys = allow;
+        self
+    }
+
+    /// Parses JSON text to a JSONB `Value`.
+    pub fn parse_value<'a>(&self, buf: &'a [u8]) -> Result<Value<'a>> {
+        Parser::with_options(buf, *self).parse()?.into_value()
+    }
+
+    /// Parses JSON text into an owned JSONB binary representation.
+    pub fn parse_owned_jsonb(&self, buf: &[u8]) -> Result<OwnedJsonb> {
+        Parser::with_options(buf, *self)
+            .parse()?
+            .into_owned_jsonb(buf.len())
+    }
+
+    /// Parses JSON text into `result_buf` as JSONB binary representation.
+    pub fn parse_owned_jsonb_with_buf(&self, buf: &[u8], result_buf: &mut Vec<u8>) -> Result<()> {
+        Parser::with_options(buf, *self)
+            .parse()?
+            .into_owned_jsonb_with_buffer(buf.len(), result_buf)
+    }
 }
 
 /// JSON parser with optimized parsing strategies.
@@ -327,6 +425,10 @@ struct Parser<'a> {
     parse_object_key_fn: fn(&mut Self) -> Result<Cow<'a, str>>,
     /// Number of arrays and objects currently being parsed
     depth: usize,
+    /// Whether numbers that would be stored as a different value fail to parse
+    reject_out_of_range_numbers: bool,
+    /// Whether an object may repeat a key, keeping the last value
+    allow_duplicate_keys: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -338,6 +440,8 @@ impl<'a> Parser<'a> {
             parse_array_value_fn: Self::parse_array_value,
             parse_object_key_fn: Self::parse_object_key,
             depth: 0,
+            reject_out_of_range_numbers: false,
+            allow_duplicate_keys: false,
         }
     }
 
@@ -349,7 +453,32 @@ impl<'a> Parser<'a> {
             parse_array_value_fn: Self::parse_standard_json_value,
             parse_object_key_fn: Self::parse_standard_object_key,
             depth: 0,
+            reject_out_of_range_numbers: false,
+            allow_duplicate_keys: false,
         }
+    }
+
+    fn with_options(buf: &'a [u8], options: ParseOptions) -> Self {
+        let parser = if options.standard_mode {
+            Self::new_standard_mode(buf)
+        } else {
+            Self::new(buf)
+        };
+        Self {
+            reject_out_of_range_numbers: options.reject_out_of_range_numbers,
+            allow_duplicate_keys: options.allow_duplicate_keys,
+            ..parser
+        }
+    }
+
+    /// The error for a number that would be stored as a different value,
+    /// if [`ParseOptions::reject_out_of_range_numbers`] is set.
+    #[inline]
+    fn check_number_in_range(&self, out_of_range: bool) -> Result<()> {
+        if out_of_range && self.reject_out_of_range_numbers {
+            return Err(self.error(ParseErrorCode::InvalidNumberValue));
+        }
+        Ok(())
     }
 
     /// Parse a complete JSON document from the input buffer.
@@ -656,6 +785,9 @@ impl<'a> Parser<'a> {
     /// Parsing strategy:
     /// 1. First try to parse as integer (i64/u64)
     /// 2. If it contains decimal point or exponent, parse as floating point (f64)
+    ///
+    /// See [`ParseOptions::reject_out_of_range_numbers`] for the numbers it
+    /// may reject.
     fn parse_standard_json_number(&mut self) -> Result<JsonAst<'a>> {
         let start_idx = self.idx;
 
@@ -711,10 +843,14 @@ impl<'a> Parser<'a> {
             } else if let Ok(v) = s.parse::<i64>() {
                 return Ok(JsonAst::Number(Number::Int64(v)));
             }
+            self.check_number_in_range(true)?;
         }
 
-        match fast_float2::parse(s) {
-            Ok(v) => Ok(JsonAst::Number(Number::Float64(v))),
+        match fast_float2::parse::<f64, _>(s) {
+            Ok(v) => {
+                self.check_number_in_range(v.is_infinite())?;
+                Ok(JsonAst::Number(Number::Float64(v)))
+            }
             Err(_) => Err(self.error(ParseErrorCode::InvalidNumberValue)),
         }
     }
@@ -941,6 +1077,7 @@ impl<'a> Parser<'a> {
                         }
                         #[cfg(not(feature = "arbitrary_precision"))]
                         {
+                            self.check_number_in_range(true)?;
                             return Ok(JsonAst::Number(Number::Float64(-(value as f64))));
                         }
                     } else {
@@ -964,6 +1101,7 @@ impl<'a> Parser<'a> {
                         }
                         #[cfg(not(feature = "arbitrary_precision"))]
                         {
+                            self.check_number_in_range(true)?;
                             return Ok(JsonAst::Number(Number::Float64(value as f64)));
                         }
                     }
@@ -1039,8 +1177,14 @@ impl<'a> Parser<'a> {
         // SAFETY: Hex and special-value paths return earlier; every byte left in
         // `start_idx..self.idx` is an ASCII sign, digit, decimal point, or exponent marker.
         let s = unsafe { std::str::from_utf8_unchecked(&self.buf[start_idx..self.idx]) };
-        match fast_float2::parse(s) {
-            Ok(v) => Ok(JsonAst::Number(Number::Float64(v))),
+        match fast_float2::parse::<f64, _>(s) {
+            Ok(v) => {
+                // An integer that none of the exact types above holds, with or
+                // without a trailing `.`, is rounded here.
+                let integer = scale == 0 && !has_exponent;
+                self.check_number_in_range(integer || v.is_infinite())?;
+                Ok(JsonAst::Number(Number::Float64(v)))
+            }
             Err(_) => Err(self.error(ParseErrorCode::InvalidNumberValue)),
         }
     }
@@ -1290,7 +1434,8 @@ impl<'a> Parser<'a> {
     /// - Parses objects enclosed in curly braces {...}
     /// - Handles key-value pairs separated by colons
     /// - Validates proper syntax for separators and closing braces
-    /// - Detects and reports duplicate keys
+    /// - Detects and reports duplicate keys, or keeps the last value of each
+    ///   key if [`ParseOptions::allow_duplicate_keys`] is set
     ///
     /// The behavior differs between standard and extended mode through function pointers:
     /// - In standard mode:
@@ -1355,18 +1500,26 @@ impl<'a> Parser<'a> {
         }
         self.depth -= 1;
 
-        // Sort the Object fields by key and check for duplicate keys.
-        // Returns an error if duplicate keys are found.
+        // Sort the Object fields by key and check for duplicate keys. The sort
+        // is stable, so the fields of a key stay in input order.
         obj.sort_by(|a, b| a.0.cmp(&b.0));
-        for i in 1..obj.len() {
-            if obj[i - 1].0 == obj[i].0 {
-                let key_str = obj[i].0.clone().to_string();
-                let pos = obj[i].2;
-                let code = ParseErrorCode::ObjectDuplicateKey(key_str);
-                return Err(Error::Syntax(code, pos));
+        let Some(i) = (1..obj.len()).find(|&i| obj[i - 1].0 == obj[i].0) else {
+            return Ok(JsonAst::Object(obj));
+        };
+        if !self.allow_duplicate_keys {
+            let key_str = obj[i].0.clone().to_string();
+            let code = ParseErrorCode::ObjectDuplicateKey(key_str);
+            return Err(Error::Syntax(code, obj[i].2));
+        }
+        // Keep the last field of each key.
+        let mut fields: Vec<(Cow<'a, str>, JsonAst<'a>, usize)> = Vec::with_capacity(obj.len());
+        for field in obj {
+            match fields.last_mut() {
+                Some(last) if last.0 == field.0 => *last = field,
+                _ => fields.push(field),
             }
         }
-        Ok(JsonAst::Object(obj))
+        Ok(JsonAst::Object(fields))
     }
 }
 
@@ -1747,8 +1900,9 @@ mod tests {
         fn test_standard_json_parser(json in standard_json_strategy()) {
             let source = format!("{}", json);
             let res1 = serde_json::from_slice::<serde_json::Value>(source.as_bytes());
-            let res2 = parse_value_standard_mode(source.as_bytes());
-            let res3 = parse_owned_jsonb_standard_mode(source.as_bytes());
+            let standard = ParseOptions::new().standard_mode(true);
+            let res2 = standard.parse_value(source.as_bytes());
+            let res3 = standard.parse_owned_jsonb(source.as_bytes());
             assert_eq!(res1.is_ok(), res2.is_ok());
             assert_eq!(res1.is_ok(), res3.is_ok());
             if res1.is_ok() {
